@@ -64,6 +64,7 @@ pub fn router(
         .route("/api/v1/state", get(current_state))
         .route("/api/v1/camera/state", get(camera_state))
         .route("/api/v1/camera/move", post(move_camera))
+        .route("/api/v1/camera/zoom", post(set_zoom))
         .route("/api/v1/camera/tracking", post(set_tracking))
         .route(
             "/api/v1/camera/built-in-gestures/{feature}",
@@ -163,6 +164,11 @@ struct BuiltInGestureRequest {
     enabled: bool,
 }
 
+#[derive(Deserialize)]
+struct ZoomRequest {
+    magnification: f32,
+}
+
 async fn move_camera(
     State(state): State<ApiState>,
     Json(request): Json<MoveCameraRequest>,
@@ -218,6 +224,28 @@ async fn set_built_in_gesture(
                 &state,
                 "camera.built_in_gesture",
                 json!({"feature": feature, "enabled": request.enabled}),
+            )
+            .await;
+            StatusCode::ACCEPTED.into_response()
+        }
+        Err(error) => command_error(error),
+    }
+}
+
+async fn set_zoom(State(state): State<ApiState>, Json(request): Json<ZoomRequest>) -> Response {
+    let Some(camera) = state.camera.clone() else {
+        return camera_unavailable();
+    };
+    match camera.set_zoom(request.magnification).await {
+        Ok(()) => {
+            state
+                .runtime
+                .update(|runtime| runtime.camera.zoom_magnification = Some(request.magnification))
+                .await;
+            record_camera_command(
+                &state,
+                "camera.zoom",
+                json!({"magnification": request.magnification}),
             )
             .await;
             StatusCode::ACCEPTED.into_response()
@@ -770,6 +798,41 @@ mod tests {
         assert_eq!(events[0].kind, "camera.built_in_gesture");
         assert_eq!(events[0].data["feature"], "dynamic-zoom");
         assert_eq!(events[0].data["enabled"], false);
+    }
+
+    #[tokio::test]
+    async fn manual_zoom_updates_magnification_state() {
+        let mut config = Config::default();
+        config.camera.adapter = CameraAdapter::Mock;
+        config.perception.enabled = false;
+        let runtime = Runtime::new();
+        let camera = camera::start(config.camera.clone(), runtime.clone())
+            .await
+            .unwrap();
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = router(
+            config,
+            runtime.clone(),
+            PreviewHub::new(),
+            camera,
+            shutdown_rx,
+        );
+
+        let response = app
+            .oneshot(
+                Request::post("/api/v1/camera/zoom")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"magnification":3.4}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(runtime.state().await.camera.zoom_magnification, Some(3.4));
+        let events = runtime.recent_events().await;
+        assert_eq!(events[0].kind, "camera.zoom");
+        assert!((events[0].data["magnification"].as_f64().unwrap() - 3.4).abs() < 1e-6);
     }
 
     #[tokio::test]

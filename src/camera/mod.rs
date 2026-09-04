@@ -15,7 +15,7 @@ use crate::{
     model::{BuiltInGesture, CameraAttitudeSource, unix_ms},
     runtime::Runtime,
 };
-use linux_uvc::{LinuxUvcTransport, XuTransport};
+use linux_uvc::{LinuxUvcTransport, XuTransport, ZoomControl};
 use protocol::{FRAME_SIZE, GIM_GET_STATE, TRACKING_SELECTOR, VENDOR_SELECTOR};
 
 const COMMAND_QUEUE_CAPACITY: usize = 32;
@@ -43,6 +43,9 @@ enum Command {
     BuiltInGesture {
         feature: BuiltInGesture,
         enabled: bool,
+    },
+    Zoom {
+        magnification: f32,
     },
 }
 
@@ -93,6 +96,15 @@ impl CameraHandle {
             .map(|_| ())
     }
 
+    pub async fn set_zoom(&self, magnification: f32) -> Result<()> {
+        if !magnification.is_finite() || !(1.0..=4.0).contains(&magnification) {
+            bail!("zoom magnification must be between 1.0 and 4.0");
+        }
+        self.request(Command::Zoom { magnification })
+            .await
+            .map(|_| ())
+    }
+
     async fn query_state(&self) -> Result<GimbalAngles> {
         self.request(Command::QueryState)
             .await?
@@ -124,6 +136,7 @@ pub async fn start(config: CameraConfig, runtime: Runtime) -> Result<Option<Came
                     state.camera.yaw_degrees = Some(0.0);
                     state.camera.pitch_degrees = Some(0.0);
                     state.camera.roll_degrees = Some(0.0);
+                    state.camera.zoom_magnification = Some(1.0);
                     state.camera.attitude_source = CameraAttitudeSource::Simulated;
                     state.camera.sample_at_ms = Some(unix_ms());
                 })
@@ -134,11 +147,25 @@ pub async fn start(config: CameraConfig, runtime: Runtime) -> Result<Option<Came
             Ok(Some(handle))
         }
         CameraAdapter::ObsbotTiny2 => {
-            let transport = LinuxUvcTransport::open(&config.control_device, config.xu_unit)?;
+            let mut transport = LinuxUvcTransport::open(&config.control_device, config.xu_unit)?;
+            let initial_zoom = match transport.zoom_control() {
+                Ok(control) => match magnification_from_zoom_units(control) {
+                    Ok(magnification) => Some(magnification),
+                    Err(error) => {
+                        tracing::warn!(%error, "camera returned an invalid absolute zoom range");
+                        None
+                    }
+                },
+                Err(error) => {
+                    tracing::warn!(%error, "camera absolute zoom state is unavailable");
+                    None
+                }
+            };
             let handle = spawn_worker(transport, &config);
             runtime
                 .update(|state| {
                     state.camera.available = true;
+                    state.camera.zoom_magnification = initial_zoom;
                     state.camera.error = None;
                 })
                 .await;
@@ -228,6 +255,14 @@ impl<T: XuTransport> Worker<T> {
                 let mut frame =
                     protocol::built_in_gesture_frame(self.next_sequence(), feature, enabled);
                 self.set(VENDOR_SELECTOR, &mut frame)?;
+                Ok(None)
+            }
+            Command::Zoom { magnification } => {
+                self.pace();
+                let control = self.transport.zoom_control()?;
+                let units = zoom_units_from_magnification(magnification, control)?;
+                self.transport.set_zoom_units(units)?;
+                self.last_io = Some(Instant::now());
                 Ok(None)
             }
         }
@@ -324,6 +359,7 @@ fn spawn_mock(config: &CameraConfig) -> CameraHandle {
                     }
                     Command::Tracking { .. } => Ok(None),
                     Command::BuiltInGesture { .. } => Ok(None),
+                    Command::Zoom { .. } => Ok(None),
                 };
                 let _ = request.response.send(result);
             }
@@ -334,6 +370,30 @@ fn spawn_mock(config: &CameraConfig) -> CameraHandle {
         max_yaw_degrees: config.max_yaw_degrees,
         max_pitch_degrees: config.max_pitch_degrees,
     }
+}
+
+fn zoom_units_from_magnification(magnification: f32, control: ZoomControl) -> Result<i32> {
+    validate_zoom_control(control)?;
+    let position = f64::from(magnification - 1.0) / 3.0;
+    let raw = f64::from(control.minimum) + f64::from(control.maximum - control.minimum) * position;
+    let step = f64::from(control.step);
+    let snapped =
+        f64::from(control.minimum) + ((raw - f64::from(control.minimum)) / step).round() * step;
+    Ok((snapped as i32).clamp(control.minimum, control.maximum))
+}
+
+fn magnification_from_zoom_units(control: ZoomControl) -> Result<f32> {
+    validate_zoom_control(control)?;
+    let position =
+        (control.value - control.minimum) as f32 / (control.maximum - control.minimum) as f32;
+    Ok(1.0 + 3.0 * position)
+}
+
+fn validate_zoom_control(control: ZoomControl) -> Result<()> {
+    if control.maximum <= control.minimum || control.step <= 0 {
+        bail!("camera absolute zoom range is invalid");
+    }
+    Ok(())
 }
 
 fn spawn_polling(handle: CameraHandle, interval_ms: u64, runtime: Runtime) {
@@ -391,6 +451,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingTransport {
         writes: Vec<(u8, [u8; FRAME_SIZE])>,
+        zoom_units: Vec<i32>,
     }
 
     impl XuTransport for RecordingTransport {
@@ -400,7 +461,21 @@ mod tests {
         }
 
         fn get(&mut self, _selector: u8, _data: &mut [u8]) -> Result<()> {
-            unreachable!("gesture commands do not read from the camera")
+            unreachable!("recorded commands do not read from the camera")
+        }
+
+        fn zoom_control(&mut self) -> Result<ZoomControl> {
+            Ok(ZoomControl {
+                minimum: 0,
+                maximum: 100,
+                step: 1,
+                value: self.zoom_units.last().copied().unwrap_or(0),
+            })
+        }
+
+        fn set_zoom_units(&mut self, units: i32) -> Result<()> {
+            self.zoom_units.push(units);
+            Ok(())
         }
     }
 
@@ -441,6 +516,9 @@ mod tests {
         assert!(handle.move_to(131.0, 0.0, 0.0).await.is_err());
         assert!(handle.move_to(0.0, 91.0, 0.0).await.is_err());
         assert!(handle.move_to(20.0, -10.0, 0.0).await.is_ok());
+        assert!(handle.set_zoom(0.9).await.is_err());
+        assert!(handle.set_zoom(4.1).await.is_err());
+        assert!(handle.set_zoom(2.5).await.is_ok());
     }
 
     #[test]
@@ -475,5 +553,41 @@ mod tests {
         let command = protocol::parse_frame(&worker.transport.writes[1].1).unwrap();
         assert_eq!(command.command, protocol::AI_SET_GESTURE_ZOOM);
         assert_eq!(command.payload, [0]);
+    }
+
+    #[test]
+    fn zoom_magnification_maps_to_the_standard_control_range() {
+        let control = ZoomControl {
+            minimum: 10,
+            maximum: 110,
+            step: 2,
+            value: 10,
+        };
+        assert_eq!(zoom_units_from_magnification(1.0, control).unwrap(), 10);
+        assert_eq!(zoom_units_from_magnification(2.5, control).unwrap(), 60);
+        assert_eq!(zoom_units_from_magnification(4.0, control).unwrap(), 110);
+
+        assert_eq!(magnification_from_zoom_units(control).unwrap(), 1.0);
+        assert_eq!(
+            magnification_from_zoom_units(ZoomControl {
+                value: 60,
+                ..control
+            })
+            .unwrap(),
+            2.5
+        );
+    }
+
+    #[test]
+    fn zoom_command_uses_the_serialized_standard_control() {
+        let (_tx, rx) = sync_channel(1);
+        let mut worker = Worker::new(RecordingTransport::default(), rx, Duration::ZERO);
+
+        worker
+            .execute(Command::Zoom { magnification: 2.5 })
+            .unwrap();
+
+        assert!(worker.transport.writes.is_empty());
+        assert_eq!(worker.transport.zoom_units, [50]);
     }
 }

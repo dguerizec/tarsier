@@ -42,6 +42,7 @@ pub struct CameraState {
     pub adapter: String,
     pub serial: Option<String>,
     pub tracking: Option<bool>,
+    pub zoom_magnification: Option<f32>,
     pub built_in_gestures: BuiltInGestureState,
     pub yaw_degrees: Option<f32>,
     pub pitch_degrees: Option<f32>,
