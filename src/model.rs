@@ -72,6 +72,7 @@ pub struct PerceptionState {
     pub error: Option<String>,
     pub frame_id: Option<u64>,
     pub face_detected: bool,
+    pub hand_detected: bool,
     pub gesture: Option<String>,
     pub confidence: Option<f32>,
     pub sample_at_ms: Option<u64>,
@@ -103,6 +104,8 @@ pub struct PerceptionObservation {
     pub captured_at_ms: u64,
     #[serde(default)]
     pub face_detected: bool,
+    #[serde(default)]
+    pub hand_detected: bool,
     pub gesture: Option<String>,
     #[serde(default)]
     pub confidence: f32,

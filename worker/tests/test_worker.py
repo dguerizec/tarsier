@@ -36,6 +36,12 @@ def test_empty_results_are_an_absent_gesture() -> None:
     assert select_gesture([[Category("None", 0.99)]]) == (None, 0.0)
 
 
+def test_neutral_category_does_not_hide_a_named_candidate() -> None:
+    assert select_gesture(
+        [[Category("None", 0.91), Category("Open_Palm", 0.67)]]
+    ) == ("open_palm", 0.67)
+
+
 def test_missing_models_are_reported_as_unverified(tmp_path: Path) -> None:
     descriptions = describe_models(tmp_path)
     assert len(descriptions) == 2

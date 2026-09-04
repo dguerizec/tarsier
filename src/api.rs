@@ -408,6 +408,7 @@ async fn perception_observation(
             runtime.perception.error = None;
             runtime.perception.frame_id = Some(observation.frame_id);
             runtime.perception.face_detected = observation.face_detected;
+            runtime.perception.hand_detected = observation.hand_detected;
             runtime.perception.gesture = observation.gesture.clone();
             runtime.perception.confidence = Some(observation.confidence);
             runtime.perception.sample_at_ms = Some(observation.captured_at_ms);

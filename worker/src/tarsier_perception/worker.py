@@ -22,6 +22,7 @@ class Observation:
     frame_id: int
     captured_at_ms: int
     face_detected: bool
+    hand_detected: bool
     gesture: str | None
     confidence: float
     latency_ms: float
@@ -34,12 +35,15 @@ def normalize_gesture(name: str | None) -> str | None:
 
 
 def select_gesture(gestures: list[list[Any]]) -> tuple[str | None, float]:
-    candidates = [categories[0] for categories in gestures if categories]
+    candidates = [
+        (gesture, float(category.score or 0.0))
+        for categories in gestures
+        for category in categories
+        if (gesture := normalize_gesture(category.category_name)) is not None
+    ]
     if not candidates:
         return None, 0.0
-    best = max(candidates, key=lambda category: float(category.score or 0.0))
-    gesture = normalize_gesture(best.category_name)
-    return (gesture, float(best.score or 0.0)) if gesture else (None, 0.0)
+    return max(candidates, key=lambda candidate: candidate[1])
 
 
 class MediaPipeDetector:
@@ -56,6 +60,9 @@ class MediaPipeDetector:
                 min_hand_detection_confidence=minimum_confidence,
                 min_hand_presence_confidence=minimum_confidence,
                 min_tracking_confidence=minimum_confidence,
+                canned_gesture_classifier_options=mp.tasks.components.processors.ClassifierOptions(
+                    category_denylist=["None"]
+                ),
             )
         )
         self._face = vision.FaceDetector.create_from_options(
@@ -68,13 +75,20 @@ class MediaPipeDetector:
             )
         )
 
-    def detect(self, frame_bgr: np.ndarray, timestamp_ms: int) -> tuple[bool, str | None, float]:
+    def detect(
+        self, frame_bgr: np.ndarray, timestamp_ms: int
+    ) -> tuple[bool, bool, str | None, float]:
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
         face_result = self._face.detect_for_video(image, timestamp_ms)
         gesture_result = self._gesture.recognize_for_video(image, timestamp_ms)
         gesture, confidence = select_gesture(gesture_result.gestures)
-        return bool(face_result.detections), gesture, confidence
+        return (
+            bool(face_result.detections),
+            bool(gesture_result.hand_landmarks),
+            gesture,
+            confidence,
+        )
 
     def close(self) -> None:
         self._gesture.close()
@@ -153,12 +167,13 @@ def run_worker(
             timestamp_ms = max(0, int((now - started_at) * 1000))
             captured_at_ms = time.time_ns() // 1_000_000
             inference_started = time.perf_counter()
-            face, gesture, confidence = detector.detect(frame, timestamp_ms)
+            face, hand, gesture, confidence = detector.detect(frame, timestamp_ms)
             latency_ms = (time.perf_counter() - inference_started) * 1000.0
             observation = Observation(
                 frame_id=frame_id,
                 captured_at_ms=captured_at_ms,
                 face_detected=face,
+                hand_detected=hand,
                 gesture=gesture,
                 confidence=confidence,
                 latency_ms=latency_ms,
@@ -179,6 +194,7 @@ def run_mock(daemon_url: str, fps: float, open_palm: bool) -> None:
                 frame_id=frame_id,
                 captured_at_ms=time.time_ns() // 1_000_000,
                 face_detected=True,
+                hand_detected=open_palm,
                 gesture="open_palm" if open_palm else None,
                 confidence=0.96 if open_palm else 0.0,
                 latency_ms=(time.perf_counter() - started) * 1000.0,

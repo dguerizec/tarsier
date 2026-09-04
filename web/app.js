@@ -28,7 +28,9 @@ function render(next) {
     : pipeline.error || "Pipeline stopped";
   $("#worker").textContent = perception.worker_connected ? `Frame ${perception.frame_id}` : "Worker offline";
   $("#gesture").textContent = perception.gesture || "No gesture";
-  $("#confidence").textContent = perception.confidence == null ? "—" : `${Math.round(perception.confidence * 100)}% confidence`;
+  $("#confidence").textContent = perception.gesture
+    ? `${Math.round(perception.confidence * 100)}% confidence`
+    : perception.hand_detected ? "Hand detected · not classified" : "No hand detected";
   $("#gesture-icon").classList.toggle("active", perception.gesture === "open_palm");
   $("#perception-error").hidden = !perception.error;
   $("#perception-error").textContent = perception.error || "";
