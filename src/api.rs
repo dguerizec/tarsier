@@ -15,7 +15,7 @@ use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, watch};
 use tower_http::trace::TraceLayer;
 
 use crate::{
@@ -35,6 +35,7 @@ struct ApiState {
     face_presence: Arc<Mutex<FacePresenceStabilizer>>,
     preview: PreviewHub,
     camera: Option<CameraHandle>,
+    shutdown: watch::Receiver<bool>,
 }
 
 pub fn router(
@@ -42,6 +43,7 @@ pub fn router(
     runtime: Runtime,
     preview: PreviewHub,
     camera: Option<CameraHandle>,
+    shutdown: watch::Receiver<bool>,
 ) -> Router {
     let state = ApiState {
         stabilizer: Arc::new(Mutex::new(OpenPalmStabilizer::new(&config.perception))),
@@ -50,6 +52,7 @@ pub fn router(
         runtime,
         preview,
         camera,
+        shutdown,
     };
     Router::new()
         .route("/", get(index))
@@ -326,10 +329,21 @@ async fn snapshot(State(state): State<ApiState>) -> Response {
 
 async fn preview_mjpeg(State(state): State<ApiState>) -> Response {
     let mut receiver = state.preview.subscribe();
+    let mut shutdown = state.shutdown.clone();
     let stream = async_stream::stream! {
         loop {
-            if receiver.changed().await.is_err() {
-                break;
+            tokio::select! {
+                changed = receiver.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                }
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() {
+                        break;
+                    }
+                    continue;
+                }
             }
             let frame = receiver.borrow_and_update().clone();
             let Some(frame) = frame else {
@@ -507,10 +521,10 @@ async fn events_socket(
     websocket: WebSocketUpgrade,
     State(state): State<ApiState>,
 ) -> impl IntoResponse {
-    websocket.on_upgrade(move |socket| stream_events(socket, state.runtime))
+    websocket.on_upgrade(move |socket| stream_events(socket, state.runtime, state.shutdown))
 }
 
-async fn stream_events(socket: WebSocket, runtime: Runtime) {
+async fn stream_events(socket: WebSocket, runtime: Runtime, mut shutdown: watch::Receiver<bool>) {
     let (mut sender, mut receiver) = socket.split();
     let mut events = runtime.subscribe_events();
     let mut states = runtime.subscribe_state();
@@ -526,6 +540,11 @@ async fn stream_events(socket: WebSocket, runtime: Runtime) {
 
     loop {
         tokio::select! {
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    break;
+                }
+            },
             event = events.recv() => match event {
                 Ok(event) => {
                     let payload = json!({"type": "event", "data": event});
@@ -558,11 +577,40 @@ fn infallible(_: Infallible) {}
 
 #[cfg(test)]
 mod tests {
-    use axum::{body::Body, http::Request};
+    use std::time::Duration;
+
+    use axum::{
+        body::{Body, to_bytes},
+        http::Request,
+    };
     use tower::ServiceExt;
 
     use super::*;
     use crate::{camera, config::CameraAdapter};
+
+    #[tokio::test]
+    async fn preview_stream_closes_when_shutdown_starts() {
+        let mut config = Config::default();
+        config.perception.enabled = false;
+        let runtime = Runtime::new();
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = router(config, runtime, PreviewHub::new(), None, shutdown_rx);
+
+        let response = app
+            .oneshot(
+                Request::get("/api/v1/preview.mjpeg")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        shutdown_tx.send(true).unwrap();
+
+        tokio::time::timeout(Duration::from_secs(1), to_bytes(response.into_body(), 1024))
+            .await
+            .expect("preview stream should stop after shutdown")
+            .unwrap();
+    }
 
     #[tokio::test]
     async fn preset_recall_uses_camera_owner_and_emits_an_event() {
@@ -573,7 +621,14 @@ mod tests {
         let camera = camera::start(config.camera.clone(), runtime.clone())
             .await
             .unwrap();
-        let app = router(config, runtime.clone(), PreviewHub::new(), camera);
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = router(
+            config,
+            runtime.clone(),
+            PreviewHub::new(),
+            camera,
+            shutdown_rx,
+        );
 
         let response = app
             .oneshot(
@@ -602,7 +657,14 @@ mod tests {
         let mut config = Config::default();
         config.perception.enabled = false;
         let runtime = Runtime::new();
-        let app = router(config, runtime.clone(), PreviewHub::new(), None);
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = router(
+            config,
+            runtime.clone(),
+            PreviewHub::new(),
+            None,
+            shutdown_rx,
+        );
 
         for observation in [
             json!({

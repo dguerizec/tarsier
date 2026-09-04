@@ -14,6 +14,7 @@ use clap::{Parser, Subcommand};
 use config::Config;
 use pipeline::{PreviewHub, VideoPipeline};
 use runtime::Runtime;
+use tokio::sync::watch;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
@@ -82,7 +83,14 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
     let camera = camera::start(config.camera.clone(), runtime.clone())
         .await
         .context("failed to start camera adapter")?;
-    let app = api::router(config.clone(), runtime.clone(), preview, camera);
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let app = api::router(
+        config.clone(),
+        runtime.clone(),
+        preview,
+        camera,
+        shutdown_rx,
+    );
     let listener = tokio::net::TcpListener::bind(config.server.bind)
         .await
         .with_context(|| format!("failed to bind {}", config.server.bind))?;
@@ -95,9 +103,9 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             shutdown_signal().await;
+            let _ = shutdown_tx.send(true);
             if let Some(perception) = perception {
-                // Stop the worker before Axum drains its long-lived MJPEG
-                // connection, otherwise each side waits for the other.
+                // Stop the worker before Axum drains any remaining requests.
                 perception.shutdown().await;
             }
         })
