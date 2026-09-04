@@ -10,6 +10,14 @@ let skeletonEnabled = localStorage.getItem("tarsier.handSkeleton") === "true";
 let socketConnected = false;
 let pipelineWasRunning = null;
 let previewRetry = null;
+let gestureControlError = null;
+const pendingGestureFeatures = new Set();
+
+const builtInGestureControls = [
+  { feature: "target-selection", key: "target_selection", state: "#gesture-target-selection-state" },
+  { feature: "zoom", key: "zoom", state: "#gesture-zoom-state" },
+  { feature: "dynamic-zoom", key: "dynamic_zoom", state: "#gesture-dynamic-zoom-state" },
+];
 
 const handConnections = [
   [0, 1], [1, 2], [2, 3], [3, 4],
@@ -127,6 +135,20 @@ function gestureDetail(perception) {
     : `Hand last seen ${age(perception.last_hand_at_ms)}`;
 }
 
+function renderBuiltInGestures(camera) {
+  const gestures = camera.built_in_gestures || {};
+  for (const control of builtInGestureControls) {
+    const value = gestures[control.key] ?? null;
+    const pending = pendingGestureFeatures.has(control.feature);
+    $(control.state).textContent = pending ? "Applying…" : value == null ? "Unknown" : value ? "On" : "Off";
+    document.querySelectorAll(`[data-gesture-feature="${control.feature}"]`).forEach((button) => {
+      const buttonValue = button.dataset.gestureEnabled === "true";
+      button.setAttribute("aria-pressed", String(value != null && value === buttonValue));
+      button.disabled = !camera.available || pending;
+    });
+  }
+}
+
 function render(next) {
   state = next;
   const camera = next.camera;
@@ -139,6 +161,7 @@ function render(next) {
   $("#camera-age").textContent = camera.sample_at_ms == null
     ? attitudeLabel(camera.attitude_source)
     : `${attitudeLabel(camera.attitude_source)} · ${age(camera.sample_at_ms)}`;
+  renderBuiltInGestures(camera);
   $("#pipeline-summary").textContent = pipeline.running
     ? `${pipeline.width}×${pipeline.height} · ${pipeline.fps.toFixed(1)} fps · ${pipeline.frame_count} frames`
     : pipeline.error || "Pipeline stopped";
@@ -149,8 +172,9 @@ function render(next) {
   $("#gesture-icon").classList.toggle("active", perception.gesture === "open_palm");
   $("#perception-error").hidden = !perception.error;
   $("#perception-error").textContent = perception.error || "";
-  $("#camera-error").hidden = !camera.error;
-  $("#camera-error").textContent = camera.error || "";
+  const cameraError = gestureControlError || camera.error;
+  $("#camera-error").hidden = !cameraError;
+  $("#camera-error").textContent = cameraError || "";
   document.querySelectorAll("[data-action], [data-preset]").forEach((button) => { button.disabled = !camera.available; });
   drawHandSkeleton(socketConnected && pipeline.running ? perception.hand_landmarks : []);
 }
@@ -230,6 +254,32 @@ new ResizeObserver(() => drawHandSkeleton()).observe($(".preview-stage"));
 document.querySelectorAll("[data-action]").forEach((button) => {
   button.addEventListener("click", async () => {
     await fetch(`/api/v1/camera/actions/${button.dataset.action}`, { method: "POST" });
+  });
+});
+
+document.querySelectorAll("[data-gesture-feature]").forEach((button) => {
+  button.addEventListener("click", async () => {
+    const feature = button.dataset.gestureFeature;
+    const enabled = button.dataset.gestureEnabled === "true";
+    pendingGestureFeatures.add(feature);
+    gestureControlError = null;
+    if (state) render(state);
+    try {
+      const response = await fetch(`/api/v1/camera/built-in-gestures/${feature}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || `Camera command failed (${response.status})`);
+      }
+    } catch (error) {
+      gestureControlError = error instanceof Error ? error.message : String(error);
+    } finally {
+      pendingGestureFeatures.delete(feature);
+      if (state) render(state);
+    }
   });
 });
 

@@ -46,6 +46,38 @@
           <button data-action="tracking-off" class="secondary">Stop tracking</button>
         </div>
         <div id="presets" class="controls preset-controls"></div>
+        <div class="camera-subsection">
+          <div class="subsection-title">
+            <h3>Built-in gestures</h3>
+            <span>Camera firmware</span>
+          </div>
+          <div class="feature-controls">
+            <div class="feature-control">
+              <span>Target selection</span>
+              <strong id="gesture-target-selection-state">Unknown</strong>
+              <div class="segmented-control" role="group" aria-label="Target selection gesture">
+                <button class="secondary compact" type="button" data-gesture-feature="target-selection" data-gesture-enabled="true">On</button>
+                <button class="secondary compact" type="button" data-gesture-feature="target-selection" data-gesture-enabled="false">Off</button>
+              </div>
+            </div>
+            <div class="feature-control">
+              <span>Zoom</span>
+              <strong id="gesture-zoom-state">Unknown</strong>
+              <div class="segmented-control" role="group" aria-label="Zoom gesture">
+                <button class="secondary compact" type="button" data-gesture-feature="zoom" data-gesture-enabled="true">On</button>
+                <button class="secondary compact" type="button" data-gesture-feature="zoom" data-gesture-enabled="false">Off</button>
+              </div>
+            </div>
+            <div class="feature-control">
+              <span>Dynamic zoom</span>
+              <strong id="gesture-dynamic-zoom-state">Unknown</strong>
+              <div class="segmented-control" role="group" aria-label="Dynamic zoom gesture">
+                <button class="secondary compact" type="button" data-gesture-feature="dynamic-zoom" data-gesture-enabled="true">On</button>
+                <button class="secondary compact" type="button" data-gesture-feature="dynamic-zoom" data-gesture-enabled="false">Off</button>
+              </div>
+            </div>
+          </div>
+        </div>
         <p id="camera-error" class="error" hidden></p>
       </section>
 
