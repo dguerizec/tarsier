@@ -28,8 +28,8 @@ mischievous personality without tying its core to one camera vendor.
   daemon's internal preview branch;
 - camera attitude is explicitly labelled `last-commanded`, `measured`,
   `simulated`, or `unavailable` rather than presenting an estimate as fact;
-- bounded absolute gimbal moves, recentering, tracking, and named presets are
-  available over HTTP and MCP;
+- bounded absolute gimbal moves, recentering, tracking, named presets, and
+  separate Tiny 2 built-in gesture controls are available over HTTP;
 - a supervised Python 3.12 worker performs local MediaPipe face and canned
   gesture recognition;
 - face presence and open-palm observations pass through dwell, release, and
@@ -187,6 +187,7 @@ The default server binds only to `127.0.0.1:8742`.
 | `GET` | `/api/v1/camera/state` | Camera availability and attitude |
 | `POST` | `/api/v1/camera/move` | Bounded absolute yaw/pitch/roll target |
 | `POST` | `/api/v1/camera/tracking` | Enable or disable built-in tracking |
+| `POST` | `/api/v1/camera/built-in-gestures/{feature}` | Enable or disable `target-selection`, `zoom`, or `dynamic-zoom` gestures |
 | `POST` | `/api/v1/camera/actions/recenter` | Recenter the gimbal |
 | `GET` | `/api/v1/camera/presets` | List configured presets |
 | `POST` | `/api/v1/camera/presets/{id}/recall` | Recall a named preset |
@@ -208,6 +209,11 @@ curl -fsS http://127.0.0.1:8742/api/v1/state
 curl -fsS -X POST http://127.0.0.1:8742/api/v1/camera/move \
   -H 'content-type: application/json' \
   -d '{"yaw":-20,"pitch":5,"roll":0}'
+
+curl -fsS -X POST \
+  http://127.0.0.1:8742/api/v1/camera/built-in-gestures/zoom \
+  -H 'content-type: application/json' \
+  -d '{"enabled":false}'
 
 curl -fsS http://127.0.0.1:8742/api/v1/camera/snapshot \
   --output snapshot.jpg
@@ -273,6 +279,8 @@ The first vertical slice was validated on 2026-09-05 with an OBSBOT Tiny 2
 
 - the physical pipeline sustained approximately 30 FPS at 1280x720 with no
   pipeline restart;
+- target-selection, zoom, and dynamic-zoom gesture-disable commands were
+  accepted while streaming without a pipeline restart or USB re-enumeration;
 - a short attitude-polling run returned changing live values during capture;
 - a generic GStreamer V4L2 reader consumed 90 frames from `/dev/video42` and
   exited successfully while preview, perception, and polling continued;

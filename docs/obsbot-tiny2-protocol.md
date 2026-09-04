@@ -54,6 +54,9 @@ angle and never triggers an implicit device reset.
 | Read attitude (unsafe while streaming) | 2 | `0x03` | `0x0043` | empty query |
 | Recenter | 2 | `0x03` | `0x00c3` | six zero bytes |
 | Move absolute | 2 | `0x04` | `0x6444` | float32 roll, pitch, yaw |
+| Target-selection gesture | 2 | `0x04` | `0x30c4` | one byte: `1` enabled, `0` disabled |
+| Zoom gesture | 2 | `0x04` | `0x3144` | one byte: `1` enabled, `0` disabled |
+| Dynamic-zoom gesture | 2 | `0x04` | `0x3344` | one byte: `1` enabled, `0` disabled |
 | Tracking | 6 | n/a | n/a | `16 02 02` enabled, `16 02 00` disabled, then zeros |
 
 The attitude response begins with signed 16-bit roll, pitch, and yaw values in
@@ -64,6 +67,14 @@ Absolute movement targets are additionally checked against configured yaw and
 pitch limits and a fixed +/-45 degree roll limit before a frame is queued.
 Tracking uses a separate raw selector-6 payload rather than the framed
 selector-2 mailbox.
+
+The three built-in gesture controls are independent of Tarsier's MediaPipe
+gesture recognition. They use the Tiny 2 commands documented by the vendor
+SDK's model-specific compatibility API rather than the newer unified gesture
+parameter command, which that SDK categorizes for Tail 2 and later products.
+Tarsier records a gesture setting only after the UVC write succeeds. It does
+not issue an additional proprietary readback while video is streaming, so each
+setting starts as unknown after a daemon restart.
 
 ## Concurrency evidence and safety decision
 
@@ -102,8 +113,10 @@ telemetry.
 - These values are validated only for the device and firmware above.
 - Tarsier does not link, load, bundle, or redistribute a proprietary SDK.
 - The adapter does not yet discover compatible firmware capabilities.
-- Sleep, zoom, image controls, tracking modes, and firmware update operations
-  are deliberately unimplemented.
+- Sleep, direct lens zoom, image controls, tracking modes, and firmware update
+  operations are deliberately unimplemented.
+- Built-in gesture state is the last setting accepted by the control transport,
+  not device readback, and returns to unknown when the daemon restarts.
 - Requested absolute angles and final physical attitude can differ; calibration
   and settling semantics need further study.
 - Continuous selector-2 attitude polling is known to be unsafe during streaming
