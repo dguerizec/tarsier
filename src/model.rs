@@ -73,8 +73,12 @@ pub struct PerceptionState {
     pub frame_id: Option<u64>,
     pub face_detected: bool,
     pub hand_detected: bool,
+    pub last_hand_at_ms: Option<u64>,
     pub gesture: Option<String>,
     pub confidence: Option<f32>,
+    pub peak_gesture: Option<String>,
+    pub peak_gesture_confidence: Option<f32>,
+    pub peak_gesture_at_ms: Option<u64>,
     pub sample_at_ms: Option<u64>,
     pub latency_ms: Option<f32>,
 }

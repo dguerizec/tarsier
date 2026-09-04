@@ -409,8 +409,22 @@ async fn perception_observation(
             runtime.perception.frame_id = Some(observation.frame_id);
             runtime.perception.face_detected = observation.face_detected;
             runtime.perception.hand_detected = observation.hand_detected;
+            if observation.hand_detected {
+                runtime.perception.last_hand_at_ms = Some(observation.captured_at_ms);
+            }
             runtime.perception.gesture = observation.gesture.clone();
             runtime.perception.confidence = Some(observation.confidence);
+            if observation.gesture.is_some()
+                && observation.confidence
+                    > runtime
+                        .perception
+                        .peak_gesture_confidence
+                        .unwrap_or_default()
+            {
+                runtime.perception.peak_gesture = observation.gesture.clone();
+                runtime.perception.peak_gesture_confidence = Some(observation.confidence);
+                runtime.perception.peak_gesture_at_ms = Some(observation.captured_at_ms);
+            }
             runtime.perception.sample_at_ms = Some(observation.captured_at_ms);
             runtime.perception.latency_ms = observation.latency_ms;
         })
@@ -581,5 +595,53 @@ mod tests {
             CameraAttitudeSource::LastCommanded
         );
         assert_eq!(state.camera.yaw_degrees, Some(0.0));
+    }
+
+    #[tokio::test]
+    async fn perception_state_remembers_a_hand_and_peak_after_release() {
+        let mut config = Config::default();
+        config.perception.enabled = false;
+        let runtime = Runtime::new();
+        let app = router(config, runtime.clone(), PreviewHub::new(), None);
+
+        for observation in [
+            json!({
+                "frame_id": 1,
+                "captured_at_ms": 1000,
+                "face_detected": true,
+                "hand_detected": true,
+                "gesture": "open_palm",
+                "confidence": 0.72,
+                "latency_ms": 10.0
+            }),
+            json!({
+                "frame_id": 2,
+                "captured_at_ms": 1100,
+                "face_detected": true,
+                "hand_detected": false,
+                "gesture": null,
+                "confidence": 0.0,
+                "latency_ms": 9.0
+            }),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post("/api/v1/perception/observations")
+                        .header("content-type", "application/json")
+                        .body(Body::from(observation.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        }
+
+        let state = runtime.state().await;
+        assert!(!state.perception.hand_detected);
+        assert_eq!(state.perception.last_hand_at_ms, Some(1000));
+        assert_eq!(state.perception.peak_gesture.as_deref(), Some("open_palm"));
+        assert_eq!(state.perception.peak_gesture_confidence, Some(0.72));
+        assert_eq!(state.perception.peak_gesture_at_ms, Some(1000));
     }
 }

@@ -11,6 +11,17 @@ const attitudeLabel = (source) => ({
   simulated: "Simulated",
 }[source] || "No attitude sample");
 
+function gestureDetail(perception) {
+  if (perception.gesture) return `${Math.round(perception.confidence * 100)}% confidence`;
+  if (perception.hand_detected) return "Hand detected · not classified";
+  if (perception.peak_gesture) {
+    return `Peak ${perception.peak_gesture} · ${Math.round(perception.peak_gesture_confidence * 100)}%`;
+  }
+  return perception.last_hand_at_ms == null
+    ? "No hand detected"
+    : `Hand last seen ${age(perception.last_hand_at_ms)}`;
+}
+
 function render(next) {
   state = next;
   const camera = next.camera;
@@ -28,9 +39,7 @@ function render(next) {
     : pipeline.error || "Pipeline stopped";
   $("#worker").textContent = perception.worker_connected ? `Frame ${perception.frame_id}` : "Worker offline";
   $("#gesture").textContent = perception.gesture || "No gesture";
-  $("#confidence").textContent = perception.gesture
-    ? `${Math.round(perception.confidence * 100)}% confidence`
-    : perception.hand_detected ? "Hand detected · not classified" : "No hand detected";
+  $("#confidence").textContent = gestureDetail(perception);
   $("#gesture-icon").classList.toggle("active", perception.gesture === "open_palm");
   $("#perception-error").hidden = !perception.error;
   $("#perception-error").textContent = perception.error || "";
