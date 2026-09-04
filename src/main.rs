@@ -1,6 +1,7 @@
 mod api;
 mod config;
 mod model;
+mod pipeline;
 mod runtime;
 mod scenario;
 
@@ -9,6 +10,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use config::Config;
+use pipeline::{PreviewHub, VideoPipeline};
 use runtime::Runtime;
 use tracing_subscriber::EnvFilter;
 
@@ -71,7 +73,11 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
     let config = Config::load(path.as_deref())?;
     config.validate()?;
     let runtime = Runtime::new();
-    let app = api::router(config.clone(), runtime);
+    let preview = PreviewHub::new();
+    let _pipeline = VideoPipeline::start(config.video.clone(), runtime.clone(), preview.clone())
+        .await
+        .context("failed to start video pipeline")?;
+    let app = api::router(config.clone(), runtime, preview);
     let listener = tokio::net::TcpListener::bind(config.server.bind)
         .await
         .with_context(|| format!("failed to bind {}", config.server.bind))?;

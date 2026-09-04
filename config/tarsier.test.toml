@@ -1,0 +1,12 @@
+[server]
+bind = "127.0.0.1:8742"
+
+[video]
+source = "test"
+loopback_enabled = false
+
+[camera]
+adapter = "disabled"
+
+[perception]
+enabled = false

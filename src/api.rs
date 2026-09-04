@@ -2,6 +2,7 @@ use std::{convert::Infallible, sync::Arc};
 
 use axum::{
     Json, Router,
+    body::Body,
     extract::{
         State, WebSocketUpgrade,
         ws::{Message, WebSocket},
@@ -10,6 +11,7 @@ use axum::{
     response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
+use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
@@ -18,6 +20,7 @@ use tower_http::trace::TraceLayer;
 use crate::{
     config::{Config, ScenarioConfig},
     model::{PerceptionObservation, ScenarioActivation, unix_ms},
+    pipeline::PreviewHub,
     runtime::Runtime,
     scenario::OpenPalmStabilizer,
 };
@@ -27,13 +30,15 @@ struct ApiState {
     config: Config,
     runtime: Runtime,
     stabilizer: Arc<Mutex<OpenPalmStabilizer>>,
+    preview: PreviewHub,
 }
 
-pub fn router(config: Config, runtime: Runtime) -> Router {
+pub fn router(config: Config, runtime: Runtime, preview: PreviewHub) -> Router {
     let state = ApiState {
         stabilizer: Arc::new(Mutex::new(OpenPalmStabilizer::new(&config.perception))),
         config,
         runtime,
+        preview,
     };
     Router::new()
         .route("/", get(index))
@@ -51,6 +56,8 @@ pub fn router(config: Config, runtime: Runtime) -> Router {
             "/api/v1/perception/observations",
             post(perception_observation),
         )
+        .route("/api/v1/preview.mjpeg", get(preview_mjpeg))
+        .route("/api/v1/camera/snapshot", get(snapshot))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
@@ -100,6 +107,54 @@ async fn scenarios(State(state): State<ApiState>) -> Json<Vec<ScenarioConfig>> {
 
 async fn recent_events(State(state): State<ApiState>) -> Json<Vec<crate::model::SemanticEvent>> {
     Json(state.runtime.recent_events().await)
+}
+
+async fn snapshot(State(state): State<ApiState>) -> Response {
+    let Some(frame) = state.preview.latest() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no video frame is available",
+        )
+            .into_response();
+    };
+    (
+        [
+            (header::CONTENT_TYPE, "image/jpeg"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        frame,
+    )
+        .into_response()
+}
+
+async fn preview_mjpeg(State(state): State<ApiState>) -> Response {
+    let mut receiver = state.preview.subscribe();
+    let stream = async_stream::stream! {
+        loop {
+            if receiver.changed().await.is_err() {
+                break;
+            }
+            let frame = receiver.borrow_and_update().clone();
+            let Some(frame) = frame else {
+                continue;
+            };
+            let part_header = Bytes::from(format!(
+                "--tarsier-frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
+                frame.len()
+            ));
+            yield Ok::<Bytes, Infallible>(part_header);
+            yield Ok::<Bytes, Infallible>(frame);
+            yield Ok::<Bytes, Infallible>(Bytes::from_static(b"\r\n"));
+        }
+    };
+    Response::builder()
+        .header(
+            header::CONTENT_TYPE,
+            "multipart/x-mixed-replace; boundary=tarsier-frame",
+        )
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(Body::from_stream(stream))
+        .expect("static preview response is valid")
 }
 
 async fn trigger_scenario(
