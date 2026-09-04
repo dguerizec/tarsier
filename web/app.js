@@ -7,6 +7,9 @@ const overlayContext = overlay.getContext("2d");
 const skeletonToggle = $("#skeleton-toggle");
 let state = null;
 let skeletonEnabled = localStorage.getItem("tarsier.handSkeleton") === "true";
+let socketConnected = false;
+let pipelineWasRunning = null;
+let previewRetry = null;
 
 const handConnections = [
   [0, 1], [1, 2], [2, 3], [3, 4],
@@ -81,6 +84,38 @@ function setSkeletonEnabled(enabled) {
   drawHandSkeleton();
 }
 
+function refreshPreview() {
+  if (previewRetry != null) {
+    clearTimeout(previewRetry);
+    previewRetry = null;
+  }
+  preview.classList.remove("disconnected");
+  preview.src = `/api/v1/preview.mjpeg?generation=${Date.now()}`;
+}
+
+function stopPreview() {
+  if (previewRetry != null) {
+    clearTimeout(previewRetry);
+    previewRetry = null;
+  }
+  preview.classList.add("disconnected");
+  preview.removeAttribute("src");
+  drawHandSkeleton([]);
+}
+
+function syncPreview(pipeline) {
+  const running = socketConnected && pipeline.running;
+  if (running && pipelineWasRunning !== true) refreshPreview();
+  if (!running && pipelineWasRunning !== false) stopPreview();
+  pipelineWasRunning = running;
+}
+
+function retryPreview() {
+  preview.classList.add("disconnected");
+  if (!socketConnected || !state?.pipeline.running || previewRetry != null) return;
+  previewRetry = setTimeout(refreshPreview, 1000);
+}
+
 function gestureDetail(perception) {
   if (perception.gesture) return `${Math.round(perception.confidence * 100)}% confidence`;
   if (perception.hand_detected) return "Hand detected · not classified";
@@ -107,6 +142,7 @@ function render(next) {
   $("#pipeline-summary").textContent = pipeline.running
     ? `${pipeline.width}×${pipeline.height} · ${pipeline.fps.toFixed(1)} fps · ${pipeline.frame_count} frames`
     : pipeline.error || "Pipeline stopped";
+  syncPreview(pipeline);
   $("#worker").textContent = perception.worker_connected ? `Frame ${perception.frame_id}` : "Worker offline";
   $("#gesture").textContent = perception.gesture || "No gesture";
   $("#confidence").textContent = gestureDetail(perception);
@@ -116,7 +152,7 @@ function render(next) {
   $("#camera-error").hidden = !camera.error;
   $("#camera-error").textContent = camera.error || "";
   document.querySelectorAll("[data-action], [data-preset]").forEach((button) => { button.disabled = !camera.available; });
-  drawHandSkeleton(perception.hand_landmarks);
+  drawHandSkeleton(socketConnected && pipeline.running ? perception.hand_landmarks : []);
 }
 
 function appendEvent(event) {
@@ -156,8 +192,12 @@ function connect() {
   const protocol = location.protocol === "https:" ? "wss" : "ws";
   const socket = new WebSocket(`${protocol}://${location.host}/api/v1/events`);
   socket.addEventListener("open", () => {
+    socketConnected = true;
+    pipelineWasRunning = false;
     connection.textContent = "Live";
     connection.className = "status status-on";
+    refreshPreview();
+    pipelineWasRunning = true;
   });
   socket.addEventListener("message", ({ data }) => {
     const message = JSON.parse(data);
@@ -165,6 +205,10 @@ function connect() {
     if (message.type === "event") appendEvent(message.data);
   });
   socket.addEventListener("close", () => {
+    socketConnected = false;
+    pipelineWasRunning = true;
+    stopPreview();
+    pipelineWasRunning = false;
     connection.textContent = "Reconnecting";
     connection.className = "status status-off";
     setTimeout(connect, 1000);
@@ -176,7 +220,11 @@ $("#demo-trigger").addEventListener("click", async () => {
 });
 
 skeletonToggle.addEventListener("click", () => setSkeletonEnabled(!skeletonEnabled));
-preview.addEventListener("load", () => drawHandSkeleton());
+preview.addEventListener("load", () => {
+  preview.classList.remove("disconnected");
+  drawHandSkeleton();
+});
+preview.addEventListener("error", retryPreview);
 new ResizeObserver(() => drawHandSkeleton()).observe($(".preview-stage"));
 
 document.querySelectorAll("[data-action]").forEach((button) => {
