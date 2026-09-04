@@ -120,7 +120,8 @@ cargo run -- serve --config config/tarsier.example.toml
 Open <http://127.0.0.1:8742/> for the embedded preview and controls. In another
 terminal, inspect the daemon or consume its public virtual camera. The **Hand
 skeleton** button overlays MediaPipe landmarks in the UI without modifying the
-public V4L2 feed.
+public V4L2 feed. Embedded UI assets use `Cache-Control: no-store`, so one page
+reload always installs the current client behavior after an upgrade.
 
 ```sh
 cargo run -- status
@@ -300,7 +301,7 @@ The first vertical slice was validated on 2026-09-05 with an OBSBOT Tiny 2
 - after the repair restart, the real 720p30 pipeline remained healthy for more
   than six minutes on the camera's 480 Mbit/s fallback link, passing 11,000
   frames without another USB event or required restart;
-- all 28 daemon tests, 2 MCP tests, 6 Python tests, JavaScript syntax checks,
+- all 29 daemon tests, 2 MCP tests, 6 Python tests, JavaScript syntax checks,
   formatting, lint, configuration, protocol, and API checks passed.
 
 An extended run changed the camera result: after approximately six minutes of

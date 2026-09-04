@@ -84,20 +84,29 @@ pub fn router(
         .with_state(state)
 }
 
-async fn index() -> Html<&'static str> {
-    Html(include_str!("../web/index.html"))
+async fn index() -> impl IntoResponse {
+    (
+        [(header::CACHE_CONTROL, "no-store")],
+        Html(include_str!("../web/index.html")),
+    )
 }
 
 async fn app_js() -> impl IntoResponse {
     (
-        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
         include_str!("../web/app.js"),
     )
 }
 
 async fn styles_css() -> impl IntoResponse {
     (
-        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        [
+            (header::CONTENT_TYPE, "text/css; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
         include_str!("../web/styles.css"),
     )
 }
@@ -599,6 +608,24 @@ mod tests {
 
     use super::*;
     use crate::{camera, config::CameraAdapter};
+
+    #[tokio::test]
+    async fn embedded_ui_assets_are_not_cached() {
+        let mut config = Config::default();
+        config.perception.enabled = false;
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = router(config, Runtime::new(), PreviewHub::new(), None, shutdown_rx);
+
+        for path in ["/", "/assets/app.js", "/assets/styles.css"] {
+            let response = app
+                .clone()
+                .oneshot(Request::get(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        }
+    }
 
     #[tokio::test]
     async fn preview_stream_closes_when_shutdown_starts() {
