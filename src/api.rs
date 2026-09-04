@@ -24,7 +24,7 @@ use crate::{
     model::{PerceptionObservation, ScenarioActivation, unix_ms},
     pipeline::PreviewHub,
     runtime::Runtime,
-    scenario::OpenPalmStabilizer,
+    scenario::{FacePresenceStabilizer, OpenPalmStabilizer, PresenceChange},
 };
 
 #[derive(Clone)]
@@ -32,6 +32,7 @@ struct ApiState {
     config: Config,
     runtime: Runtime,
     stabilizer: Arc<Mutex<OpenPalmStabilizer>>,
+    face_presence: Arc<Mutex<FacePresenceStabilizer>>,
     preview: PreviewHub,
     camera: Option<CameraHandle>,
 }
@@ -44,6 +45,7 @@ pub fn router(
 ) -> Router {
     let state = ApiState {
         stabilizer: Arc::new(Mutex::new(OpenPalmStabilizer::new(&config.perception))),
+        face_presence: Arc::new(Mutex::new(FacePresenceStabilizer::new(&config.perception))),
         config,
         runtime,
         preview,
@@ -339,6 +341,27 @@ async fn perception_observation(
             runtime.perception.latency_ms = observation.latency_ms;
         })
         .await;
+
+    let presence_change = state
+        .face_presence
+        .lock()
+        .await
+        .observe(observation.face_detected, observation.captured_at_ms);
+    if let Some(change) = presence_change {
+        let kind = match change {
+            PresenceChange::Started => "face.present.started",
+            PresenceChange::Ended => "face.present.ended",
+        };
+        state
+            .runtime
+            .emit(
+                kind,
+                "perception",
+                None,
+                json!({"frame_id": observation.frame_id}),
+            )
+            .await;
+    }
 
     let open_palm = observation.gesture.as_deref() == Some("open_palm");
     let held = state.stabilizer.lock().await.observe(

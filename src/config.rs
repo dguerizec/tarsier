@@ -161,6 +161,8 @@ pub struct PerceptionConfig {
     pub dwell_ms: u64,
     pub release_confidence: f32,
     pub cooldown_ms: u64,
+    pub face_dwell_ms: u64,
+    pub face_release_ms: u64,
 }
 
 impl Default for PerceptionConfig {
@@ -175,6 +177,8 @@ impl Default for PerceptionConfig {
             dwell_ms: 800,
             release_confidence: 0.65,
             cooldown_ms: 3000,
+            face_dwell_ms: 300,
+            face_release_ms: 500,
         }
     }
 }
