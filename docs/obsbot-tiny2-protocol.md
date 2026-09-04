@@ -76,6 +76,28 @@ Tarsier records a gesture setting only after the UVC write succeeds. It does
 not issue an additional proprietary readback while video is streaming, so each
 setting starts as unknown after a daemon restart.
 
+## Standard UVC zoom
+
+Lens zoom does not use the proprietary selector-2 mailbox. Tarsier discovers
+the standard `V4L2_CID_ZOOM_ABSOLUTE` range with `VIDIOC_QUERYCTRL`, reads its
+current value with `VIDIOC_G_CTRL`, and writes targets with `VIDIOC_S_CTRL`.
+These operations run through the same camera-owner thread as extension-unit
+traffic, so callers cannot interleave zoom and vendor commands.
+
+The public API expresses the Tiny 2's physical magnification as x1 through x4.
+For a discovered raw range from `minimum` to `maximum`, Tarsier uses:
+
+```text
+position = (magnification - 1) / 3
+raw = minimum + position * (maximum - minimum)
+```
+
+The raw result is clamped and snapped to the reported step. The inverse mapping
+is used for startup readback. The tested Tiny 2 reported a range of 0 through
+100 with step 1: x2.5 therefore maps to raw 50, and x1 maps to raw 0. Both
+positions were read back successfully while 720p30 capture continued without a
+pipeline restart or USB re-enumeration.
+
 ## Concurrency evidence and safety decision
 
 Earlier investigation established that extension-unit GET and SET operations
@@ -113,8 +135,8 @@ telemetry.
 - These values are validated only for the device and firmware above.
 - Tarsier does not link, load, bundle, or redistribute a proprietary SDK.
 - The adapter does not yet discover compatible firmware capabilities.
-- Sleep, direct lens zoom, image controls, tracking modes, and firmware update
-  operations are deliberately unimplemented.
+- Sleep, image controls, tracking modes, and firmware update operations are
+  deliberately unimplemented.
 - Built-in gesture state is the last setting accepted by the control transport,
   not device readback, and returns to unknown when the daemon restarts.
 - Requested absolute angles and final physical attitude can differ; calibration
