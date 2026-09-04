@@ -20,8 +20,8 @@ def build_parser() -> argparse.ArgumentParser:
     models.add_argument("--download", action="store_true")
     models.add_argument("--force", action="store_true")
 
-    serve = subparsers.add_parser("serve", help="process frames from a V4L2 source")
-    serve.add_argument("--device", default="/dev/video42")
+    serve = subparsers.add_parser("serve", help="process frames from MJPEG or a V4L2 source")
+    serve.add_argument("--source", "--device", dest="source")
     serve.add_argument("--width", type=int, default=640)
     serve.add_argument("--height", type=int, default=360)
     serve.add_argument("--fps", type=float, default=10.0)
@@ -59,8 +59,9 @@ def main() -> None:
             "`tarsier-perception models --download` first"
         )
     try:
+        source = args.source or f"{args.daemon_url.rstrip('/')}/api/v1/preview.mjpeg"
         run_worker(
-            device=args.device,
+            source=source,
             width=args.width,
             height=args.height,
             fps=args.fps,

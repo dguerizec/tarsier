@@ -33,6 +33,7 @@ def test_selects_best_available_gesture() -> None:
 def test_empty_results_are_an_absent_gesture() -> None:
     assert select_gesture([]) == (None, 0.0)
     assert select_gesture([[]]) == (None, 0.0)
+    assert select_gesture([[Category("None", 0.99)]]) == (None, 0.0)
 
 
 def test_missing_models_are_reported_as_unverified(tmp_path: Path) -> None:

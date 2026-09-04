@@ -8,7 +8,10 @@ use std::{
 use serde_json::json;
 use tokio::{process::Command, sync::watch, task::JoinHandle, time::sleep};
 
-use crate::{config::PerceptionConfig, runtime::Runtime};
+use crate::{
+    config::{PerceptionConfig, PerceptionSource},
+    runtime::Runtime,
+};
 
 pub struct PerceptionSupervisor {
     shutdown: watch::Sender<bool>,
@@ -53,6 +56,7 @@ async fn supervise(
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .kill_on_drop(true);
+        close_inherited_file_descriptors(&mut command);
 
         match command.spawn() {
             Ok(mut child) => {
@@ -138,7 +142,7 @@ fn worker_arguments(config: &PerceptionConfig, daemon_url: &str) -> Vec<String> 
     } else {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(&config.worker_project)
     };
-    vec![
+    let mut arguments = vec![
         "run".into(),
         "--project".into(),
         project.to_string_lossy().into_owned(),
@@ -147,8 +151,6 @@ fn worker_arguments(config: &PerceptionConfig, daemon_url: &str) -> Vec<String> 
         "--daemon-url".into(),
         daemon_url.into(),
         "serve".into(),
-        "--device".into(),
-        config.device.clone(),
         "--width".into(),
         config.width.to_string(),
         "--height".into(),
@@ -157,8 +159,37 @@ fn worker_arguments(config: &PerceptionConfig, daemon_url: &str) -> Vec<String> 
         config.fps.to_string(),
         "--minimum-confidence".into(),
         config.detection_confidence.to_string(),
-    ]
+    ];
+    if config.source == PerceptionSource::Device {
+        arguments.push("--source".into());
+        arguments.push(config.device.clone());
+    }
+    arguments
 }
+
+#[cfg(target_os = "linux")]
+fn close_inherited_file_descriptors(command: &mut Command) {
+    // GStreamer may leave device descriptors without FD_CLOEXEC. Mark every
+    // non-stdio descriptor close-on-exec so the worker cannot inherit camera ownership.
+    unsafe {
+        command.pre_exec(|| {
+            let result = nix::libc::syscall(
+                nix::libc::SYS_close_range,
+                3_u32,
+                u32::MAX,
+                nix::libc::CLOSE_RANGE_CLOEXEC,
+            );
+            if result == -1 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn close_inherited_file_descriptors(_: &mut Command) {}
 
 #[cfg(test)]
 mod tests {
@@ -168,16 +199,27 @@ mod tests {
     fn worker_command_uses_configured_stream_and_loopback_api() {
         let config = PerceptionConfig::default();
         let args = worker_arguments(&config, "http://127.0.0.1:8742");
-        assert!(
-            args.windows(2)
-                .any(|pair| pair == ["--device", "/dev/video42"])
-        );
+        assert!(!args.iter().any(|argument| argument == "--source"));
         assert!(
             args.windows(2)
                 .any(|pair| pair == ["--daemon-url", "http://127.0.0.1:8742"])
         );
         assert!(args.windows(2).any(|pair| pair == ["--fps", "10"]));
         assert!(args.iter().any(|argument| argument == "--locked"));
+    }
+
+    #[test]
+    fn device_source_is_passed_explicitly() {
+        let config = PerceptionConfig {
+            source: PerceptionSource::Device,
+            device: "/dev/video43".into(),
+            ..PerceptionConfig::default()
+        };
+        let args = worker_arguments(&config, "http://127.0.0.1:8742");
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--source", "/dev/video43"])
+        );
     }
 
     #[test]

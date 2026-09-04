@@ -38,7 +38,8 @@ def select_gesture(gestures: list[list[Any]]) -> tuple[str | None, float]:
     if not candidates:
         return None, 0.0
     best = max(candidates, key=lambda category: float(category.score or 0.0))
-    return normalize_gesture(best.category_name), float(best.score or 0.0)
+    gesture = normalize_gesture(best.category_name)
+    return (gesture, float(best.score or 0.0)) if gesture else (None, 0.0)
 
 
 class MediaPipeDetector:
@@ -107,20 +108,23 @@ class ObservationPublisher:
             raise RuntimeError(f"failed to publish observation: {error.reason}") from error
 
 
-def capture_frames(device: str, width: int, height: int) -> Iterator[np.ndarray]:
-    source: int | str = int(device) if device.isdigit() else device
-    capture = cv2.VideoCapture(source, cv2.CAP_V4L2)
+def capture_frames(source: str, width: int, height: int) -> Iterator[np.ndarray]:
+    capture_source: int | str = int(source) if source.isdigit() else source
+    if source.startswith(("http://", "https://")):
+        capture = cv2.VideoCapture(capture_source)
+    else:
+        capture = cv2.VideoCapture(capture_source, cv2.CAP_V4L2)
     capture.set(cv2.CAP_PROP_FRAME_WIDTH, width)
     capture.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
     capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
     if not capture.isOpened():
         capture.release()
-        raise RuntimeError(f"failed to open video source {device}")
+        raise RuntimeError(f"failed to open video source {source}")
     try:
         while True:
             ok, frame = capture.read()
             if not ok:
-                raise RuntimeError(f"failed to read a frame from {device}")
+                raise RuntimeError(f"failed to read a frame from {source}")
             yield frame
     finally:
         capture.release()
@@ -128,7 +132,7 @@ def capture_frames(device: str, width: int, height: int) -> Iterator[np.ndarray]
 
 def run_worker(
     *,
-    device: str,
+    source: str,
     width: int,
     height: int,
     fps: float,
@@ -141,7 +145,7 @@ def run_worker(
     next_frame_at = time.monotonic()
     started_at = time.monotonic()
     with MediaPipeDetector(model_dir, minimum_confidence) as detector:
-        for frame_id, frame in enumerate(capture_frames(device, width, height), start=1):
+        for frame_id, frame in enumerate(capture_frames(source, width, height), start=1):
             now = time.monotonic()
             if now < next_frame_at:
                 continue

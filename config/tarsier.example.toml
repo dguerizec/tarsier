@@ -27,6 +27,7 @@ enabled = true
 supervise_worker = true
 worker_project = "worker"
 restart_delay_ms = 1000
+source = "preview"
 device = "/dev/video42"
 width = 640
 height = 360

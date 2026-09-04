@@ -214,6 +214,7 @@ pub struct PerceptionConfig {
     pub supervise_worker: bool,
     pub worker_project: PathBuf,
     pub restart_delay_ms: u64,
+    pub source: PerceptionSource,
     pub device: String,
     pub width: u32,
     pub height: u32,
@@ -234,6 +235,7 @@ impl Default for PerceptionConfig {
             supervise_worker: true,
             worker_project: "worker".into(),
             restart_delay_ms: 1000,
+            source: PerceptionSource::Preview,
             device: "/dev/video42".into(),
             width: 640,
             height: 360,
@@ -247,6 +249,14 @@ impl Default for PerceptionConfig {
             face_release_ms: 500,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PerceptionSource {
+    #[default]
+    Preview,
+    Device,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
