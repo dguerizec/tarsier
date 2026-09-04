@@ -1,351 +1,335 @@
 # Tarsier
 
 Tarsier is a local-first control and perception daemon for motorized cameras.
-It gives software agents a safe way to observe through a camera, control its
-gimbal and tracking features, and react to human face and hand poses.
+It owns camera capture and vendor control traffic, publishes a stable V4L2
+virtual camera, exposes a local API and MCP gateway, and turns MediaPipe
+observations into debounced semantic events.
 
 The name comes from the tarsier: a small primate with very large eyes and a
-highly mobile head. The project should inherit the creature's attentive and
-slightly mischievous personality without tying itself to one camera vendor.
+highly mobile head. The project inherits the creature's attentive and slightly
+mischievous personality without tying its core to one camera vendor.
 
-> Status: product and architecture draft. No implementation has been selected
-> as stable yet.
+> Status: working Linux prototype. The first vertical slice has been exercised
+> on an OBSBOT Tiny 2 with live 720p30 video, bounded gimbal control, a generic
+> V4L2 consumer, supervised local perception, HTTP/MCP controls, and the
+> embedded web UI. Camera attitude is provenance-labelled and defaults to the
+> last commanded target because extended live polling proved unsafe. See
+> [Validation](#validation) and
+> [Known limitations](#known-limitations) before relying on it unattended.
 
-## Initial use cases
+## What works
 
-The first version is intentionally limited to two use cases:
+- one Rust daemon owns `/dev/video0` and serializes OBSBOT extension-unit I/O;
+- a GStreamer tee feeds an MJPEG preview and `/dev/video42` at 720p30;
+- generic V4L2 clients can consume `/dev/video42` while perception uses the
+  daemon's internal preview branch;
+- camera attitude is explicitly labelled `last-commanded`, `measured`,
+  `simulated`, or `unavailable` rather than presenting an estimate as fact;
+- bounded absolute gimbal moves, recentering, tracking, and named presets are
+  available over HTTP and MCP;
+- a supervised Python 3.12 worker performs local MediaPipe face and canned
+  gesture recognition;
+- face presence and open-palm observations pass through dwell, release, and
+  cooldown stabilization before becoming semantic events;
+- a responsive local web UI shows the preview, telemetry, perception state,
+  presets, scenarios, and recent events;
+- snapshots are available as JPEG over HTTP and as image content over MCP.
 
-1. Let an agent inspect and control a motorized camera.
-2. Turn face and hand pose observations into reliable scenario triggers.
+OBS, Stream Deck, scripts, and similar tools are possible API clients. OBS is
+not a primary product target and is not required by Tarsier.
 
-Examples include asking an agent to frame a person, enabling or disabling
-tracking, moving to a calibrated position, taking a snapshot, or triggering an
-action after an open-palm gesture has remained stable for a configured time.
-
-Tarsier is initially a local Linux application. A future Raspberry Pi or robot
-deployment may influence portability decisions, but robotics, navigation, and
-ROS integration are not part of the initial scope.
-
-## Product principles
-
-- **Local first:** video, telemetry, configuration, and perception remain on
-  the machine unless an explicit integration sends data elsewhere.
-- **One device owner:** one daemon owns camera capture and proprietary control
-  traffic so that competing clients do not reset or destabilize the camera.
-- **Vendor-independent core:** camera-specific protocols live behind adapters.
-- **Stable semantic events:** scenarios consume events such as
-  `gesture.open_palm.started`, not raw landmarks or individual video frames.
-- **Agent safety:** every camera action is bounded, observable, rate-limited,
-  and available through an explicit allowlist.
-- **Composable video:** capture, passthrough, transformation, perception, and
-  preview are branches of one managed pipeline.
-- **Headless by default:** the daemon and CLI are the product core; the web UI
-  is an optional local control surface.
-
-## Proposed system shape
+## Architecture
 
 ```mermaid
 flowchart LR
-    Camera[Motorized UVC camera] -->|video| Pipeline[Managed GStreamer pipeline]
-    Camera <-->|UVC/XU control| Driver[Camera protocol adapter]
+    Camera[Motorized UVC camera] -->|MJPEG| Pipeline[Managed GStreamer pipeline]
+    Camera <-->|serialized UVC/XU| Adapter[Camera adapter]
 
-    Pipeline --> Loopback[V4L2 loopback output]
-    Pipeline --> Preview[Web preview]
-    Pipeline --> Perception[Face and hand perception worker]
-    Pipeline --> Transform[Optional video transforms]
+    Pipeline -->|YUY2 720p30| Loopback[V4L2 loopback]
+    Pipeline --> Preview[Internal MJPEG preview]
+    Preview --> UI[Local web UI]
+    Preview --> Worker[MediaPipe worker]
 
-    Driver <--> Core[Tarsier Rust core and event bus]
-    Perception -->|observations| Core
-    Core --> Scenarios[Scenario engine]
-    Core <--> API[HTTP and WebSocket API]
-    API <--> WebUI[Local web UI]
-    API <--> MCP[MCP gateway]
-    API <--> Controls[OBS, Stream Deck, keyboard, and scripts]
+    Adapter <--> Core[Rust runtime and event bus]
+    Worker -->|versioned observations| API[HTTP API]
+    API --> Core
+    Core --> Scenarios[Semantic stabilizers and scenarios]
+    API <--> UI
+    API <--> MCP[MCP stdio gateway]
+    API <--> Clients[Local clients]
 ```
 
-The architecture deliberately avoids a distributed message broker in the
-first version. The process-local bus should use Tokio primitives:
+The process-local bus uses Tokio primitives. External modules communicate
+through versioned HTTP schemas; they do not gain direct access to hardware or
+the bus. The Python worker receives only downscaled JPEG frames and posts
+compact observations back to the loopback-only API.
 
-- `watch` channels for latest-value state such as gimbal attitude and pipeline
-  health;
-- `broadcast` channels for observations and semantic events;
-- `mpsc` plus `oneshot` replies for commands with explicit results.
+## Requirements
 
-External modules communicate through versioned API schemas rather than gaining
-direct access to the internal bus.
+The current prototype targets Linux and expects:
 
-## Main components
+- a Rust toolchain with edition 2024 support (tested with Rust 1.93);
+- Python 3.12 and `uv`;
+- GStreamer runtime, base/good plugins, and development headers;
+- `v4l2loopback`, `v4l-utils`, and a free virtual device;
+- an OBSBOT Tiny 2 reachable through the configured video-device path for the
+  real adapter.
 
-### Rust daemon and CLI
+On Ubuntu, the native packages can be installed with:
 
-The main executable, tentatively `tarsier`, runs the daemon and exposes
-operator commands. Likely foundations are Tokio, Axum, Serde, Tracing, Clap,
-and `gstreamer-rs`.
-
-Responsibilities:
-
-- own the camera and its control channel;
-- run and supervise the video pipeline;
-- maintain the current camera, perception, and scenario state;
-- enforce command limits and serialize hardware operations;
-- expose the local HTTP/WebSocket API;
-- persist configuration and calibration;
-- publish structured logs and health metrics.
-
-Possible CLI shape:
-
-```text
-tarsier serve
-tarsier status
-tarsier camera state
-tarsier camera move --yaw -10 --pitch 2
-tarsier tracking enable
-tarsier scenario trigger whiteboard
+```sh
+sudo apt install \
+  build-essential pkg-config \
+  libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+  gstreamer1.0-tools gstreamer1.0-plugins-base \
+  gstreamer1.0-plugins-good \
+  v4l-utils v4l2loopback-dkms v4l2loopback-utils
 ```
 
-The exact command surface should follow the API schema rather than evolve as a
-separate control model.
+Load a loopback device matching the example configuration:
 
-### Camera protocol adapters
+```sh
+sudo modprobe v4l2loopback video_nr=42 card_label=Tarsier exclusive_caps=1
+```
 
-The core must not depend on or redistribute a proprietary vendor SDK. The first
-adapter may support the OBSBOT Tiny 2 using a clean custom implementation of
-the interoperability-relevant UVC extension-unit protocol learned from device
-behavior and protocol analysis.
+The physical camera and `/dev/video42` must be free before the daemon starts.
+The example uses the stable `/dev/v4l/by-id/...-video-index0` camera symlink so
+a manual restart still finds the device after USB re-enumeration.
 
-The adapter boundary should cover:
+## Quick start
 
-- device discovery and capability reporting;
-- wake, sleep, reset, and home operations;
-- pan, tilt, roll, and zoom commands where supported;
-- tracking enablement and tracking modes;
-- current gimbal attitude polling;
-- camera modes and image settings exposed by the protocol;
-- normalized errors, timeouts, and reconnect behavior.
+Install the locked Python environment and the pinned MediaPipe model assets:
 
-State polling must be conservative, configurable, and tested for coexistence
-with active video capture. A poll failure must never silently trigger a camera
-reset. The driver should distinguish an unavailable value from a zero value and
-report the source and age of every state sample.
+```sh
+uv sync --project worker --locked
+uv run --project worker tarsier-perception models --download
+```
 
-No proprietary shared object, extracted vendor binary, or dependency on a
-project that bundles such a binary belongs in the distributable project.
-Protocol research notes should record evidence and uncertainty without copying
-vendor code.
+Validate the configuration, then start Tarsier:
 
-### Video pipeline
+```sh
+cargo run -- config --config config/tarsier.example.toml
+cargo run -- serve --config config/tarsier.example.toml
+```
 
-The daemon should open the physical video device once and build a GStreamer
-pipeline with a `tee`. Initial branches are:
+Open <http://127.0.0.1:8742/> for the embedded preview and controls. In another
+terminal, inspect the daemon or consume its public virtual camera:
 
-1. A passthrough or transformed stream written to a V4L2 loopback device, for
-   example `/dev/video42`.
-2. A lower-resolution perception branch for face and hand analysis.
-3. A local preview branch for the web UI.
+```sh
+cargo run -- status
 
-The device paths, format, resolution, frame rate, and buffering policy must be
-configuration values. A sensible initial profile is 720p at 30 FPS, subject to
-measurement on the current hardware.
+gst-launch-1.0 v4l2src device=/dev/video42 \
+  ! video/x-raw,format=YUY2,width=1280,height=720,framerate=30/1 \
+  ! videoconvert ! autovideosink
+```
 
-Each branch needs independent queues and back-pressure handling so that a slow
-perception worker or browser does not interrupt the virtual camera. Pipeline
-telemetry should include negotiated format, effective FPS, dropped frames,
-queue pressure, restart count, and last error.
+Any V4L2-compatible player may replace the GStreamer command. Tarsier keeps
+the loopback output available because its own perception worker reads the
+internal MJPEG preview instead.
 
-Video transformations should use a plugin-like stage model. Background
-replacement, overlays, avatar rendering, and other expensive effects are
-future modules, not requirements for the first vertical slice.
-
-### Perception worker
-
-For the first implementation, a small Python worker using MediaPipe is a
-pragmatic way to obtain real-time face and hand landmarks while the stable
-daemon remains in Rust. The worker receives a downscaled video branch and sends
-versioned observations back over local IPC.
-
-Raw observations may contain:
-
-- timestamp and source frame identifier;
-- face pose and confidence;
-- hand side, landmarks, and confidence;
-- recognized candidate gesture;
-- processing latency and worker health.
-
-The Rust core converts noisy observations into semantic events using confidence
-thresholds, dwell time, hysteresis, debouncing, and cooldowns. This keeps
-scenario behavior deterministic and makes the perception implementation
-replaceable later.
-
-Initial gesture scope should remain small. One well-tested gesture such as an
-open palm is more valuable than a large unreliable gesture vocabulary.
-
-### Scenario engine
-
-A scenario connects a semantic event or API call to one or more named actions.
-It should be declarative and inspectable in the web UI.
-
-Example:
+For a hardware-free smoke run, copy the example configuration and set:
 
 ```toml
-[[scenarios]]
-id = "whiteboard"
+[video]
+source = "test"
+loopback_enabled = false
 
-[scenarios.trigger]
-event = "gesture.open_palm.held"
-minimum_confidence = 0.85
-dwell_ms = 1200
-cooldown_ms = 5000
-
-[[scenarios.actions]]
-type = "camera.preset"
-preset = "whiteboard"
+[camera]
+adapter = "mock"
 ```
 
-Actions may initially invoke camera operations, named HTTP callbacks, or local
-commands from an explicit allowlist. Arbitrary shell execution must not be a
-default capability.
+## Configuration
 
-### HTTP and WebSocket API
+[`config/tarsier.example.toml`](config/tarsier.example.toml) is the reference
+configuration. It defines:
 
-The API is the integration boundary for the CLI, web UI, MCP gateway, OBS,
-Stream Deck, and local automation.
+- the loopback-only server address;
+- physical and virtual video devices, frame size, rate, and preview quality;
+- camera adapter, extension-unit selector, polling cadence, and movement
+  limits;
+- worker supervision, perception rate, confidence, dwell, release, and
+  cooldown thresholds;
+- bounded named camera presets;
+- event-to-action scenario declarations.
 
-Candidate resources:
+Configuration is validated at startup and is not hot-reloaded. The default
+camera limit is +/-130 degrees yaw and +/-90 degrees pitch; every HTTP and MCP
+move is validated again by the daemon. The `mock` and `disabled` camera
+adapters support development without claiming real control hardware.
+
+`camera.poll_interval_ms = 0` disables proprietary live-attitude polling and is
+the safe default. A non-zero value enables the experimental `GIM_GET_STATE`
+query and labels successful samples `measured`, but an extended test reset the
+tested camera while streaming. Do not enable it for normal preview use.
+
+The first scenario action is deliberately small: an activation publishes the
+configured action name as a structured `scenario.activated` event. It does not
+run arbitrary shell commands or make outbound requests.
+
+## HTTP and WebSocket API
+
+The default server binds only to `127.0.0.1:8742`.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/v1/health` | Health, version, and uptime |
+| `GET` | `/api/v1/state` | Complete runtime state |
+| `GET` | `/api/v1/config` | Effective configuration |
+| `GET` | `/api/v1/camera/state` | Camera availability and attitude |
+| `POST` | `/api/v1/camera/move` | Bounded absolute yaw/pitch/roll target |
+| `POST` | `/api/v1/camera/tracking` | Enable or disable built-in tracking |
+| `POST` | `/api/v1/camera/actions/recenter` | Recenter the gimbal |
+| `GET` | `/api/v1/camera/presets` | List configured presets |
+| `POST` | `/api/v1/camera/presets/{id}/recall` | Recall a named preset |
+| `GET` | `/api/v1/camera/snapshot` | Latest preview frame as JPEG |
+| `GET` | `/api/v1/preview.mjpeg` | Multipart MJPEG preview |
+| `GET` | `/api/v1/scenarios` | List configured scenarios |
+| `POST` | `/api/v1/scenarios/{id}/trigger` | Manually activate a scenario |
+| `GET` | `/api/v1/events/recent` | Recent semantic and control events |
+| `WS` | `/api/v1/events` | Live event stream |
+
+`POST /api/v1/perception/observations` is the local worker ingestion endpoint.
+It is not intended as an operator control.
+
+Examples:
+
+```sh
+curl -fsS http://127.0.0.1:8742/api/v1/state
+
+curl -fsS -X POST http://127.0.0.1:8742/api/v1/camera/move \
+  -H 'content-type: application/json' \
+  -d '{"yaw":-20,"pitch":5,"roll":0}'
+
+curl -fsS http://127.0.0.1:8742/api/v1/camera/snapshot \
+  --output snapshot.jpg
+```
+
+## MCP gateway
+
+The `tarsier-mcp` binary is a stateless stdio gateway over the daemon's public
+API. Start the daemon first, then configure an MCP client to execute:
+
+```sh
+cargo run --bin tarsier-mcp -- \
+  --daemon-url http://127.0.0.1:8742
+```
+
+For a release installation, use the built executable instead:
 
 ```text
-GET  /api/v1/health
-GET  /api/v1/camera/state
-POST /api/v1/camera/move
-POST /api/v1/camera/tracking
-POST /api/v1/camera/presets/{id}/recall
-POST /api/v1/camera/snapshot
-GET  /api/v1/scenarios
-POST /api/v1/scenarios/{id}/trigger
-GET  /api/v1/config
-PATCH /api/v1/config
-WS   /api/v1/events
+/absolute/path/to/tarsier-mcp --daemon-url http://127.0.0.1:8742
 ```
 
-The first server should bind to loopback only. Remote binding, authentication,
-and authorization require an explicit configuration and threat model.
+The gateway exposes eleven typed tools:
 
-Stream Deck and OBS integrations should call named API actions. They should not
-own the physical camera or reimplement protocol logic.
+- read-only: `get_state`, `get_config`, `list_scenarios`, `recent_events`,
+  `list_camera_presets`, and `take_snapshot`;
+- mutating: `move_camera`, `set_tracking`, `recenter_camera`,
+  `recall_camera_preset`, and `trigger_scenario`.
 
-### MCP gateway
+MCP transports commands, state, events, and snapshots, not continuous video.
+Movement limits and event recording remain enforced by the daemon regardless
+of the MCP client.
 
-MCP should be a small gateway over the daemon API, not the owner of hardware or
-video. This separation lets Tarsier run continuously while agents connect and
-disconnect freely.
+## Development and tests
 
-Candidate tools and resources:
+Run the complete automated check set with:
 
-- `camera_get_state`
-- `camera_move`
-- `camera_set_tracking`
-- `camera_recall_preset`
-- `camera_snapshot`
-- `scenario_list`
-- `scenario_trigger`
-- recent semantic events and current telemetry as readable resources
+```sh
+cargo fmt --all -- --check
+cargo clippy --all-targets -- -D warnings
+cargo test --all-targets
+uv lock --project worker --check
+uv run --project worker ruff check worker
+uv run --project worker pytest -q worker
+node --check web/app.js
+```
 
-MCP is appropriate for snapshots, structured observations, and commands. It is
-not the transport for a continuous video stream. An agent can request a fresh
-image or subscribe to derived events while the video remains in the managed
-pipeline.
+The worker can exercise face and gesture stabilization deterministically
+without camera hardware:
 
-Read-only tools and mutating tools must be clearly separated. Movement limits,
-tracking changes, and scenario execution should remain subject to daemon-side
-policy regardless of the MCP client.
+```sh
+uv run --project worker tarsier-perception mock --open-palm
+```
 
-### Web UI
+Protocol construction, CRCs, packet validation, state stabilization, safety
+limits, routing, configuration, and MCP negotiation have focused tests. See
+[`docs/obsbot-tiny2-protocol.md`](docs/obsbot-tiny2-protocol.md) for the
+clean-room interoperability notes behind the first camera adapter.
 
-The optional local UI should provide:
+## Validation
 
-- live preview;
-- gimbal attitude, zoom, tracking mode, and sample age;
-- physical and virtual video device status;
-- pipeline FPS, latency, dropped frames, and restart history;
-- face and hand overlays for debugging;
-- recent semantic events and scenario activity;
-- camera presets and calibration controls;
-- scenario thresholds, dwell, hysteresis, and cooldown settings;
-- configuration import/export and diagnostics.
+The first vertical slice was validated on 2026-09-05 with an OBSBOT Tiny 2
+(USB ID `3564:fef8`, firmware `6.0.10.4`) on Ubuntu 26.04:
 
-The UI consumes the public API and must not contain privileged hardware logic.
+- the physical pipeline sustained approximately 30 FPS at 1280x720 with no
+  pipeline restart;
+- a short attitude-polling run returned changing live values during capture;
+- a generic GStreamer V4L2 reader consumed 90 frames from `/dev/video42` and
+  exited successfully while preview, perception, and polling continued;
+- the camera kept the same USB bus address throughout the initial loopback,
+  move, tracking, snapshot, UI, and MCP checks;
+- a bounded move and tracking-disable request were accepted, reflected in
+  telemetry/state, and recorded on the event bus;
+- the supervised MediaPipe worker detected a real face with roughly 10 ms
+  processing latency on the tested machine;
+- the HTTP snapshot returned a valid 640x360 JPEG;
+- a real MCP stdio client handshake listed all eleven tools and returned both
+  live structured camera state and a JPEG snapshot;
+- the embedded UI was rendered against the live daemon at desktop size and
+  showed the real preview, telemetry, perception health, and events;
+- all Rust, Python, JavaScript, formatting, lint, configuration, protocol, API,
+  and MCP automated checks passed.
 
-## Configuration and state
+The open-palm stabilizer and scenario path pass deterministic automated and
+worker-mock tests. A real open-palm attempt did not produce a gesture candidate
+with the current model and thresholds, so physical gesture recognition is not
+yet claimed as validated.
 
-Human-edited configuration should use TOML. Runtime state, calibration, and
-logs should live under the standard XDG directories rather than beside source
-code.
+An extended run changed the camera result: after approximately six minutes of
+2 Hz proprietary attitude queries during streaming, the device disconnected
+and re-enumerated on USB. The pipeline correctly reported the failure but does
+not reconnect yet. This falsifies the earlier short-run safety assumption;
+continuous vendor-query polling is therefore disabled in the default and
+example configurations.
 
-Likely categories include:
+## Known limitations
 
-- camera identity and adapter selection;
-- safe pan, tilt, zoom, and polling limits;
-- video input/output devices and format;
-- perception model and thresholds;
-- named camera presets;
-- scenario definitions;
-- local API and access policy;
-- logging and telemetry retention.
+- only the OBSBOT Tiny 2 and its tested Linux UVC/XU path have a real adapter;
+- device discovery is configuration-driven; reconnect and pipeline restart are
+  not yet automatic;
+- the V4L2 loopback device must be created before startup;
+- absolute movement is safely bounded but has not been calibrated for precise
+  agreement between requested and settled angles;
+- live vendor attitude polling can reset the tested camera during streaming;
+  the safe default reports the last commanded target with explicit provenance;
+- live tracking state is only known after Tarsier issues a tracking command;
+- real open-palm recognition needs threshold/model/framing calibration;
+- pipeline telemetry reports effective FPS, frame count, last frame, errors,
+  and restart count, but not queue pressure or dropped-frame attribution;
+- configuration changes require a restart and runtime state is not persisted;
+- the API has no authentication because it binds to loopback only; remote
+  exposure is unsupported;
+- there is no system service, release packaging, multi-camera support, zoom
+  control, or production soak test yet.
 
-Configuration changes need validation and an explicit indication of whether
-they apply live or require a pipeline restart.
+## Product principles and next work
 
-## First vertical slice
+- **Local first:** frames, telemetry, configuration, and perception remain on
+  the machine unless an explicit future integration sends data elsewhere.
+- **One device owner:** the daemon owns physical capture and proprietary
+  control traffic; consumers use the virtual camera or public API.
+- **Vendor-independent core:** camera-specific protocols remain behind
+  adapters.
+- **Stable semantic events:** scenarios consume debounced events, not raw
+  landmarks or individual frames.
+- **Agent safety:** camera actions are bounded, observable, serialized, and
+  explicitly exposed.
+- **Headless core:** the daemon and API are the product; the web UI is a local
+  control surface.
 
-The first useful end-to-end milestone is:
-
-1. Start one Rust daemon and claim the configured camera.
-2. Capture 720p30 video and keep a V4L2 loopback output alive.
-3. Poll gimbal attitude without resetting or interrupting the camera.
-4. Display the preview and telemetry in a minimal web page.
-5. Expose safe state, movement, tracking, preset, and snapshot operations over
-   HTTP and MCP.
-6. Detect one face-pose signal and one hand gesture in a supervised worker.
-7. Turn the stable gesture into a semantic event and trigger one configured
-   scenario.
-8. Demonstrate the same scenario through an API call suitable for Stream Deck
-   or OBS.
-
-This slice validates the architecture before adding more camera models,
-gestures, transforms, audio commands, backgrounds, or avatars.
-
-## Explicit non-goals for the first version
-
-- robot navigation or motor control outside the camera gimbal;
-- ROS 2 or another distributed robotics framework;
-- cloud video processing;
-- continuous raw video transport through MCP;
-- a large gesture language;
-- speech recognition, voice commands, or speaker identification;
-- real-time background replacement or avatar rendering;
-- dependence on OBS as the primary compositor;
-- bundling or loading a proprietary camera SDK.
-
-These may become modules later, but they must not complicate the initial local
-control and pose-trigger loop.
-
-## Open decisions
-
-- Exact internal crate boundaries and workspace layout.
-- Whether the first perception transport uses a GStreamer shared-memory branch,
-  an app sink bridge, or a dedicated loopback device.
-- Browser preview transport: WebRTC, low-latency HLS, or an initial MJPEG
-  implementation.
-- The first versioned observation and semantic-event schemas.
-- How much configuration can be hot-reloaded safely.
-- Packaging model for the Python perception worker and MediaPipe assets.
-- Test fixtures for protocol packets and recorded video without requiring live
-  hardware in every test.
-- Licensing and publication strategy.
-
-## Definition of success
-
-Tarsier succeeds when a local agent can safely ask what the camera sees, inspect
-its current orientation, change framing or tracking, and react to a deliberate
-human gesture while another application consumes a stable virtual-camera feed.
-The operator should be able to understand and override all of this from one
-local web interface.
+The next focused increments are a safe live-attitude source (or an explicit
+last-commanded product contract), device reconnect/recovery, and real open-palm
+calibration. Background replacement, avatars, speech, robotics, ROS, cloud
+video processing, and a large gesture vocabulary remain outside the first
+version.
