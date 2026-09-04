@@ -347,7 +347,7 @@ async fn preview_mjpeg(State(state): State<ApiState>) -> Response {
             }
             let frame = receiver.borrow_and_update().clone();
             let Some(frame) = frame else {
-                continue;
+                break;
             };
             let part_header = Bytes::from(format!(
                 "--tarsier-frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",

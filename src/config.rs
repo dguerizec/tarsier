@@ -51,6 +51,9 @@ impl Config {
         if self.video.preview_quality == 0 || self.video.preview_quality > 100 {
             bail!("video preview_quality must be between 1 and 100");
         }
+        if self.video.restart_delay_ms == 0 {
+            bail!("video restart_delay_ms must be greater than zero");
+        }
         if self.camera.poll_interval_ms != 0
             && self.camera.poll_interval_ms < self.camera.minimum_command_interval_ms
         {
@@ -146,6 +149,7 @@ pub struct VideoConfig {
     pub preview_height: u32,
     pub preview_quality: u32,
     pub loopback_enabled: bool,
+    pub restart_delay_ms: u64,
 }
 
 impl Default for VideoConfig {
@@ -161,6 +165,7 @@ impl Default for VideoConfig {
             preview_height: 360,
             preview_quality: 75,
             loopback_enabled: true,
+            restart_delay_ms: 1000,
         }
     }
 }
@@ -343,6 +348,13 @@ mod tests {
     fn rejects_zero_perception_rate() {
         let mut config = Config::default();
         config.perception.fps = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_disabled_video_recovery() {
+        let mut config = Config::default();
+        config.video.restart_delay_ms = 0;
         assert!(config.validate().is_err());
     }
 

@@ -12,6 +12,7 @@ preview_width = 640
 preview_height = 360
 preview_quality = 75
 loopback_enabled = true
+restart_delay_ms = 1000
 
 [camera]
 adapter = "obsbot-tiny-2"
