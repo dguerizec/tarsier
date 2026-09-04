@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     net::SocketAddr,
     path::{Path, PathBuf},
 };
@@ -13,6 +14,7 @@ pub struct Config {
     pub video: VideoConfig,
     pub camera: CameraConfig,
     pub perception: PerceptionConfig,
+    pub presets: Vec<CameraPresetConfig>,
     pub scenarios: Vec<ScenarioConfig>,
 }
 
@@ -23,6 +25,7 @@ impl Default for Config {
             video: VideoConfig::default(),
             camera: CameraConfig::default(),
             perception: PerceptionConfig::default(),
+            presets: vec![CameraPresetConfig::default()],
             scenarios: vec![ScenarioConfig::default()],
         }
     }
@@ -66,8 +69,52 @@ impl Config {
         if self.perception.release_confidence >= self.perception.minimum_confidence {
             bail!("perception release_confidence must be below minimum_confidence");
         }
+        let mut preset_ids = HashSet::new();
+        for preset in &self.presets {
+            if !valid_identifier(&preset.id) {
+                bail!(
+                    "camera preset IDs may contain only ASCII letters, digits, dots, underscores, and hyphens"
+                );
+            }
+            if !preset_ids.insert(&preset.id) {
+                bail!("camera preset IDs must be unique");
+            }
+            if !preset.yaw.is_finite()
+                || !preset.pitch.is_finite()
+                || !preset.roll.is_finite()
+                || preset.yaw.abs() > self.camera.max_yaw_degrees
+                || preset.pitch.abs() > self.camera.max_pitch_degrees
+                || preset.roll.abs() > 45.0
+            {
+                bail!(
+                    "camera preset angles must be finite and within the configured safety limits"
+                );
+            }
+        }
+        let mut scenario_ids = HashSet::new();
+        for scenario in &self.scenarios {
+            if !valid_identifier(&scenario.id) {
+                bail!(
+                    "scenario IDs may contain only ASCII letters, digits, dots, underscores, and hyphens"
+                );
+            }
+            if !scenario_ids.insert(&scenario.id) {
+                bail!("scenario IDs must be unique");
+            }
+            if scenario.event.trim().is_empty() || scenario.action.trim().is_empty() {
+                bail!("scenario events and actions must not be empty");
+            }
+        }
         Ok(())
     }
+}
+
+fn valid_identifier(identifier: &str) -> bool {
+    !identifier.is_empty()
+        && identifier.len() <= 64
+        && identifier
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -209,6 +256,26 @@ pub struct ScenarioConfig {
     pub action: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct CameraPresetConfig {
+    pub id: String,
+    pub yaw: f32,
+    pub pitch: f32,
+    #[serde(default)]
+    pub roll: f32,
+}
+
+impl Default for CameraPresetConfig {
+    fn default() -> Self {
+        Self {
+            id: "center".into(),
+            yaw: 0.0,
+            pitch: 0.0,
+            roll: 0.0,
+        }
+    }
+}
+
 impl Default for ScenarioConfig {
     fn default() -> Self {
         Self {
@@ -247,6 +314,24 @@ mod tests {
     fn rejects_zero_perception_rate() {
         let mut config = Config::default();
         config.perception.fps = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_unsafe_or_duplicate_camera_presets() {
+        let mut unsafe_config = Config::default();
+        unsafe_config.presets[0].yaw = 140.0;
+        assert!(unsafe_config.validate().is_err());
+
+        let mut duplicate_config = Config::default();
+        duplicate_config.presets.push(CameraPresetConfig::default());
+        assert!(duplicate_config.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_duplicate_scenarios() {
+        let mut config = Config::default();
+        config.scenarios.push(ScenarioConfig::default());
         assert!(config.validate().is_err());
     }
 }

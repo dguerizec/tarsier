@@ -39,6 +39,12 @@ cooldown_ms = 3000
 face_dwell_ms = 300
 face_release_ms = 500
 
+[[presets]]
+id = "center"
+yaw = 0.0
+pitch = 0.0
+roll = 0.0
+
 [[scenarios]]
 id = "open-palm-demo"
 enabled = true

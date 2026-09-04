@@ -27,7 +27,7 @@ function render(next) {
   $("#perception-error").textContent = perception.error || "";
   $("#camera-error").hidden = !camera.error;
   $("#camera-error").textContent = camera.error || "";
-  document.querySelectorAll("[data-action]").forEach((button) => { button.disabled = !camera.available; });
+  document.querySelectorAll("[data-action], [data-preset]").forEach((button) => { button.disabled = !camera.available; });
 }
 
 function appendEvent(event) {
@@ -44,6 +44,23 @@ function appendEvent(event) {
 async function loadRecentEvents() {
   const response = await fetch("/api/v1/events/recent");
   for (const event of await response.json()) appendEvent(event);
+}
+
+async function loadPresets() {
+  const response = await fetch("/api/v1/camera/presets");
+  const presets = await response.json();
+  const container = $("#presets");
+  for (const preset of presets) {
+    const button = document.createElement("button");
+    button.className = "secondary";
+    button.dataset.preset = preset.id;
+    button.textContent = preset.id;
+    button.addEventListener("click", async () => {
+      await fetch(`/api/v1/camera/presets/${encodeURIComponent(preset.id)}/recall`, { method: "POST" });
+    });
+    container.append(button);
+  }
+  if (state) render(state);
 }
 
 function connect() {
@@ -77,4 +94,5 @@ document.querySelectorAll("[data-action]").forEach((button) => {
 
 setInterval(() => state && render(state), 500);
 loadRecentEvents().catch(console.error);
+loadPresets().catch(console.error);
 connect();

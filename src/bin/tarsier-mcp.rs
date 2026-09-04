@@ -54,6 +54,12 @@ struct ScenarioParams {
     id: String,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct CameraPresetParams {
+    #[schemars(description = "Configured camera preset identifier")]
+    id: String,
+}
+
 impl TarsierGateway {
     fn new(daemon_url: String) -> anyhow::Result<Self> {
         let daemon_url = daemon_url.trim_end_matches('/').to_owned();
@@ -117,6 +123,15 @@ impl TarsierGateway {
     }
 
     #[tool(
+        description = "List configured camera presets and their bounded orientations",
+        annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
+    )]
+    async fn list_camera_presets(&self) -> CallToolResult {
+        self.request(Method::GET, "/api/v1/camera/presets", None)
+            .await
+    }
+
+    #[tool(
         description = "Move the camera gimbal to a bounded absolute orientation",
         annotations(
             read_only_hint = false,
@@ -167,6 +182,32 @@ impl TarsierGateway {
     async fn recenter_camera(&self) -> CallToolResult {
         self.request(Method::POST, "/api/v1/camera/actions/recenter", None)
             .await
+    }
+
+    #[tool(
+        description = "Move the camera to one configured bounded preset",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn recall_camera_preset(
+        &self,
+        Parameters(params): Parameters<CameraPresetParams>,
+    ) -> CallToolResult {
+        if !valid_identifier(&params.id) {
+            return tool_error(
+                "Camera preset identifiers may contain only ASCII letters, digits, dots, underscores, and hyphens",
+            );
+        }
+        self.request(
+            Method::POST,
+            &format!("/api/v1/camera/presets/{}/recall", params.id),
+            None,
+        )
+        .await
     }
 
     #[tool(
@@ -315,7 +356,7 @@ mod tests {
 
         let client = ().serve(client_transport).await.unwrap();
         let tools = client.list_all_tools().await.unwrap();
-        assert_eq!(tools.len(), 9);
+        assert_eq!(tools.len(), 11);
         assert!(tools.iter().any(|tool| tool.name == "get_state"));
 
         let result = client

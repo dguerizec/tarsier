@@ -20,7 +20,7 @@ use tower_http::trace::TraceLayer;
 
 use crate::{
     camera::CameraHandle,
-    config::{Config, ScenarioConfig},
+    config::{CameraPresetConfig, Config, ScenarioConfig},
     model::{PerceptionObservation, ScenarioActivation, unix_ms},
     pipeline::PreviewHub,
     runtime::Runtime,
@@ -61,6 +61,11 @@ pub fn router(
         .route("/api/v1/camera/move", post(move_camera))
         .route("/api/v1/camera/tracking", post(set_tracking))
         .route("/api/v1/camera/actions/{action}", post(camera_action))
+        .route("/api/v1/camera/presets", get(camera_presets))
+        .route(
+            "/api/v1/camera/presets/{id}/recall",
+            post(recall_camera_preset),
+        )
         .route("/api/v1/config", get(effective_config))
         .route("/api/v1/events", get(events_socket))
         .route("/api/v1/events/recent", get(recent_events))
@@ -116,6 +121,10 @@ async fn current_state(State(state): State<ApiState>) -> Json<crate::model::Runt
 
 async fn camera_state(State(state): State<ApiState>) -> Json<crate::model::CameraState> {
     Json(state.runtime.state().await.camera)
+}
+
+async fn camera_presets(State(state): State<ApiState>) -> Json<Vec<CameraPresetConfig>> {
+    Json(state.config.presets)
 }
 
 #[derive(Deserialize)]
@@ -184,6 +193,45 @@ async fn camera_action(
             Json(json!({"error": "unknown camera action"})),
         )
             .into_response(),
+    }
+}
+
+async fn recall_camera_preset(
+    State(state): State<ApiState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Response {
+    let Some(preset) = state
+        .config
+        .presets
+        .iter()
+        .find(|preset| preset.id == id)
+        .cloned()
+    else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "camera preset not found"})),
+        )
+            .into_response();
+    };
+    let Some(camera) = state.camera.clone() else {
+        return camera_unavailable();
+    };
+    match camera.move_to(preset.yaw, preset.pitch, preset.roll).await {
+        Ok(()) => {
+            record_camera_command(
+                &state,
+                "camera.preset.recalled",
+                json!({
+                    "id": preset.id,
+                    "yaw": preset.yaw,
+                    "pitch": preset.pitch,
+                    "roll": preset.roll,
+                }),
+            )
+            .await;
+            StatusCode::ACCEPTED.into_response()
+        }
+        Err(error) => command_error(error),
     }
 }
 
@@ -475,3 +523,39 @@ async fn stream_events(socket: WebSocket, runtime: Runtime) {
 
 #[allow(dead_code)]
 fn infallible(_: Infallible) {}
+
+#[cfg(test)]
+mod tests {
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+
+    use super::*;
+    use crate::{camera, config::CameraAdapter};
+
+    #[tokio::test]
+    async fn preset_recall_uses_camera_owner_and_emits_an_event() {
+        let mut config = Config::default();
+        config.camera.adapter = CameraAdapter::Mock;
+        config.perception.enabled = false;
+        let runtime = Runtime::new();
+        let camera = camera::start(config.camera.clone(), runtime.clone())
+            .await
+            .unwrap();
+        let app = router(config, runtime.clone(), PreviewHub::new(), camera);
+
+        let response = app
+            .oneshot(
+                Request::post("/api/v1/camera/presets/center/recall")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let events = runtime.recent_events().await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "camera.preset.recalled");
+        assert_eq!(events[0].data["id"], "center");
+    }
+}

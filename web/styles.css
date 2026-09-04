@@ -35,6 +35,7 @@ main { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(17rem, .85
 .metrics span, .hint { color: var(--muted); font-size: .72rem; }
 .metrics strong { font-variant-numeric: tabular-nums; }
 .controls { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1rem; }
+.preset-controls { margin-top: .5rem; }
 button { border: 0; border-radius: .6rem; padding: .65rem .9rem; background: var(--green); color: #0a0d0a; font-weight: 700; cursor: pointer; }
 button.secondary { background: #273229; color: #f2f5ef; }
 button:disabled { opacity: .45; cursor: not-allowed; }
