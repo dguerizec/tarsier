@@ -46,6 +46,18 @@
           <button data-action="tracking-off" class="secondary">Stop tracking</button>
         </div>
         <div id="presets" class="controls preset-controls"></div>
+        <div class="camera-subsection manual-zoom">
+          <div class="subsection-title">
+            <h3>Manual zoom</h3>
+            <output id="zoom-value" for="zoom-slider">Unknown</output>
+          </div>
+          <div class="zoom-control">
+            <input id="zoom-slider" type="range" min="1" max="4" step="0.1" value="1" aria-describedby="zoom-help" disabled>
+            <button id="zoom-reset" class="secondary compact" type="button" disabled>Reset ×1</button>
+          </div>
+          <div class="zoom-scale" aria-hidden="true"><span>×1</span><span>×4</span></div>
+          <p id="zoom-help" class="control-hint">Updates continuously while you drag.</p>
+        </div>
         <div class="camera-subsection">
           <div class="subsection-title">
             <h3>Built-in gestures</h3>

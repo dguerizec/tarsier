@@ -118,20 +118,24 @@ async fn styles_css() -> impl IntoResponse {
     )
 }
 
-async fn health(State(state): State<ApiState>) -> Json<Value> {
+async fn health(State(state): State<ApiState>) -> impl IntoResponse {
     let snapshot = state.runtime.state().await;
-    Json(json!({
-        "status": if snapshot.pipeline.error.is_some()
-            || snapshot.camera.error.is_some()
-            || snapshot.perception.error.is_some()
-        {
-            "degraded"
-        } else {
-            "ok"
-        },
-        "version": snapshot.version,
-        "uptime_ms": unix_ms().saturating_sub(snapshot.started_at_ms),
-    }))
+    (
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(json!({
+            "status": if snapshot.pipeline.error.is_some()
+                || snapshot.camera.error.is_some()
+                || snapshot.perception.error.is_some()
+            {
+                "degraded"
+            } else {
+                "ok"
+            },
+            "version": snapshot.version,
+            "started_at_ms": snapshot.started_at_ms,
+            "uptime_ms": unix_ms().saturating_sub(snapshot.started_at_ms),
+        })),
+    )
 }
 
 async fn current_state(State(state): State<ApiState>) -> Json<crate::model::RuntimeState> {
@@ -695,6 +699,27 @@ mod tests {
             assert_eq!(response.status(), StatusCode::OK);
             assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
         }
+    }
+
+    #[tokio::test]
+    async fn health_identifies_the_running_daemon_instance() {
+        let mut config = Config::default();
+        config.perception.enabled = false;
+        let runtime = Runtime::new();
+        let expected_started_at_ms = runtime.state().await.started_at_ms;
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = router(config, runtime, PreviewHub::new(), None, shutdown_rx);
+
+        let response = app
+            .oneshot(Request::get("/api/v1/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let payload: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 1024).await.unwrap()).unwrap();
+        assert_eq!(payload["started_at_ms"], expected_started_at_ms);
     }
 
     #[tokio::test]

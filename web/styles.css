@@ -43,6 +43,12 @@ main { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(17rem, .85
 .camera-subsection { margin-top: 1rem; border-top: 1px solid var(--panel-edge); padding-top: .85rem; }
 .subsection-title { display: flex; align-items: center; justify-content: space-between; gap: 1rem; color: var(--muted); font-size: .7rem; }
 .subsection-title h3 { color: #f2f5ef; }
+.subsection-title output { color: var(--green); font-size: .78rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.zoom-control { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: .75rem; margin-top: .7rem; }
+.zoom-control input { width: 100%; accent-color: var(--green); cursor: pointer; }
+.zoom-control input:disabled { cursor: not-allowed; opacity: .45; }
+.zoom-scale { display: flex; justify-content: space-between; margin-right: 5.1rem; color: var(--muted); font-size: .65rem; }
+.control-hint { margin-top: .25rem; color: var(--muted); font-size: .68rem; }
 .feature-controls { display: grid; gap: .45rem; margin-top: .65rem; }
 .feature-control { display: grid; grid-template-columns: minmax(7rem, 1fr) 4.5rem auto; align-items: center; gap: .6rem; min-height: 2.3rem; }
 .feature-control > span { color: var(--muted); font-size: .75rem; }

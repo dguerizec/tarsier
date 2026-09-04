@@ -5,13 +5,22 @@ const preview = $("#preview");
 const overlay = $("#hand-overlay");
 const overlayContext = overlay.getContext("2d");
 const skeletonToggle = $("#skeleton-toggle");
+const zoomSlider = $("#zoom-slider");
+const zoomReset = $("#zoom-reset");
 let state = null;
 let skeletonEnabled = localStorage.getItem("tarsier.handSkeleton") === "true";
 let socketConnected = false;
 let pipelineWasRunning = null;
 let previewRetry = null;
-let gestureControlError = null;
+let daemonStartedAt = null;
+let reloadRequested = false;
+let cameraControlError = null;
+let zoomDraft = null;
+let zoomPending = false;
+let queuedZoom = null;
+let zoomSendTimer = null;
 const pendingGestureFeatures = new Set();
+const zoomUpdateIntervalMs = 100;
 
 const builtInGestureControls = [
   { feature: "target-selection", key: "target_selection", state: "#gesture-target-selection-state" },
@@ -34,6 +43,30 @@ const attitudeLabel = (source) => ({
   measured: "Measured",
   simulated: "Simulated",
 }[source] || "No attitude sample");
+const magnification = (value) => `×${Number(value).toFixed(1)}`;
+
+function observeDaemon(startedAt) {
+  if (!Number.isFinite(startedAt)) return;
+  if (daemonStartedAt == null) {
+    daemonStartedAt = startedAt;
+    return;
+  }
+  if (startedAt !== daemonStartedAt && !reloadRequested) {
+    reloadRequested = true;
+    location.reload();
+  }
+}
+
+async function checkDaemonInstance() {
+  try {
+    const response = await fetch("/api/v1/health", { cache: "no-store" });
+    if (!response.ok) return;
+    const health = await response.json();
+    observeDaemon(health.started_at_ms);
+  } catch {
+    // A stopped daemon is expected during upgrades; the WebSocket owns the status display.
+  }
+}
 
 function drawHandSkeleton(landmarks = state?.perception.hand_landmarks || []) {
   const bounds = overlay.getBoundingClientRect();
@@ -149,7 +182,19 @@ function renderBuiltInGestures(camera) {
   }
 }
 
+function renderZoom(camera) {
+  const current = camera.zoom_magnification ?? null;
+  if (zoomDraft == null && current != null) zoomSlider.value = String(current);
+  const displayed = zoomDraft ?? current;
+  $("#zoom-value").textContent = zoomPending
+    ? `Applying ${magnification(displayed)}`
+    : displayed == null ? "Unknown" : magnification(displayed);
+  zoomSlider.disabled = !camera.available;
+  zoomReset.disabled = !camera.available || zoomPending;
+}
+
 function render(next) {
+  observeDaemon(next.started_at_ms);
   state = next;
   const camera = next.camera;
   const pipeline = next.pipeline;
@@ -161,6 +206,7 @@ function render(next) {
   $("#camera-age").textContent = camera.sample_at_ms == null
     ? attitudeLabel(camera.attitude_source)
     : `${attitudeLabel(camera.attitude_source)} · ${age(camera.sample_at_ms)}`;
+  renderZoom(camera);
   renderBuiltInGestures(camera);
   $("#pipeline-summary").textContent = pipeline.running
     ? `${pipeline.width}×${pipeline.height} · ${pipeline.fps.toFixed(1)} fps · ${pipeline.frame_count} frames`
@@ -172,7 +218,7 @@ function render(next) {
   $("#gesture-icon").classList.toggle("active", perception.gesture === "open_palm");
   $("#perception-error").hidden = !perception.error;
   $("#perception-error").textContent = perception.error || "";
-  const cameraError = gestureControlError || camera.error;
+  const cameraError = cameraControlError || camera.error;
   $("#camera-error").hidden = !cameraError;
   $("#camera-error").textContent = cameraError || "";
   document.querySelectorAll("[data-action], [data-preset]").forEach((button) => { button.disabled = !camera.available; });
@@ -262,7 +308,7 @@ document.querySelectorAll("[data-gesture-feature]").forEach((button) => {
     const feature = button.dataset.gestureFeature;
     const enabled = button.dataset.gestureEnabled === "true";
     pendingGestureFeatures.add(feature);
-    gestureControlError = null;
+    cameraControlError = null;
     if (state) render(state);
     try {
       const response = await fetch(`/api/v1/camera/built-in-gestures/${feature}`, {
@@ -275,7 +321,7 @@ document.querySelectorAll("[data-gesture-feature]").forEach((button) => {
         throw new Error(payload.error || `Camera command failed (${response.status})`);
       }
     } catch (error) {
-      gestureControlError = error instanceof Error ? error.message : String(error);
+      cameraControlError = error instanceof Error ? error.message : String(error);
     } finally {
       pendingGestureFeatures.delete(feature);
       if (state) render(state);
@@ -283,8 +329,59 @@ document.querySelectorAll("[data-gesture-feature]").forEach((button) => {
   });
 });
 
+function scheduleZoom() {
+  if (zoomPending || zoomSendTimer != null) return;
+  zoomSendTimer = setTimeout(() => {
+    zoomSendTimer = null;
+    sendQueuedZoom();
+  }, zoomUpdateIntervalMs);
+}
+
+async function sendQueuedZoom() {
+  if (zoomPending || queuedZoom == null) return;
+  const value = queuedZoom;
+  queuedZoom = null;
+  zoomPending = true;
+  cameraControlError = null;
+  if (state) render(state);
+  try {
+    const response = await fetch("/api/v1/camera/zoom", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ magnification: value }),
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.error || `Camera command failed (${response.status})`);
+    }
+  } catch (error) {
+    cameraControlError = error instanceof Error ? error.message : String(error);
+  } finally {
+    zoomPending = false;
+    if (queuedZoom == null) zoomDraft = null;
+    else scheduleZoom();
+    if (state) render(state);
+  }
+}
+
+zoomSlider.addEventListener("input", () => {
+  zoomDraft = Number(zoomSlider.value);
+  queuedZoom = zoomDraft;
+  if (state) render(state);
+  scheduleZoom();
+});
+zoomReset.addEventListener("click", () => {
+  zoomSlider.value = "1";
+  zoomDraft = 1;
+  queuedZoom = 1;
+  if (state) render(state);
+  scheduleZoom();
+});
+
 setInterval(() => state && render(state), 500);
+setInterval(checkDaemonInstance, 2000);
 setSkeletonEnabled(skeletonEnabled);
 loadRecentEvents().catch(console.error);
 loadPresets().catch(console.error);
 connect();
+checkDaemonInstance();
