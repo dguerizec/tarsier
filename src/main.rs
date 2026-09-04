@@ -93,11 +93,15 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
     );
     tracing::info!(address = %config.server.bind, "Tarsier control surface is ready");
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(async move {
+            shutdown_signal().await;
+            if let Some(perception) = perception {
+                // Stop the worker before Axum drains its long-lived MJPEG
+                // connection, otherwise each side waits for the other.
+                perception.shutdown().await;
+            }
+        })
         .await?;
-    if let Some(perception) = perception {
-        perception.shutdown().await;
-    }
     Ok(())
 }
 
