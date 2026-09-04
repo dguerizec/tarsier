@@ -11,9 +11,10 @@ mischievous personality without tying its core to one camera vendor.
 
 > Status: working Linux prototype. The first vertical slice has been exercised
 > on an OBSBOT Tiny 2 with live 720p30 video, bounded gimbal control, a generic
-> V4L2 consumer, supervised local perception, HTTP/MCP controls, and the
-> embedded web UI. Camera attitude is provenance-labelled and defaults to the
-> last commanded target because extended live polling proved unsafe. See
+> V4L2 consumer, physically validated open-palm activation, supervised local
+> perception, HTTP/MCP controls, and the embedded web UI. Camera attitude is
+> provenance-labelled and defaults to the last commanded target because
+> extended live polling proved unsafe. See
 > [Validation](#validation) and
 > [Known limitations](#known-limitations) before relying on it unattended.
 
@@ -32,7 +33,8 @@ mischievous personality without tying its core to one camera vendor.
 - face presence and open-palm observations pass through dwell, release, and
   cooldown stabilization before becoming semantic events;
 - a responsive local web UI shows the preview, telemetry, perception state,
-  presets, scenarios, and recent events;
+  presets, scenarios, and recent events, with an optional 21-point hand
+  skeleton overlay;
 - snapshots are available as JPEG over HTTP and as image content over MCP.
 
 OBS, Stream Deck, scripts, and similar tools are possible API clients. OBS is
@@ -113,7 +115,9 @@ cargo run -- serve --config config/tarsier.example.toml
 ```
 
 Open <http://127.0.0.1:8742/> for the embedded preview and controls. In another
-terminal, inspect the daemon or consume its public virtual camera:
+terminal, inspect the daemon or consume its public virtual camera. The **Hand
+skeleton** button overlays MediaPipe landmarks in the UI without modifying the
+public V4L2 feed.
 
 ```sh
 cargo run -- status
@@ -273,18 +277,19 @@ The first vertical slice was validated on 2026-09-05 with an OBSBOT Tiny 2
   telemetry/state, and recorded on the event bus;
 - the supervised MediaPipe worker detected a real face with roughly 10 ms
   processing latency on the tested machine;
+- the worker published all 21 normalized landmarks for a real detected hand,
+  which the UI can draw as a toggleable canvas overlay without re-encoding the
+  preview or modifying `/dev/video42`;
+- a physically held open palm emitted `gesture.open_palm.held` at 67.6%
+  confidence after the calibrated 60% trigger threshold and activated the
+  configured `open-palm-demo` scenario;
 - the HTTP snapshot returned a valid 640x360 JPEG;
 - a real MCP stdio client handshake listed all eleven tools and returned both
   live structured camera state and a JPEG snapshot;
 - the embedded UI was rendered against the live daemon at desktop size and
   showed the real preview, telemetry, perception health, and events;
-- all Rust, Python, JavaScript, formatting, lint, configuration, protocol, API,
-  and MCP automated checks passed.
-
-The open-palm stabilizer and scenario path pass deterministic automated and
-worker-mock tests. A real open-palm attempt did not produce a gesture candidate
-with the current model and thresholds, so physical gesture recognition is not
-yet claimed as validated.
+- all 25 daemon tests, 2 MCP tests, 6 Python tests, JavaScript syntax checks,
+  formatting, lint, configuration, protocol, and API checks passed.
 
 An extended run changed the camera result: after approximately six minutes of
 2 Hz proprietary attitude queries during streaming, the device disconnected
@@ -304,7 +309,9 @@ example configurations.
 - live vendor attitude polling can reset the tested camera during streaming;
   the safe default reports the last commanded target with explicit provenance;
 - live tracking state is only known after Tarsier issues a tracking command;
-- real open-palm recognition needs threshold/model/framing calibration;
+- open-palm thresholds were calibrated for one operator and environment;
+  broader lighting, distance, skin-tone, orientation, and operator coverage is
+  still required;
 - pipeline telemetry reports effective FPS, frame count, last frame, errors,
   and restart count, but not queue pressure or dropped-frame attribution;
 - configuration changes require a restart and runtime state is not persisted;
@@ -329,7 +336,7 @@ example configurations.
   control surface.
 
 The next focused increments are a safe live-attitude source (or an explicit
-last-commanded product contract), device reconnect/recovery, and real open-palm
-calibration. Background replacement, avatars, speech, robotics, ROS, cloud
-video processing, and a large gesture vocabulary remain outside the first
-version.
+last-commanded product contract), device reconnect/recovery, and broader
+gesture robustness testing. Background replacement, avatars, full-body pose,
+speech, robotics, ROS, cloud video processing, and a large gesture vocabulary
+remain outside the first version.

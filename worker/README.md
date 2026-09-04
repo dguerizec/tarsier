@@ -30,5 +30,6 @@ uv run --project worker tarsier-perception mock --open-palm
 ```
 
 No frame or landmark leaves the machine. Only a compact observation containing
-face presence, the best gesture candidate, confidence, and processing latency
-is sent over the loopback HTTP API.
+face presence, the best gesture candidate, confidence, processing latency, and
+up to 21 normalized hand landmarks is sent over the loopback HTTP API. The web
+UI can render those points locally as a toggleable hand skeleton.
