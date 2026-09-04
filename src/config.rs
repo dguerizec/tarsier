@@ -201,6 +201,7 @@ impl Default for CameraConfig {
 #[serde(rename_all = "kebab-case")]
 pub enum CameraAdapter {
     #[default]
+    #[serde(rename = "obsbot-tiny-2", alias = "obsbot-tiny2")]
     ObsbotTiny2,
     Mock,
     Disabled,
@@ -294,6 +295,12 @@ mod tests {
     #[test]
     fn defaults_are_valid() {
         Config::default().validate().unwrap();
+    }
+
+    #[test]
+    fn example_configuration_is_loadable() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("config/tarsier.example.toml");
+        Config::load(Some(&path)).unwrap();
     }
 
     #[test]
