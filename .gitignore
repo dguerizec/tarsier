@@ -1,0 +1,7 @@
+/target/
+/.venv/
+/.pytest_cache/
+/worker/.python-version
+__pycache__/
+*.py[cod]
+.DS_Store

@@ -1,0 +1,40 @@
+[server]
+bind = "127.0.0.1:8742"
+
+[video]
+source = "camera"
+input_device = "/dev/video0"
+output_device = "/dev/video42"
+width = 1280
+height = 720
+fps = 30
+preview_width = 640
+preview_height = 360
+preview_quality = 75
+loopback_enabled = true
+
+[camera]
+adapter = "obsbot-tiny-2"
+control_device = "/dev/video0"
+xu_unit = 2
+poll_interval_ms = 500
+minimum_command_interval_ms = 20
+max_yaw_degrees = 130.0
+max_pitch_degrees = 90.0
+
+[perception]
+enabled = true
+device = "/dev/video42"
+width = 640
+height = 360
+fps = 10
+minimum_confidence = 0.85
+dwell_ms = 800
+release_confidence = 0.65
+cooldown_ms = 3000
+
+[[scenarios]]
+id = "open-palm-demo"
+enabled = true
+event = "gesture.open_palm.held"
+action = "demo.open_palm"

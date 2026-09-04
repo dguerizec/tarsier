@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>Tarsier</title>
+    <link rel="stylesheet" href="/assets/styles.css">
+  </head>
+  <body>
+    <header>
+      <div>
+        <p class="eyebrow">LOCAL CAMERA CONTROL</p>
+        <h1>Tarsier</h1>
+      </div>
+      <div id="connection" class="status status-off">Connecting</div>
+    </header>
+
+    <main>
+      <section class="preview-panel">
+        <div class="panel-title">
+          <h2>Preview</h2>
+          <span id="pipeline-summary">Pipeline stopped</span>
+        </div>
+        <div class="preview-stage">
+          <img id="preview" src="/api/v1/preview.mjpeg" alt="Camera preview">
+          <div id="preview-placeholder">Waiting for video</div>
+        </div>
+      </section>
+
+      <section class="telemetry panel">
+        <div class="panel-title"><h2>Camera</h2><span id="camera-age">No sample</span></div>
+        <div class="metrics">
+          <article><span>Yaw</span><strong id="yaw">—</strong></article>
+          <article><span>Pitch</span><strong id="pitch">—</strong></article>
+          <article><span>Roll</span><strong id="roll">—</strong></article>
+          <article><span>Tracking</span><strong id="tracking">—</strong></article>
+        </div>
+        <div class="controls">
+          <button data-action="recenter">Recenter</button>
+          <button data-action="tracking-on">Track</button>
+          <button data-action="tracking-off" class="secondary">Stop tracking</button>
+        </div>
+        <p id="camera-error" class="error" hidden></p>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title"><h2>Perception</h2><span id="worker">Worker offline</span></div>
+        <div class="gesture">
+          <div class="gesture-icon" id="gesture-icon">✋</div>
+          <div><strong id="gesture">No gesture</strong><span id="confidence">—</span></div>
+        </div>
+        <p class="hint">Hold an open palm steadily to emit <code>gesture.open_palm.held</code>.</p>
+      </section>
+
+      <section class="panel events-panel">
+        <div class="panel-title"><h2>Recent events</h2><button id="demo-trigger" class="link-button">Test scenario</button></div>
+        <ol id="events"><li class="empty">No semantic event yet.</li></ol>
+      </section>
+    </main>
+
+    <script type="module" src="/assets/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,268 @@
+use std::{convert::Infallible, sync::Arc};
+
+use axum::{
+    Json, Router,
+    extract::{
+        State, WebSocketUpgrade,
+        ws::{Message, WebSocket},
+    },
+    http::{StatusCode, header},
+    response::{Html, IntoResponse, Response},
+    routing::{get, post},
+};
+use futures_util::{SinkExt, StreamExt};
+use serde_json::{Value, json};
+use tokio::sync::Mutex;
+use tower_http::trace::TraceLayer;
+
+use crate::{
+    config::{Config, ScenarioConfig},
+    model::{PerceptionObservation, ScenarioActivation, unix_ms},
+    runtime::Runtime,
+    scenario::OpenPalmStabilizer,
+};
+
+#[derive(Clone)]
+struct ApiState {
+    config: Config,
+    runtime: Runtime,
+    stabilizer: Arc<Mutex<OpenPalmStabilizer>>,
+}
+
+pub fn router(config: Config, runtime: Runtime) -> Router {
+    let state = ApiState {
+        stabilizer: Arc::new(Mutex::new(OpenPalmStabilizer::new(&config.perception))),
+        config,
+        runtime,
+    };
+    Router::new()
+        .route("/", get(index))
+        .route("/assets/app.js", get(app_js))
+        .route("/assets/styles.css", get(styles_css))
+        .route("/api/v1/health", get(health))
+        .route("/api/v1/state", get(current_state))
+        .route("/api/v1/camera/state", get(camera_state))
+        .route("/api/v1/config", get(effective_config))
+        .route("/api/v1/events", get(events_socket))
+        .route("/api/v1/events/recent", get(recent_events))
+        .route("/api/v1/scenarios", get(scenarios))
+        .route("/api/v1/scenarios/{id}/trigger", post(trigger_scenario))
+        .route(
+            "/api/v1/perception/observations",
+            post(perception_observation),
+        )
+        .layer(TraceLayer::new_for_http())
+        .with_state(state)
+}
+
+async fn index() -> Html<&'static str> {
+    Html(include_str!("../web/index.html"))
+}
+
+async fn app_js() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        include_str!("../web/app.js"),
+    )
+}
+
+async fn styles_css() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        include_str!("../web/styles.css"),
+    )
+}
+
+async fn health(State(state): State<ApiState>) -> Json<Value> {
+    let snapshot = state.runtime.state().await;
+    Json(json!({
+        "status": if snapshot.pipeline.error.is_some() || snapshot.camera.error.is_some() { "degraded" } else { "ok" },
+        "version": snapshot.version,
+        "uptime_ms": unix_ms().saturating_sub(snapshot.started_at_ms),
+    }))
+}
+
+async fn current_state(State(state): State<ApiState>) -> Json<crate::model::RuntimeState> {
+    Json(state.runtime.state().await)
+}
+
+async fn camera_state(State(state): State<ApiState>) -> Json<crate::model::CameraState> {
+    Json(state.runtime.state().await.camera)
+}
+
+async fn effective_config(State(state): State<ApiState>) -> Json<Config> {
+    Json(state.config)
+}
+
+async fn scenarios(State(state): State<ApiState>) -> Json<Vec<ScenarioConfig>> {
+    Json(state.config.scenarios)
+}
+
+async fn recent_events(State(state): State<ApiState>) -> Json<Vec<crate::model::SemanticEvent>> {
+    Json(state.runtime.recent_events().await)
+}
+
+async fn trigger_scenario(
+    State(state): State<ApiState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Response {
+    let Some(scenario) = state
+        .config
+        .scenarios
+        .iter()
+        .find(|scenario| scenario.id == id && scenario.enabled)
+        .cloned()
+    else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "scenario not found"})),
+        )
+            .into_response();
+    };
+
+    let trigger = state
+        .runtime
+        .emit(
+            "scenario.manual_trigger",
+            "api",
+            None,
+            json!({"scenario_id": scenario.id}),
+        )
+        .await;
+    activate_scenario(&state, &scenario, trigger.sequence).await;
+    (
+        StatusCode::ACCEPTED,
+        Json(json!({"ok": true, "trigger_sequence": trigger.sequence})),
+    )
+        .into_response()
+}
+
+async fn perception_observation(
+    State(state): State<ApiState>,
+    Json(observation): Json<PerceptionObservation>,
+) -> Response {
+    if observation.confidence.is_nan() || !(0.0..=1.0).contains(&observation.confidence) {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"error": "confidence must be between 0 and 1"})),
+        )
+            .into_response();
+    }
+
+    state
+        .runtime
+        .update(|runtime| {
+            runtime.perception.worker_connected = true;
+            runtime.perception.frame_id = Some(observation.frame_id);
+            runtime.perception.face_detected = observation.face_detected;
+            runtime.perception.gesture = observation.gesture.clone();
+            runtime.perception.confidence = Some(observation.confidence);
+            runtime.perception.sample_at_ms = Some(observation.captured_at_ms);
+            runtime.perception.latency_ms = observation.latency_ms;
+        })
+        .await;
+
+    let open_palm = observation.gesture.as_deref() == Some("open_palm");
+    let held = state.stabilizer.lock().await.observe(
+        open_palm,
+        observation.confidence,
+        observation.captured_at_ms,
+    );
+    if held {
+        let event = state
+            .runtime
+            .emit(
+                "gesture.open_palm.held",
+                "perception",
+                Some(observation.confidence),
+                json!({"frame_id": observation.frame_id}),
+            )
+            .await;
+        let matches: Vec<_> = state
+            .config
+            .scenarios
+            .iter()
+            .filter(|scenario| scenario.enabled && scenario.event == event.kind)
+            .cloned()
+            .collect();
+        for scenario in matches {
+            activate_scenario(&state, &scenario, event.sequence).await;
+        }
+    }
+    StatusCode::NO_CONTENT.into_response()
+}
+
+async fn activate_scenario(state: &ApiState, scenario: &ScenarioConfig, trigger_sequence: u64) {
+    let activation = ScenarioActivation {
+        scenario_id: scenario.id.clone(),
+        action: scenario.action.clone(),
+        triggered_at_ms: unix_ms(),
+        trigger_sequence,
+    };
+    state
+        .runtime
+        .update(|runtime| runtime.last_scenario = Some(activation.clone()))
+        .await;
+    state
+        .runtime
+        .emit(
+            "scenario.activated",
+            "scenario-engine",
+            None,
+            serde_json::to_value(activation).unwrap_or(Value::Null),
+        )
+        .await;
+}
+
+async fn events_socket(
+    websocket: WebSocketUpgrade,
+    State(state): State<ApiState>,
+) -> impl IntoResponse {
+    websocket.on_upgrade(move |socket| stream_events(socket, state.runtime))
+}
+
+async fn stream_events(socket: WebSocket, runtime: Runtime) {
+    let (mut sender, mut receiver) = socket.split();
+    let mut events = runtime.subscribe_events();
+    let mut states = runtime.subscribe_state();
+
+    let initial = json!({"type": "state", "data": states.borrow().clone()});
+    if sender
+        .send(Message::Text(initial.to_string().into()))
+        .await
+        .is_err()
+    {
+        return;
+    }
+
+    loop {
+        tokio::select! {
+            event = events.recv() => match event {
+                Ok(event) => {
+                    let payload = json!({"type": "event", "data": event});
+                    if sender.send(Message::Text(payload.to_string().into())).await.is_err() {
+                        break;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            },
+            changed = states.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                let payload = json!({"type": "state", "data": states.borrow().clone()});
+                if sender.send(Message::Text(payload.to_string().into())).await.is_err() {
+                    break;
+                }
+            },
+            incoming = receiver.next() => match incoming {
+                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                _ => {}
+            }
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn infallible(_: Infallible) {}
