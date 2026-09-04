@@ -414,6 +414,13 @@ async fn perception_observation(
         )
             .into_response();
     }
+    if !observation.hand_landmarks.is_empty() && observation.hand_landmarks.len() != 21 {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"error": "hand_landmarks must contain exactly 21 points"})),
+        )
+            .into_response();
+    }
 
     state
         .runtime
@@ -423,6 +430,11 @@ async fn perception_observation(
             runtime.perception.frame_id = Some(observation.frame_id);
             runtime.perception.face_detected = observation.face_detected;
             runtime.perception.hand_detected = observation.hand_detected;
+            runtime.perception.hand_landmarks = if observation.hand_detected {
+                observation.hand_landmarks.clone()
+            } else {
+                Vec::new()
+            };
             if observation.hand_detected {
                 runtime.perception.last_hand_at_ms = Some(observation.captured_at_ms);
             }
@@ -666,12 +678,16 @@ mod tests {
             shutdown_rx,
         );
 
-        for observation in [
+        let hand_landmarks = (0..21)
+            .map(|index| json!({"x": index as f32 / 20.0, "y": 0.5, "z": -0.1}))
+            .collect::<Vec<_>>();
+        for (index, observation) in [
             json!({
                 "frame_id": 1,
                 "captured_at_ms": 1000,
                 "face_detected": true,
                 "hand_detected": true,
+                "hand_landmarks": hand_landmarks,
                 "gesture": "open_palm",
                 "confidence": 0.72,
                 "latency_ms": 10.0
@@ -685,7 +701,10 @@ mod tests {
                 "confidence": 0.0,
                 "latency_ms": 9.0
             }),
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let response = app
                 .clone()
                 .oneshot(
@@ -697,10 +716,14 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::NO_CONTENT);
+            if index == 0 {
+                assert_eq!(runtime.state().await.perception.hand_landmarks.len(), 21);
+            }
         }
 
         let state = runtime.state().await;
         assert!(!state.perception.hand_detected);
+        assert!(state.perception.hand_landmarks.is_empty());
         assert_eq!(state.perception.last_hand_at_ms, Some(1000));
         assert_eq!(state.perception.peak_gesture.as_deref(), Some("open_palm"));
         assert_eq!(state.perception.peak_gesture_confidence, Some(0.72));

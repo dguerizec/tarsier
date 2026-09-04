@@ -4,13 +4,25 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from tarsier_perception.models import describe_models
-from tarsier_perception.worker import normalize_gesture, select_gesture
+from tarsier_perception.worker import (
+    HandLandmark,
+    normalize_gesture,
+    select_gesture,
+    select_hand_landmarks,
+)
 
 
 @dataclass
 class Category:
     category_name: str
     score: float
+
+
+@dataclass
+class Landmark:
+    x: float
+    y: float
+    z: float
 
 
 def test_normalizes_mediapipe_gesture_names() -> None:
@@ -40,6 +52,18 @@ def test_neutral_category_does_not_hide_a_named_candidate() -> None:
     assert select_gesture(
         [[Category("None", 0.91), Category("Open_Palm", 0.67)]]
     ) == ("open_palm", 0.67)
+
+
+def test_selects_first_detected_hand_landmarks() -> None:
+    hands = [
+        [Landmark(0.1, 0.2, -0.3), Landmark(0.4, 0.5, -0.6)],
+        [Landmark(0.7, 0.8, -0.9)],
+    ]
+    assert select_hand_landmarks(hands) == [
+        HandLandmark(0.1, 0.2, -0.3),
+        HandLandmark(0.4, 0.5, -0.6),
+    ]
+    assert select_hand_landmarks([]) == []
 
 
 def test_missing_models_are_reported_as_unverified(tmp_path: Path) -> None:

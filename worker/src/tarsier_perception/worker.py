@@ -18,11 +18,19 @@ LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
+class HandLandmark:
+    x: float
+    y: float
+    z: float
+
+
+@dataclass(frozen=True)
 class Observation:
     frame_id: int
     captured_at_ms: int
     face_detected: bool
     hand_detected: bool
+    hand_landmarks: list[HandLandmark]
     gesture: str | None
     confidence: float
     latency_ms: float
@@ -44,6 +52,15 @@ def select_gesture(gestures: list[list[Any]]) -> tuple[str | None, float]:
     if not candidates:
         return None, 0.0
     return max(candidates, key=lambda candidate: candidate[1])
+
+
+def select_hand_landmarks(hands: list[list[Any]]) -> list[HandLandmark]:
+    if not hands:
+        return []
+    return [
+        HandLandmark(x=float(point.x), y=float(point.y), z=float(point.z))
+        for point in hands[0]
+    ]
 
 
 class MediaPipeDetector:
@@ -77,15 +94,17 @@ class MediaPipeDetector:
 
     def detect(
         self, frame_bgr: np.ndarray, timestamp_ms: int
-    ) -> tuple[bool, bool, str | None, float]:
+    ) -> tuple[bool, bool, list[HandLandmark], str | None, float]:
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
         face_result = self._face.detect_for_video(image, timestamp_ms)
         gesture_result = self._gesture.recognize_for_video(image, timestamp_ms)
         gesture, confidence = select_gesture(gesture_result.gestures)
+        landmarks = select_hand_landmarks(gesture_result.hand_landmarks)
         return (
             bool(face_result.detections),
-            bool(gesture_result.hand_landmarks),
+            bool(landmarks),
+            landmarks,
             gesture,
             confidence,
         )
@@ -167,13 +186,14 @@ def run_worker(
             timestamp_ms = max(0, int((now - started_at) * 1000))
             captured_at_ms = time.time_ns() // 1_000_000
             inference_started = time.perf_counter()
-            face, hand, gesture, confidence = detector.detect(frame, timestamp_ms)
+            face, hand, landmarks, gesture, confidence = detector.detect(frame, timestamp_ms)
             latency_ms = (time.perf_counter() - inference_started) * 1000.0
             observation = Observation(
                 frame_id=frame_id,
                 captured_at_ms=captured_at_ms,
                 face_detected=face,
                 hand_detected=hand,
+                hand_landmarks=landmarks,
                 gesture=gesture,
                 confidence=confidence,
                 latency_ms=latency_ms,
@@ -195,6 +215,7 @@ def run_mock(daemon_url: str, fps: float, open_palm: bool) -> None:
                 captured_at_ms=time.time_ns() // 1_000_000,
                 face_detected=True,
                 hand_detected=open_palm,
+                hand_landmarks=[],
                 gesture="open_palm" if open_palm else None,
                 confidence=0.96 if open_palm else 0.0,
                 latency_ms=(time.perf_counter() - started) * 1000.0,

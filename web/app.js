@@ -1,7 +1,20 @@
 const $ = (selector) => document.querySelector(selector);
 const connection = $("#connection");
 const events = $("#events");
+const preview = $("#preview");
+const overlay = $("#hand-overlay");
+const overlayContext = overlay.getContext("2d");
+const skeletonToggle = $("#skeleton-toggle");
 let state = null;
+let skeletonEnabled = localStorage.getItem("tarsier.handSkeleton") === "true";
+
+const handConnections = [
+  [0, 1], [1, 2], [2, 3], [3, 4],
+  [0, 5], [5, 6], [6, 7], [7, 8],
+  [5, 9], [9, 10], [10, 11], [11, 12],
+  [9, 13], [13, 14], [14, 15], [15, 16],
+  [13, 17], [0, 17], [17, 18], [18, 19], [19, 20],
+];
 
 const angle = (value) => value == null ? "—" : `${value.toFixed(1)}°`;
 const age = (timestamp) => timestamp == null ? "No sample" : `${Math.max(0, (Date.now() - timestamp) / 1000).toFixed(1)}s ago`;
@@ -10,6 +23,63 @@ const attitudeLabel = (source) => ({
   measured: "Measured",
   simulated: "Simulated",
 }[source] || "No attitude sample");
+
+function drawHandSkeleton(landmarks = state?.perception.hand_landmarks || []) {
+  const bounds = overlay.getBoundingClientRect();
+  if (bounds.width === 0 || bounds.height === 0) return;
+
+  const pixelRatio = window.devicePixelRatio || 1;
+  const width = Math.round(bounds.width * pixelRatio);
+  const height = Math.round(bounds.height * pixelRatio);
+  if (overlay.width !== width || overlay.height !== height) {
+    overlay.width = width;
+    overlay.height = height;
+  }
+  overlayContext.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+  overlayContext.clearRect(0, 0, bounds.width, bounds.height);
+  if (!skeletonEnabled || landmarks.length !== 21) return;
+
+  const sourceWidth = preview.naturalWidth || 16;
+  const sourceHeight = preview.naturalHeight || 9;
+  const scale = Math.min(bounds.width / sourceWidth, bounds.height / sourceHeight);
+  const renderedWidth = sourceWidth * scale;
+  const renderedHeight = sourceHeight * scale;
+  const offsetX = (bounds.width - renderedWidth) / 2;
+  const offsetY = (bounds.height - renderedHeight) / 2;
+  const points = landmarks.map((point) => ({
+    x: offsetX + point.x * renderedWidth,
+    y: offsetY + point.y * renderedHeight,
+  }));
+
+  overlayContext.lineCap = "round";
+  overlayContext.lineJoin = "round";
+  overlayContext.lineWidth = 2.5;
+  overlayContext.strokeStyle = "rgba(183, 239, 122, 0.9)";
+  overlayContext.shadowColor = "rgba(9, 13, 11, 0.9)";
+  overlayContext.shadowBlur = 4;
+  overlayContext.beginPath();
+  for (const [from, to] of handConnections) {
+    overlayContext.moveTo(points[from].x, points[from].y);
+    overlayContext.lineTo(points[to].x, points[to].y);
+  }
+  overlayContext.stroke();
+
+  overlayContext.shadowBlur = 0;
+  overlayContext.fillStyle = "#f2f5ef";
+  for (const point of points) {
+    overlayContext.beginPath();
+    overlayContext.arc(point.x, point.y, 3, 0, Math.PI * 2);
+    overlayContext.fill();
+  }
+}
+
+function setSkeletonEnabled(enabled) {
+  skeletonEnabled = enabled;
+  localStorage.setItem("tarsier.handSkeleton", String(enabled));
+  skeletonToggle.setAttribute("aria-pressed", String(enabled));
+  skeletonToggle.textContent = enabled ? "Hide skeleton" : "Hand skeleton";
+  drawHandSkeleton();
+}
 
 function gestureDetail(perception) {
   if (perception.gesture) return `${Math.round(perception.confidence * 100)}% confidence`;
@@ -46,6 +116,7 @@ function render(next) {
   $("#camera-error").hidden = !camera.error;
   $("#camera-error").textContent = camera.error || "";
   document.querySelectorAll("[data-action], [data-preset]").forEach((button) => { button.disabled = !camera.available; });
+  drawHandSkeleton(perception.hand_landmarks);
 }
 
 function appendEvent(event) {
@@ -104,6 +175,10 @@ $("#demo-trigger").addEventListener("click", async () => {
   await fetch("/api/v1/scenarios/open-palm-demo/trigger", { method: "POST" });
 });
 
+skeletonToggle.addEventListener("click", () => setSkeletonEnabled(!skeletonEnabled));
+preview.addEventListener("load", () => drawHandSkeleton());
+new ResizeObserver(() => drawHandSkeleton()).observe($(".preview-stage"));
+
 document.querySelectorAll("[data-action]").forEach((button) => {
   button.addEventListener("click", async () => {
     await fetch(`/api/v1/camera/actions/${button.dataset.action}`, { method: "POST" });
@@ -111,6 +186,7 @@ document.querySelectorAll("[data-action]").forEach((button) => {
 });
 
 setInterval(() => state && render(state), 500);
+setSkeletonEnabled(skeletonEnabled);
 loadRecentEvents().catch(console.error);
 loadPresets().catch(console.error);
 connect();
