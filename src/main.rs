@@ -1,4 +1,5 @@
 mod api;
+mod camera;
 mod config;
 mod model;
 mod pipeline;
@@ -77,7 +78,10 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
     let _pipeline = VideoPipeline::start(config.video.clone(), runtime.clone(), preview.clone())
         .await
         .context("failed to start video pipeline")?;
-    let app = api::router(config.clone(), runtime, preview);
+    let camera = camera::start(config.camera.clone(), runtime.clone())
+        .await
+        .context("failed to start camera adapter")?;
+    let app = api::router(config.clone(), runtime, preview, camera);
     let listener = tokio::net::TcpListener::bind(config.server.bind)
         .await
         .with_context(|| format!("failed to bind {}", config.server.bind))?;

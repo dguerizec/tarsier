@@ -13,11 +13,13 @@ use axum::{
 };
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 use tower_http::trace::TraceLayer;
 
 use crate::{
+    camera::CameraHandle,
     config::{Config, ScenarioConfig},
     model::{PerceptionObservation, ScenarioActivation, unix_ms},
     pipeline::PreviewHub,
@@ -31,14 +33,21 @@ struct ApiState {
     runtime: Runtime,
     stabilizer: Arc<Mutex<OpenPalmStabilizer>>,
     preview: PreviewHub,
+    camera: Option<CameraHandle>,
 }
 
-pub fn router(config: Config, runtime: Runtime, preview: PreviewHub) -> Router {
+pub fn router(
+    config: Config,
+    runtime: Runtime,
+    preview: PreviewHub,
+    camera: Option<CameraHandle>,
+) -> Router {
     let state = ApiState {
         stabilizer: Arc::new(Mutex::new(OpenPalmStabilizer::new(&config.perception))),
         config,
         runtime,
         preview,
+        camera,
     };
     Router::new()
         .route("/", get(index))
@@ -47,6 +56,9 @@ pub fn router(config: Config, runtime: Runtime, preview: PreviewHub) -> Router {
         .route("/api/v1/health", get(health))
         .route("/api/v1/state", get(current_state))
         .route("/api/v1/camera/state", get(camera_state))
+        .route("/api/v1/camera/move", post(move_camera))
+        .route("/api/v1/camera/tracking", post(set_tracking))
+        .route("/api/v1/camera/actions/{action}", post(camera_action))
         .route("/api/v1/config", get(effective_config))
         .route("/api/v1/events", get(events_socket))
         .route("/api/v1/events/recent", get(recent_events))
@@ -95,6 +107,117 @@ async fn current_state(State(state): State<ApiState>) -> Json<crate::model::Runt
 
 async fn camera_state(State(state): State<ApiState>) -> Json<crate::model::CameraState> {
     Json(state.runtime.state().await.camera)
+}
+
+#[derive(Deserialize)]
+struct MoveCameraRequest {
+    yaw: f32,
+    pitch: f32,
+    #[serde(default)]
+    roll: f32,
+}
+
+#[derive(Deserialize)]
+struct TrackingRequest {
+    enabled: bool,
+}
+
+async fn move_camera(
+    State(state): State<ApiState>,
+    Json(request): Json<MoveCameraRequest>,
+) -> Response {
+    let Some(camera) = state.camera.clone() else {
+        return camera_unavailable();
+    };
+    match camera
+        .move_to(request.yaw, request.pitch, request.roll)
+        .await
+    {
+        Ok(()) => {
+            record_camera_command(
+                &state,
+                "camera.move",
+                json!({"yaw": request.yaw, "pitch": request.pitch, "roll": request.roll}),
+            )
+            .await;
+            StatusCode::ACCEPTED.into_response()
+        }
+        Err(error) => command_error(error),
+    }
+}
+
+async fn set_tracking(
+    State(state): State<ApiState>,
+    Json(request): Json<TrackingRequest>,
+) -> Response {
+    set_tracking_inner(&state, request.enabled).await
+}
+
+async fn camera_action(
+    State(state): State<ApiState>,
+    axum::extract::Path(action): axum::extract::Path<String>,
+) -> Response {
+    let Some(camera) = state.camera.clone() else {
+        return camera_unavailable();
+    };
+    match action.as_str() {
+        "recenter" => match camera.recenter().await {
+            Ok(()) => {
+                record_camera_command(&state, "camera.recenter", Value::Null).await;
+                StatusCode::ACCEPTED.into_response()
+            }
+            Err(error) => command_error(error),
+        },
+        "tracking-on" => set_tracking_inner(&state, true).await,
+        "tracking-off" => set_tracking_inner(&state, false).await,
+        _ => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "unknown camera action"})),
+        )
+            .into_response(),
+    }
+}
+
+async fn set_tracking_inner(state: &ApiState, enabled: bool) -> Response {
+    let Some(camera) = state.camera.clone() else {
+        return camera_unavailable();
+    };
+    match camera.set_tracking(enabled).await {
+        Ok(()) => {
+            state
+                .runtime
+                .update(|runtime| runtime.camera.tracking = Some(enabled))
+                .await;
+            record_camera_command(state, "camera.tracking", json!({"enabled": enabled})).await;
+            StatusCode::ACCEPTED.into_response()
+        }
+        Err(error) => command_error(error),
+    }
+}
+
+async fn record_camera_command(state: &ApiState, kind: &str, data: Value) {
+    let at_ms = unix_ms();
+    state
+        .runtime
+        .update(|runtime| runtime.camera.last_command_at_ms = Some(at_ms))
+        .await;
+    state.runtime.emit(kind, "api", None, data).await;
+}
+
+fn camera_unavailable() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({"error": "camera adapter is disabled"})),
+    )
+        .into_response()
+}
+
+fn command_error(error: anyhow::Error) -> Response {
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        Json(json!({"error": error.to_string()})),
+    )
+        .into_response()
 }
 
 async fn effective_config(State(state): State<ApiState>) -> Json<Config> {

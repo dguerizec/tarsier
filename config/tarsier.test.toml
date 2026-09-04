@@ -6,7 +6,7 @@ source = "test"
 loopback_enabled = false
 
 [camera]
-adapter = "disabled"
+adapter = "mock"
 
 [perception]
 enabled = false
