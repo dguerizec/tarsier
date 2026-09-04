@@ -58,6 +58,7 @@ pub struct PipelineState {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct PerceptionState {
     pub worker_connected: bool,
+    pub error: Option<String>,
     pub frame_id: Option<u64>,
     pub face_detected: bool,
     pub gesture: Option<String>,

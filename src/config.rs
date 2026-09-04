@@ -1,4 +1,7 @@
-use std::{net::SocketAddr, path::Path};
+use std::{
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -48,8 +51,15 @@ impl Config {
         if self.camera.poll_interval_ms < self.camera.minimum_command_interval_ms {
             bail!("camera poll interval must not be shorter than the command interval");
         }
+        if self.perception.width == 0 || self.perception.height == 0 || self.perception.fps == 0 {
+            bail!("perception width, height, and fps must be greater than zero");
+        }
+        if self.perception.restart_delay_ms == 0 {
+            bail!("perception restart_delay_ms must be greater than zero");
+        }
         if !(0.0..=1.0).contains(&self.perception.minimum_confidence)
             || !(0.0..=1.0).contains(&self.perception.release_confidence)
+            || !(0.0..=1.0).contains(&self.perception.detection_confidence)
         {
             bail!("perception confidence values must be between 0 and 1");
         }
@@ -153,11 +163,15 @@ pub enum CameraAdapter {
 #[serde(default)]
 pub struct PerceptionConfig {
     pub enabled: bool,
+    pub supervise_worker: bool,
+    pub worker_project: PathBuf,
+    pub restart_delay_ms: u64,
     pub device: String,
     pub width: u32,
     pub height: u32,
     pub fps: u32,
     pub minimum_confidence: f32,
+    pub detection_confidence: f32,
     pub dwell_ms: u64,
     pub release_confidence: f32,
     pub cooldown_ms: u64,
@@ -169,11 +183,15 @@ impl Default for PerceptionConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            supervise_worker: true,
+            worker_project: "worker".into(),
+            restart_delay_ms: 1000,
             device: "/dev/video42".into(),
             width: 640,
             height: 360,
             fps: 10,
             minimum_confidence: 0.85,
+            detection_confidence: 0.5,
             dwell_ms: 800,
             release_confidence: 0.65,
             cooldown_ms: 3000,
@@ -215,6 +233,20 @@ mod tests {
     fn rejects_missing_hysteresis() {
         let mut config = Config::default();
         config.perception.release_confidence = config.perception.minimum_confidence;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_detection_confidence() {
+        let mut config = Config::default();
+        config.perception.detection_confidence = 1.1;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_zero_perception_rate() {
+        let mut config = Config::default();
+        config.perception.fps = 0;
         assert!(config.validate().is_err());
     }
 }

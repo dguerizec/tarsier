@@ -97,7 +97,14 @@ async fn styles_css() -> impl IntoResponse {
 async fn health(State(state): State<ApiState>) -> Json<Value> {
     let snapshot = state.runtime.state().await;
     Json(json!({
-        "status": if snapshot.pipeline.error.is_some() || snapshot.camera.error.is_some() { "degraded" } else { "ok" },
+        "status": if snapshot.pipeline.error.is_some()
+            || snapshot.camera.error.is_some()
+            || snapshot.perception.error.is_some()
+        {
+            "degraded"
+        } else {
+            "ok"
+        },
         "version": snapshot.version,
         "uptime_ms": unix_ms().saturating_sub(snapshot.started_at_ms),
     }))
@@ -333,6 +340,7 @@ async fn perception_observation(
         .runtime
         .update(|runtime| {
             runtime.perception.worker_connected = true;
+            runtime.perception.error = None;
             runtime.perception.frame_id = Some(observation.frame_id);
             runtime.perception.face_detected = observation.face_detected;
             runtime.perception.gesture = observation.gesture.clone();

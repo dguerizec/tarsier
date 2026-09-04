@@ -24,11 +24,15 @@ max_pitch_degrees = 90.0
 
 [perception]
 enabled = true
+supervise_worker = true
+worker_project = "worker"
+restart_delay_ms = 1000
 device = "/dev/video42"
 width = 640
 height = 360
 fps = 10
 minimum_confidence = 0.85
+detection_confidence = 0.5
 dwell_ms = 800
 release_confidence = 0.65
 cooldown_ms = 3000

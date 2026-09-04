@@ -2,6 +2,7 @@ mod api;
 mod camera;
 mod config;
 mod model;
+mod perception;
 mod pipeline;
 mod runtime;
 mod scenario;
@@ -81,14 +82,22 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
     let camera = camera::start(config.camera.clone(), runtime.clone())
         .await
         .context("failed to start camera adapter")?;
-    let app = api::router(config.clone(), runtime, preview, camera);
+    let app = api::router(config.clone(), runtime.clone(), preview, camera);
     let listener = tokio::net::TcpListener::bind(config.server.bind)
         .await
         .with_context(|| format!("failed to bind {}", config.server.bind))?;
+    let perception = perception::PerceptionSupervisor::start(
+        config.perception.clone(),
+        config.server.bind,
+        runtime,
+    );
     tracing::info!(address = %config.server.bind, "Tarsier control surface is ready");
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
+    if let Some(perception) = perception {
+        perception.shutdown().await;
+    }
     Ok(())
 }
 

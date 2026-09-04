@@ -23,6 +23,8 @@ function render(next) {
   $("#gesture").textContent = perception.gesture || "No gesture";
   $("#confidence").textContent = perception.confidence == null ? "—" : `${Math.round(perception.confidence * 100)}% confidence`;
   $("#gesture-icon").classList.toggle("active", perception.gesture === "open_palm");
+  $("#perception-error").hidden = !perception.error;
+  $("#perception-error").textContent = perception.error || "";
   $("#camera-error").hidden = !camera.error;
   $("#camera-error").textContent = camera.error || "";
   document.querySelectorAll("[data-action]").forEach((button) => { button.disabled = !camera.available; });
