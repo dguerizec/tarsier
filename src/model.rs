@@ -42,6 +42,7 @@ pub struct CameraState {
     pub adapter: String,
     pub serial: Option<String>,
     pub tracking: Option<bool>,
+    pub built_in_gestures: BuiltInGestureState,
     pub yaw_degrees: Option<f32>,
     pub pitch_degrees: Option<f32>,
     pub roll_degrees: Option<f32>,
@@ -49,6 +50,31 @@ pub struct CameraState {
     pub sample_at_ms: Option<u64>,
     pub last_command_at_ms: Option<u64>,
     pub error: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum BuiltInGesture {
+    TargetSelection,
+    Zoom,
+    DynamicZoom,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct BuiltInGestureState {
+    pub target_selection: Option<bool>,
+    pub zoom: Option<bool>,
+    pub dynamic_zoom: Option<bool>,
+}
+
+impl BuiltInGestureState {
+    pub fn set(&mut self, feature: BuiltInGesture, enabled: bool) {
+        match feature {
+            BuiltInGesture::TargetSelection => self.target_selection = Some(enabled),
+            BuiltInGesture::Zoom => self.zoom = Some(enabled),
+            BuiltInGesture::DynamicZoom => self.dynamic_zoom = Some(enabled),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

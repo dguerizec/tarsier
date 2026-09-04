@@ -1,5 +1,7 @@
 use thiserror::Error;
 
+use crate::model::BuiltInGesture;
+
 pub const FRAME_SIZE: usize = 60;
 pub const VENDOR_SELECTOR: u8 = 2;
 pub const TRACKING_SELECTOR: u8 = 6;
@@ -9,6 +11,9 @@ pub const GIMBAL_RECEIVER: u8 = 0x03;
 pub const GIM_SET_MOTOR: u16 = 0x00c3;
 pub const AI_RECEIVER: u8 = 0x04;
 pub const AI_SET_GIM_MOTOR_DEG: u16 = 0x6444;
+pub const AI_SET_GESTURE_TARGET: u16 = 0x30c4;
+pub const AI_SET_GESTURE_ZOOM: u16 = 0x3144;
+pub const AI_SET_GESTURE_DYNAMIC_ZOOM: u16 = 0x3344;
 pub const CAMERA_RECEIVER: u8 = 0x02;
 pub const CAM_SET_DEV_STATUS: u16 = 0xa0c2;
 
@@ -141,6 +146,20 @@ pub fn move_frame(sequence: u16, yaw: f32, pitch: f32, roll: f32) -> [u8; FRAME_
         .expect("move payload fits")
 }
 
+pub fn built_in_gesture_frame(
+    sequence: u16,
+    feature: BuiltInGesture,
+    enabled: bool,
+) -> [u8; FRAME_SIZE] {
+    let command = match feature {
+        BuiltInGesture::TargetSelection => AI_SET_GESTURE_TARGET,
+        BuiltInGesture::Zoom => AI_SET_GESTURE_ZOOM,
+        BuiltInGesture::DynamicZoom => AI_SET_GESTURE_DYNAMIC_ZOOM,
+    };
+    build_frame(sequence, command, AI_RECEIVER, 0x25, &[u8::from(enabled)])
+        .expect("built-in gesture payload fits")
+}
+
 pub fn tracking_payload(enabled: bool) -> [u8; FRAME_SIZE] {
     let mut payload = [0_u8; FRAME_SIZE];
     payload[0] = 0x16;
@@ -206,6 +225,24 @@ mod tests {
         assert_eq!(f32::from_le_bytes(frame[16..20].try_into().unwrap()), 10.0);
         assert_eq!(f32::from_le_bytes(frame[20..24].try_into().unwrap()), 20.0);
         assert_eq!(f32::from_le_bytes(frame[24..28].try_into().unwrap()), 30.0);
+    }
+
+    #[test]
+    fn built_in_gesture_commands_use_tiny_2_wire_opcodes() {
+        for (feature, command) in [
+            (BuiltInGesture::TargetSelection, AI_SET_GESTURE_TARGET),
+            (BuiltInGesture::Zoom, AI_SET_GESTURE_ZOOM),
+            (BuiltInGesture::DynamicZoom, AI_SET_GESTURE_DYNAMIC_ZOOM),
+        ] {
+            let disabled = parse_frame(&built_in_gesture_frame(7, feature, false)).unwrap();
+            assert_eq!(disabled.receiver, AI_RECEIVER);
+            assert_eq!(disabled.command, command);
+            assert_eq!(disabled.payload, [0]);
+
+            let enabled = parse_frame(&built_in_gesture_frame(8, feature, true)).unwrap();
+            assert_eq!(enabled.command, command);
+            assert_eq!(enabled.payload, [1]);
+        }
     }
 
     #[test]

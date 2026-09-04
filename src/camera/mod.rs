@@ -12,7 +12,7 @@ use tokio::sync::oneshot;
 
 use crate::{
     config::{CameraAdapter, CameraConfig},
-    model::{CameraAttitudeSource, unix_ms},
+    model::{BuiltInGesture, CameraAttitudeSource, unix_ms},
     runtime::Runtime,
 };
 use linux_uvc::{LinuxUvcTransport, XuTransport};
@@ -31,9 +31,19 @@ pub struct GimbalAngles {
 #[derive(Debug)]
 enum Command {
     QueryState,
-    Move { yaw: f32, pitch: f32, roll: f32 },
+    Move {
+        yaw: f32,
+        pitch: f32,
+        roll: f32,
+    },
     Recenter,
-    Tracking { enabled: bool },
+    Tracking {
+        enabled: bool,
+    },
+    BuiltInGesture {
+        feature: BuiltInGesture,
+        enabled: bool,
+    },
 }
 
 struct Request {
@@ -73,6 +83,12 @@ impl CameraHandle {
 
     pub async fn set_tracking(&self, enabled: bool) -> Result<()> {
         self.request(Command::Tracking { enabled })
+            .await
+            .map(|_| ())
+    }
+
+    pub async fn set_built_in_gesture(&self, feature: BuiltInGesture, enabled: bool) -> Result<()> {
+        self.request(Command::BuiltInGesture { feature, enabled })
             .await
             .map(|_| ())
     }
@@ -207,6 +223,13 @@ impl<T: XuTransport> Worker<T> {
                 self.set(TRACKING_SELECTOR, &mut payload)?;
                 Ok(None)
             }
+            Command::BuiltInGesture { feature, enabled } => {
+                self.wake()?;
+                let mut frame =
+                    protocol::built_in_gesture_frame(self.next_sequence(), feature, enabled);
+                self.set(VENDOR_SELECTOR, &mut frame)?;
+                Ok(None)
+            }
         }
     }
 
@@ -300,6 +323,7 @@ fn spawn_mock(config: &CameraConfig) -> CameraHandle {
                         Ok(None)
                     }
                     Command::Tracking { .. } => Ok(None),
+                    Command::BuiltInGesture { .. } => Ok(None),
                 };
                 let _ = request.response.send(result);
             }
@@ -364,6 +388,22 @@ mod tests {
         operations: Vec<&'static str>,
     }
 
+    #[derive(Default)]
+    struct RecordingTransport {
+        writes: Vec<(u8, [u8; FRAME_SIZE])>,
+    }
+
+    impl XuTransport for RecordingTransport {
+        fn set(&mut self, selector: u8, data: &mut [u8]) -> Result<()> {
+            self.writes.push((selector, data.try_into().unwrap()));
+            Ok(())
+        }
+
+        fn get(&mut self, _selector: u8, _data: &mut [u8]) -> Result<()> {
+            unreachable!("gesture commands do not read from the camera")
+        }
+    }
+
     impl XuTransport for ReplyingTransport {
         fn set(&mut self, selector: u8, data: &mut [u8]) -> Result<()> {
             assert_eq!(selector, VENDOR_SELECTOR);
@@ -415,5 +455,25 @@ mod tests {
         assert_eq!(worker.transport.operations, ["set", "get"]);
         assert!((angles.yaw_degrees - -42.09).abs() < 0.01);
         assert!((angles.roll_degrees - -5.57).abs() < 0.01);
+    }
+
+    #[test]
+    fn built_in_gesture_command_is_serialized_after_wake() {
+        let (_tx, rx) = sync_channel(1);
+        let mut worker = Worker::new(RecordingTransport::default(), rx, Duration::ZERO);
+
+        worker
+            .execute(Command::BuiltInGesture {
+                feature: BuiltInGesture::Zoom,
+                enabled: false,
+            })
+            .unwrap();
+
+        assert_eq!(worker.transport.writes.len(), 2);
+        assert_eq!(worker.transport.writes[0].0, VENDOR_SELECTOR);
+        assert_eq!(worker.transport.writes[1].0, VENDOR_SELECTOR);
+        let command = protocol::parse_frame(&worker.transport.writes[1].1).unwrap();
+        assert_eq!(command.command, protocol::AI_SET_GESTURE_ZOOM);
+        assert_eq!(command.payload, [0]);
     }
 }

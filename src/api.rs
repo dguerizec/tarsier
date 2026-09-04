@@ -21,7 +21,9 @@ use tower_http::trace::TraceLayer;
 use crate::{
     camera::CameraHandle,
     config::{CameraPresetConfig, Config, ScenarioConfig},
-    model::{CameraAttitudeSource, PerceptionObservation, ScenarioActivation, unix_ms},
+    model::{
+        BuiltInGesture, CameraAttitudeSource, PerceptionObservation, ScenarioActivation, unix_ms,
+    },
     pipeline::PreviewHub,
     runtime::Runtime,
     scenario::{FacePresenceStabilizer, OpenPalmStabilizer, PresenceChange},
@@ -63,6 +65,10 @@ pub fn router(
         .route("/api/v1/camera/state", get(camera_state))
         .route("/api/v1/camera/move", post(move_camera))
         .route("/api/v1/camera/tracking", post(set_tracking))
+        .route(
+            "/api/v1/camera/built-in-gestures/{feature}",
+            post(set_built_in_gesture),
+        )
         .route("/api/v1/camera/actions/{action}", post(camera_action))
         .route("/api/v1/camera/presets", get(camera_presets))
         .route(
@@ -152,6 +158,11 @@ struct TrackingRequest {
     enabled: bool,
 }
 
+#[derive(Deserialize)]
+struct BuiltInGestureRequest {
+    enabled: bool,
+}
+
 async fn move_camera(
     State(state): State<ApiState>,
     Json(request): Json<MoveCameraRequest>,
@@ -182,6 +193,37 @@ async fn set_tracking(
     Json(request): Json<TrackingRequest>,
 ) -> Response {
     set_tracking_inner(&state, request.enabled).await
+}
+
+async fn set_built_in_gesture(
+    State(state): State<ApiState>,
+    axum::extract::Path(feature): axum::extract::Path<BuiltInGesture>,
+    Json(request): Json<BuiltInGestureRequest>,
+) -> Response {
+    let Some(camera) = state.camera.clone() else {
+        return camera_unavailable();
+    };
+    match camera.set_built_in_gesture(feature, request.enabled).await {
+        Ok(()) => {
+            state
+                .runtime
+                .update(|runtime| {
+                    runtime
+                        .camera
+                        .built_in_gestures
+                        .set(feature, request.enabled)
+                })
+                .await;
+            record_camera_command(
+                &state,
+                "camera.built_in_gesture",
+                json!({"feature": feature, "enabled": request.enabled}),
+            )
+            .await;
+            StatusCode::ACCEPTED.into_response()
+        }
+        Err(error) => command_error(error),
+    }
 }
 
 async fn camera_action(
@@ -689,6 +731,45 @@ mod tests {
             CameraAttitudeSource::LastCommanded
         );
         assert_eq!(state.camera.yaw_degrees, Some(0.0));
+    }
+
+    #[tokio::test]
+    async fn built_in_gesture_control_updates_explicit_runtime_state() {
+        let mut config = Config::default();
+        config.camera.adapter = CameraAdapter::Mock;
+        config.perception.enabled = false;
+        let runtime = Runtime::new();
+        let camera = camera::start(config.camera.clone(), runtime.clone())
+            .await
+            .unwrap();
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = router(
+            config,
+            runtime.clone(),
+            PreviewHub::new(),
+            camera,
+            shutdown_rx,
+        );
+
+        let response = app
+            .oneshot(
+                Request::post("/api/v1/camera/built-in-gestures/dynamic-zoom")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"enabled":false}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let state = runtime.state().await;
+        assert_eq!(state.camera.built_in_gestures.target_selection, None);
+        assert_eq!(state.camera.built_in_gestures.zoom, None);
+        assert_eq!(state.camera.built_in_gestures.dynamic_zoom, Some(false));
+        let events = runtime.recent_events().await;
+        assert_eq!(events[0].kind, "camera.built_in_gesture");
+        assert_eq!(events[0].data["feature"], "dynamic-zoom");
+        assert_eq!(events[0].data["enabled"], false);
     }
 
     #[tokio::test]
