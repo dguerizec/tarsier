@@ -22,6 +22,8 @@ mischievous personality without tying its core to one camera vendor.
 
 - one Rust daemon owns `/dev/video0` and serializes OBSBOT extension-unit I/O;
 - a GStreamer tee feeds an MJPEG preview and `/dev/video42` at 720p30;
+- a video supervisor closes stale streams and rebuilds the pipeline against the
+  stable device path after runtime errors or end-of-stream;
 - generic V4L2 clients can consume `/dev/video42` while perception uses the
   daemon's internal preview branch;
 - camera attitude is explicitly labelled `last-commanded`, `measured`,
@@ -34,7 +36,8 @@ mischievous personality without tying its core to one camera vendor.
   cooldown stabilization before becoming semantic events;
 - a responsive local web UI shows the preview, telemetry, perception state,
   presets, scenarios, and recent events, with an optional 21-point hand
-  skeleton overlay;
+  skeleton overlay; its MJPEG preview reconnects after either a pipeline or
+  daemon restart;
 - snapshots are available as JPEG over HTTP and as image content over MCP.
 
 OBS, Stream Deck, scripts, and similar tools are possible API clients. OBS is
@@ -148,7 +151,8 @@ adapter = "mock"
 configuration. It defines:
 
 - the loopback-only server address;
-- physical and virtual video devices, frame size, rate, and preview quality;
+- physical and virtual video devices, frame size, rate, preview quality, and
+  pipeline recovery delay;
 - camera adapter, extension-unit selector, polling cadence, and movement
   limits;
 - worker supervision, perception rate, confidence, dwell, release, and
@@ -288,21 +292,31 @@ The first vertical slice was validated on 2026-09-05 with an OBSBOT Tiny 2
   live structured camera state and a JPEG snapshot;
 - the embedded UI was rendered against the live daemon at desktop size and
   showed the real preview, telemetry, perception health, and events;
-- all 25 daemon tests, 2 MCP tests, 6 Python tests, JavaScript syntax checks,
+- one browser tab remained open across a complete daemon stop/start cycle,
+  changed to `Reconnecting`, removed its stale image, then received a new
+  640x360 MJPEG stream without a page reload;
+- the video supervisor rebuilt a live synthetic GStreamer pipeline after a
+  controlled EOS and recorded both failure and restart events;
+- after the repair restart, the real 720p30 pipeline remained healthy for more
+  than six minutes on the camera's 480 Mbit/s fallback link, passing 11,000
+  frames without another USB event or required restart;
+- all 28 daemon tests, 2 MCP tests, 6 Python tests, JavaScript syntax checks,
   formatting, lint, configuration, protocol, and API checks passed.
 
 An extended run changed the camera result: after approximately six minutes of
 2 Hz proprietary attitude queries during streaming, the device disconnected
-and re-enumerated on USB. The pipeline correctly reported the failure but does
-not reconnect yet. This falsifies the earlier short-run safety assumption;
-continuous vendor-query polling is therefore disabled in the default and
-example configurations.
+and re-enumerated on USB. A later disconnect with polling disabled moved the
+same camera from its SuperSpeed bus to the companion 480 Mbit/s bus, indicating
+that vendor polling is not the only possible source of link loss. The current
+video supervisor now rebuilds failed pipelines, while continuous vendor-query
+polling remains disabled because its extended test is independently unsafe.
 
 ## Known limitations
 
 - only the OBSBOT Tiny 2 and its tested Linux UVC/XU path have a real adapter;
-- device discovery is configuration-driven; reconnect and pipeline restart are
-  not yet automatic;
+- device discovery is configuration-driven; automatic recovery uses the stable
+  configured path and has synthetic EOS coverage, but a physical unplug/reset
+  recovery cycle and long soak have not yet been revalidated;
 - the V4L2 loopback device must be created before startup;
 - absolute movement is safely bounded but has not been calibrated for precise
   agreement between requested and settled angles;
@@ -336,7 +350,7 @@ example configurations.
   control surface.
 
 The next focused increments are a safe live-attitude source (or an explicit
-last-commanded product contract), device reconnect/recovery, and broader
+last-commanded product contract), USB recovery soak testing, and broader
 gesture robustness testing. Background replacement, avatars, full-body pose,
 speech, robotics, ROS, cloud video processing, and a large gesture vocabulary
 remain outside the first version.

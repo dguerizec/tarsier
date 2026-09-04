@@ -81,9 +81,15 @@ completed during streaming without an immediate reset.
 That result did not survive a longer run. After approximately six minutes at
 the same 2 Hz query rate, the kernel reported a failed selector-2 `SET_CUR`, the
 device disconnected, and it re-enumerated at a new USB address. The physical
-pipeline stopped because automatic reconnect is not implemented. This matches
-earlier evidence that framed `GIM_GET_STATE` queries can destabilize the tested
-firmware when a physical UVC stream is active.
+pipeline stopped in that build. This matches earlier evidence that framed
+`GIM_GET_STATE` queries can destabilize the tested firmware when a physical UVC
+stream is active.
+
+Tarsier now supervises GStreamer and retries the stable configured device path
+after an error or EOS. The Linux XU transport also reopens its control path for
+definite stale-device errors before retrying. This recovery logic has a live
+synthetic EOS test; a deliberate physical unplug/reset cycle has not yet been
+rerun against the current build.
 
 Tarsier therefore sets `camera.poll_interval_ms = 0` by default. A non-zero
 value retains the query for deliberate experiments, emits a startup warning,
@@ -102,8 +108,8 @@ telemetry.
   and settling semantics need further study.
 - Continuous selector-2 attitude polling is known to be unsafe during streaming
   on the tested firmware and is disabled by default.
-- Reconnect and recovery after unplug, firmware failure, or USB bus reset have
-  not yet been implemented or soak-tested.
+- Reconnect and recovery after unplug, firmware failure, or USB bus reset are
+  implemented but have not yet been physically revalidated or soak-tested.
 
 The executable protocol logic and packet fixtures live in
 `src/camera/protocol.rs`; Linux UVC transport lives in
