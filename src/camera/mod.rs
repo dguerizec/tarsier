@@ -12,7 +12,7 @@ use tokio::sync::oneshot;
 
 use crate::{
     config::{CameraAdapter, CameraConfig},
-    model::unix_ms,
+    model::{CameraAttitudeSource, unix_ms},
     runtime::Runtime,
 };
 use linux_uvc::{LinuxUvcTransport, XuTransport};
@@ -108,10 +108,13 @@ pub async fn start(config: CameraConfig, runtime: Runtime) -> Result<Option<Came
                     state.camera.yaw_degrees = Some(0.0);
                     state.camera.pitch_degrees = Some(0.0);
                     state.camera.roll_degrees = Some(0.0);
+                    state.camera.attitude_source = CameraAttitudeSource::Simulated;
                     state.camera.sample_at_ms = Some(unix_ms());
                 })
                 .await;
-            spawn_polling(handle.clone(), config.poll_interval_ms, runtime);
+            if config.poll_interval_ms > 0 {
+                spawn_polling(handle.clone(), config.poll_interval_ms, runtime);
+            }
             Ok(Some(handle))
         }
         CameraAdapter::ObsbotTiny2 => {
@@ -123,7 +126,13 @@ pub async fn start(config: CameraConfig, runtime: Runtime) -> Result<Option<Came
                     state.camera.error = None;
                 })
                 .await;
-            spawn_polling(handle.clone(), config.poll_interval_ms, runtime);
+            if config.poll_interval_ms > 0 {
+                tracing::warn!(
+                    interval_ms = config.poll_interval_ms,
+                    "experimental vendor attitude polling is enabled and may reset the camera during streaming"
+                );
+                spawn_polling(handle.clone(), config.poll_interval_ms, runtime);
+            }
             Ok(Some(handle))
         }
     }
@@ -318,6 +327,7 @@ fn spawn_polling(handle: CameraHandle, interval_ms: u64, runtime: Runtime) {
                             state.camera.yaw_degrees = Some(angles.yaw_degrees);
                             state.camera.pitch_degrees = Some(angles.pitch_degrees);
                             state.camera.roll_degrees = Some(angles.roll_degrees);
+                            state.camera.attitude_source = CameraAttitudeSource::Measured;
                             state.camera.sample_at_ms = Some(unix_ms());
                             state.camera.error = None;
                         })

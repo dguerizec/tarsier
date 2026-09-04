@@ -26,6 +26,16 @@ impl Default for RuntimeState {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum CameraAttitudeSource {
+    #[default]
+    Unavailable,
+    LastCommanded,
+    Measured,
+    Simulated,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct CameraState {
     pub available: bool,
@@ -35,6 +45,7 @@ pub struct CameraState {
     pub yaw_degrees: Option<f32>,
     pub pitch_degrees: Option<f32>,
     pub roll_degrees: Option<f32>,
+    pub attitude_source: CameraAttitudeSource,
     pub sample_at_ms: Option<u64>,
     pub last_command_at_ms: Option<u64>,
     pub error: Option<String>,

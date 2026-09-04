@@ -5,6 +5,11 @@ let state = null;
 
 const angle = (value) => value == null ? "—" : `${value.toFixed(1)}°`;
 const age = (timestamp) => timestamp == null ? "No sample" : `${Math.max(0, (Date.now() - timestamp) / 1000).toFixed(1)}s ago`;
+const attitudeLabel = (source) => ({
+  "last-commanded": "Last command",
+  measured: "Measured",
+  simulated: "Simulated",
+}[source] || "No attitude sample");
 
 function render(next) {
   state = next;
@@ -15,7 +20,9 @@ function render(next) {
   $("#pitch").textContent = angle(camera.pitch_degrees);
   $("#roll").textContent = angle(camera.roll_degrees);
   $("#tracking").textContent = camera.tracking == null ? "—" : camera.tracking ? "On" : "Off";
-  $("#camera-age").textContent = age(camera.sample_at_ms);
+  $("#camera-age").textContent = camera.sample_at_ms == null
+    ? attitudeLabel(camera.attitude_source)
+    : `${attitudeLabel(camera.attitude_source)} · ${age(camera.sample_at_ms)}`;
   $("#pipeline-summary").textContent = pipeline.running
     ? `${pipeline.width}×${pipeline.height} · ${pipeline.fps.toFixed(1)} fps · ${pipeline.frame_count} frames`
     : pipeline.error || "Pipeline stopped";

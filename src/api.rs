@@ -21,7 +21,7 @@ use tower_http::trace::TraceLayer;
 use crate::{
     camera::CameraHandle,
     config::{CameraPresetConfig, Config, ScenarioConfig},
-    model::{PerceptionObservation, ScenarioActivation, unix_ms},
+    model::{CameraAttitudeSource, PerceptionObservation, ScenarioActivation, unix_ms},
     pipeline::PreviewHub,
     runtime::Runtime,
     scenario::{FacePresenceStabilizer, OpenPalmStabilizer, PresenceChange},
@@ -152,6 +152,7 @@ async fn move_camera(
         .await
     {
         Ok(()) => {
+            record_commanded_attitude(&state, request.yaw, request.pitch, request.roll).await;
             record_camera_command(
                 &state,
                 "camera.move",
@@ -181,6 +182,7 @@ async fn camera_action(
     match action.as_str() {
         "recenter" => match camera.recenter().await {
             Ok(()) => {
+                record_commanded_attitude(&state, 0.0, 0.0, 0.0).await;
                 record_camera_command(&state, "camera.recenter", Value::Null).await;
                 StatusCode::ACCEPTED.into_response()
             }
@@ -218,6 +220,7 @@ async fn recall_camera_preset(
     };
     match camera.move_to(preset.yaw, preset.pitch, preset.roll).await {
         Ok(()) => {
+            record_commanded_attitude(&state, preset.yaw, preset.pitch, preset.roll).await;
             record_camera_command(
                 &state,
                 "camera.preset.recalled",
@@ -259,6 +262,20 @@ async fn record_camera_command(state: &ApiState, kind: &str, data: Value) {
         .update(|runtime| runtime.camera.last_command_at_ms = Some(at_ms))
         .await;
     state.runtime.emit(kind, "api", None, data).await;
+}
+
+async fn record_commanded_attitude(state: &ApiState, yaw: f32, pitch: f32, roll: f32) {
+    let at_ms = unix_ms();
+    state
+        .runtime
+        .update(|runtime| {
+            runtime.camera.yaw_degrees = Some(yaw);
+            runtime.camera.pitch_degrees = Some(pitch);
+            runtime.camera.roll_degrees = Some(roll);
+            runtime.camera.attitude_source = CameraAttitudeSource::LastCommanded;
+            runtime.camera.sample_at_ms = Some(at_ms);
+        })
+        .await;
 }
 
 fn camera_unavailable() -> Response {
@@ -557,5 +574,11 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, "camera.preset.recalled");
         assert_eq!(events[0].data["id"], "center");
+        let state = runtime.state().await;
+        assert_eq!(
+            state.camera.attitude_source,
+            CameraAttitudeSource::LastCommanded
+        );
+        assert_eq!(state.camera.yaw_degrees, Some(0.0));
     }
 }

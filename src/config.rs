@@ -51,7 +51,9 @@ impl Config {
         if self.video.preview_quality == 0 || self.video.preview_quality > 100 {
             bail!("video preview_quality must be between 1 and 100");
         }
-        if self.camera.poll_interval_ms < self.camera.minimum_command_interval_ms {
+        if self.camera.poll_interval_ms != 0
+            && self.camera.poll_interval_ms < self.camera.minimum_command_interval_ms
+        {
             bail!("camera poll interval must not be shorter than the command interval");
         }
         if self.perception.width == 0 || self.perception.height == 0 || self.perception.fps == 0 {
@@ -189,7 +191,7 @@ impl Default for CameraConfig {
             adapter: CameraAdapter::ObsbotTiny2,
             control_device: "/dev/video0".into(),
             xu_unit: 2,
-            poll_interval_ms: 500,
+            poll_interval_ms: 0,
             minimum_command_interval_ms: 20,
             max_yaw_degrees: 130.0,
             max_pitch_degrees: 90.0,
@@ -305,6 +307,16 @@ mod tests {
     #[test]
     fn defaults_are_valid() {
         Config::default().validate().unwrap();
+    }
+
+    #[test]
+    fn zero_disables_camera_polling_but_short_nonzero_intervals_are_rejected() {
+        let mut config = Config::default();
+        assert_eq!(config.camera.poll_interval_ms, 0);
+        config.validate().unwrap();
+
+        config.camera.poll_interval_ms = config.camera.minimum_command_interval_ms - 1;
+        assert!(config.validate().is_err());
     }
 
     #[test]

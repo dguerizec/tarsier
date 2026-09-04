@@ -3,7 +3,7 @@ bind = "127.0.0.1:8742"
 
 [video]
 source = "camera"
-input_device = "/dev/video0"
+input_device = "/dev/v4l/by-id/usb-Remo_Tech_Co.__Ltd._OBSBOT_Tiny_2-video-index0"
 output_device = "/dev/video42"
 width = 1280
 height = 720
@@ -15,9 +15,11 @@ loopback_enabled = true
 
 [camera]
 adapter = "obsbot-tiny-2"
-control_device = "/dev/video0"
+control_device = "/dev/v4l/by-id/usb-Remo_Tech_Co.__Ltd._OBSBOT_Tiny_2-video-index0"
 xu_unit = 2
-poll_interval_ms = 500
+# A non-zero interval enables experimental GIM_GET_STATE polling. It is unsafe
+# during streaming on the tested firmware and is therefore disabled by default.
+poll_interval_ms = 0
 minimum_command_interval_ms = 20
 max_yaw_degrees = 130.0
 max_pitch_degrees = 90.0
