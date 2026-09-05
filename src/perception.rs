@@ -171,11 +171,12 @@ fn worker_arguments(
         "--locked".into(),
     ];
     if avatar.enabled {
-        let extra = match avatar.engine {
-            AvatarEngine::Stylized3d => "avatar",
-            AvatarEngine::Liveportrait => "liveportrait",
-        };
-        arguments.extend(["--extra".into(), extra.into()]);
+        arguments.extend([
+            "--extra".into(),
+            "avatar".into(),
+            "--extra".into(),
+            "liveportrait".into(),
+        ]);
     }
     arguments.extend([
         "tarsier-perception".into(),
@@ -210,25 +211,15 @@ fn worker_arguments(
             video.width.to_string(),
             "--avatar-height".into(),
             video.height.to_string(),
+            "--avatar-profile".into(),
+            project_path(&avatar.profile).to_string_lossy().into_owned(),
+            "--avatar-source".into(),
+            project_path(&avatar.source_image)
+                .to_string_lossy()
+                .into_owned(),
         ]);
-        match avatar.engine {
-            AvatarEngine::Stylized3d => {
-                arguments.extend([
-                    "--avatar-profile".into(),
-                    project_path(&avatar.profile).to_string_lossy().into_owned(),
-                ]);
-            }
-            AvatarEngine::Liveportrait => {
-                arguments.extend([
-                    "--avatar-source".into(),
-                    project_path(&avatar.source_image)
-                        .to_string_lossy()
-                        .into_owned(),
-                ]);
-                if avatar.compile {
-                    arguments.push("--avatar-compile".into());
-                }
-            }
+        if avatar.compile {
+            arguments.push("--avatar-compile".into());
         }
     }
     arguments
@@ -334,6 +325,7 @@ mod tests {
             args.windows(2)
                 .any(|pair| pair == ["--extra", "liveportrait"])
         );
+        assert!(args.windows(2).any(|pair| pair == ["--extra", "avatar"]));
         assert!(
             args.windows(2)
                 .any(|pair| pair == ["--avatar-engine", "liveportrait"])
@@ -370,14 +362,22 @@ mod tests {
         assert!(args.windows(2).any(|pair| pair == ["--extra", "avatar"]));
         assert!(
             args.windows(2)
+                .any(|pair| pair == ["--extra", "liveportrait"])
+        );
+        assert!(
+            args.windows(2)
                 .any(|pair| pair == ["--avatar-engine", "stylized-3d"])
         );
         assert!(args.windows(2).any(|pair| pair == ["--avatar-fps", "30"]));
         assert!(args.windows(2).any(
             |pair| pair[0] == "--avatar-profile" && pair[1].ends_with("stylized-3d.json")
         ));
-        assert!(!args.iter().any(|argument| argument == "--avatar-source"));
-        assert!(!args.iter().any(|argument| argument == "--avatar-compile"));
+        assert!(
+            args.windows(2)
+                .any(|pair| pair[0] == "--avatar-source"
+                    && pair[1].ends_with("liveportrait-source.png"))
+        );
+        assert!(args.iter().any(|argument| argument == "--avatar-compile"));
     }
 
     #[test]

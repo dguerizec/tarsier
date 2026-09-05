@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 import logging
 import queue
 import threading
+import time
 import urllib.error
 import urllib.request
-from contextlib import suppress
+from collections.abc import Callable
+from contextlib import ExitStack, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -151,7 +154,13 @@ class AvatarPublisher:
         self._url = f"{daemon_url.rstrip('/')}/api/v1/avatar/frame"
         self._timeout_seconds = timeout_seconds
 
-    def publish(self, frame_id: int, captured_at_ms: int, frame_bgrx: np.ndarray) -> None:
+    def publish(
+        self,
+        engine: str,
+        frame_id: int,
+        captured_at_ms: int,
+        frame_bgrx: np.ndarray,
+    ) -> None:
         if frame_bgrx.ndim != 3 or frame_bgrx.shape[2] != 4 or frame_bgrx.dtype != np.uint8:
             raise ValueError("avatar frame must be a BGRx uint8 image")
         height, width = frame_bgrx.shape[:2]
@@ -162,6 +171,7 @@ class AvatarPublisher:
                 "Content-Type": "application/octet-stream",
                 "X-Tarsier-Frame-Id": str(frame_id),
                 "X-Tarsier-Captured-At-Ms": str(captured_at_ms),
+                "X-Tarsier-Avatar-Engine": engine,
                 "X-Tarsier-Avatar-Width": str(width),
                 "X-Tarsier-Avatar-Height": str(height),
             },
@@ -173,6 +183,41 @@ class AvatarPublisher:
                     raise RuntimeError(f"daemon returned HTTP {response.status}")
         except urllib.error.URLError as error:
             raise RuntimeError(f"failed to publish avatar frame: {error.reason}") from error
+
+
+class AvatarIdentityClient:
+    def __init__(
+        self,
+        daemon_url: str,
+        refresh_seconds: float = 0.25,
+        timeout_seconds: float = 1.0,
+    ) -> None:
+        self._url = f"{daemon_url.rstrip('/')}/api/v1/video/identity"
+        self._refresh_seconds = refresh_seconds
+        self._timeout_seconds = timeout_seconds
+        self._identity = "camera"
+        self._next_refresh = 0.0
+
+    def selected_engine(self) -> str | None:
+        now = time.monotonic()
+        if now >= self._next_refresh:
+            self._refresh(now)
+        return None if self._identity == "camera" else self._identity
+
+    def _refresh(self, now: float) -> None:
+        self._next_refresh = now + self._refresh_seconds
+        request = urllib.request.Request(self._url, method="GET")
+        try:
+            with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:  # noqa: S310
+                payload = json.load(response)
+            identity = payload.get("identity")
+            if identity not in {"camera", "stylized-3d", "liveportrait"}:
+                raise ValueError(f"invalid video identity: {identity!r}")
+            self._identity = identity
+        except (OSError, ValueError, urllib.error.URLError) as error:
+            self._identity = "camera"
+            self._next_refresh = now + max(1.0, self._refresh_seconds)
+            LOGGER.warning("failed to read selected video identity: %s", error)
 
 
 @dataclass(frozen=True)
@@ -244,71 +289,116 @@ class AvatarProcessor:
 
     def _run(self) -> None:
         try:
-            if self._engine == "stylized-3d":
-                self._run_stylized_3d()
-            elif self._engine == "liveportrait":
-                self._run_liveportrait()
-            else:
+            if self._engine not in {"stylized-3d", "liveportrait"}:
                 raise RuntimeError(f"unsupported avatar engine: {self._engine}")
+            self._run_switchable()
         except BaseException as error:
             LOGGER.exception("avatar processor stopped")
             with self._lock:
                 self._error = error
 
-    def _run_stylized_3d(self) -> None:
-        from .stylized3d import Stylized3DAvatarEngine
-
-        if self._profile is None:
-            raise RuntimeError("stylized 3D avatar requires a profile")
+    def _run_switchable(self) -> None:
         publisher = AvatarPublisher(self._daemon_url)
-        with (
-            MediaPipeAvatarTracker(self._model_dir) as tracker,
-            Stylized3DAvatarEngine(self._profile, self._width, self._height) as engine,
-        ):
+        identity = AvatarIdentityClient(self._daemon_url)
+        active_engine: str | None = None
+        resources = ExitStack()
+        render: Callable[[AvatarInputFrame], np.ndarray | None] | None = None
+        failed_engine: str | None = None
+        retry_at = 0.0
+        try:
             while (frame := self._frames.get()) is not None:
-                motion = tracker.track(frame.frame_bgr, frame.timestamp_ms)
-                output = engine.render(motion)
-                self._publish(publisher, frame, output)
+                selected_engine = identity.selected_engine()
+                if selected_engine != active_engine:
+                    resources.close()
+                    resources = ExitStack()
+                    active_engine = None
+                    render = None
+                if selected_engine is None:
+                    failed_engine = None
+                    continue
+                if render is None:
+                    if failed_engine == selected_engine and time.monotonic() < retry_at:
+                        continue
+                    try:
+                        render = self._open_engine(resources, selected_engine)
+                        active_engine = selected_engine
+                        failed_engine = None
+                        LOGGER.info("avatar engine ready: %s", selected_engine)
+                    except (ImportError, OSError, RuntimeError, ValueError):
+                        resources.close()
+                        resources = ExitStack()
+                        failed_engine = selected_engine
+                        retry_at = time.monotonic() + 5.0
+                        LOGGER.exception("failed to initialize avatar engine: %s", selected_engine)
+                        continue
+                output = render(frame)
+                if output is not None:
+                    self._publish(publisher, selected_engine, frame, output)
+        finally:
+            resources.close()
 
-    def _run_liveportrait(self) -> None:
+    def _open_engine(
+        self,
+        resources: ExitStack,
+        engine_name: str,
+    ) -> Callable[[AvatarInputFrame], np.ndarray | None]:
+        if engine_name == "stylized-3d":
+            if self._profile is None:
+                raise RuntimeError("stylized 3D avatar requires a profile")
+            from .stylized3d import Stylized3DAvatarEngine
+
+            tracker = resources.enter_context(MediaPipeAvatarTracker(self._model_dir))
+            engine = resources.enter_context(
+                Stylized3DAvatarEngine(self._profile, self._width, self._height)
+            )
+
+            def render_stylized(frame: AvatarInputFrame) -> np.ndarray:
+                motion = tracker.track(frame.frame_bgr, frame.timestamp_ms)
+                return engine.render(motion)
+
+            return render_stylized
+
+        if engine_name != "liveportrait":
+            raise RuntimeError(f"unsupported avatar engine: {engine_name}")
         if self._source_image is None:
             raise RuntimeError("LivePortrait avatar requires a source image")
-        try:
-            from .liveportrait.engine import ComicAvatarEngine
+        from .liveportrait.engine import ComicAvatarEngine
 
-            source_bgr = cv2.imread(str(self._source_image), cv2.IMREAD_COLOR)
-            if source_bgr is None:
-                raise RuntimeError(f"cannot read avatar source image: {self._source_image}")
-            engine = ComicAvatarEngine(
+        source_bgr = cv2.imread(str(self._source_image), cv2.IMREAD_COLOR)
+        if source_bgr is None:
+            raise RuntimeError(f"cannot read avatar source image: {self._source_image}")
+        engine = resources.enter_context(
+            ComicAvatarEngine(
                 self._source_image,
                 self._model_dir,
                 compile_models=self._compile_models,
             )
-            publisher = AvatarPublisher(self._daemon_url)
-            with MediaPipeFaceCropper(self._model_dir) as cropper:
-                while (frame := self._frames.get()) is not None:
-                    driving = cropper.crop(frame.frame_bgr, frame.timestamp_ms)
-                    if driving is None:
-                        continue
-                    animated = engine.render(driving)
-                    output = compose_avatar_frame(
-                        source_bgr,
-                        animated,
-                        self._width,
-                        self._height,
-                    )
-                    self._publish(publisher, frame, output)
-        except ImportError as error:
-            raise RuntimeError("LivePortrait dependencies are not installed") from error
+        )
+        cropper = resources.enter_context(MediaPipeFaceCropper(self._model_dir))
+
+        def render_liveportrait(frame: AvatarInputFrame) -> np.ndarray | None:
+            driving = cropper.crop(frame.frame_bgr, frame.timestamp_ms)
+            if driving is None:
+                return None
+            animated = engine.render(driving)
+            return compose_avatar_frame(
+                source_bgr,
+                animated,
+                self._width,
+                self._height,
+            )
+
+        return render_liveportrait
 
     def _publish(
         self,
         publisher: AvatarPublisher,
+        engine: str,
         frame: AvatarInputFrame,
         output: np.ndarray,
     ) -> None:
         try:
-            publisher.publish(frame.frame_id, frame.captured_at_ms, output)
+            publisher.publish(engine, frame.frame_id, frame.captured_at_ms, output)
             with self._lock:
                 self._published_count += 1
         except RuntimeError as error:

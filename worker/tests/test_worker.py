@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import io
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
-from tarsier_perception.avatar import compose_avatar_frame, crop_face_square
+from tarsier_perception.avatar import (
+    AvatarIdentityClient,
+    AvatarPublisher,
+    compose_avatar_frame,
+    crop_face_square,
+)
 from tarsier_perception.models import describe_models
 from tarsier_perception.stylized3d import (
     AvatarMotion,
@@ -62,6 +68,16 @@ class FaceResult:
     face_landmarks: list[list[SourceLandmark]]
     face_blendshapes: list[list[FaceCategory]]
     facial_transformation_matrixes: list
+
+
+class HttpResponse(io.BytesIO):
+    status = 204
+
+    def __enter__(self):  # noqa: ANN204
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
 
 
 def test_normalizes_mediapipe_gesture_names() -> None:
@@ -193,6 +209,34 @@ def test_avatar_composition_returns_full_size_bgrx_frame() -> None:
     assert output.dtype == np.uint8
     assert output[4, 8, :3].tolist() == [200, 200, 200]
     assert output[4, 0, :3].tolist() == [10, 10, 10]
+
+
+def test_avatar_identity_client_reads_the_selected_engine(monkeypatch) -> None:  # noqa: ANN001
+    def respond(*_: object, **__: object) -> HttpResponse:
+        return HttpResponse(b'{"identity":"liveportrait"}')
+
+    monkeypatch.setattr("urllib.request.urlopen", respond)
+
+    identity = AvatarIdentityClient("http://127.0.0.1:8742")
+
+    assert identity.selected_engine() == "liveportrait"
+
+
+def test_avatar_publisher_tags_frames_with_the_rendering_engine(monkeypatch) -> None:  # noqa: ANN001
+    import numpy as np
+
+    published = []
+
+    def respond(request, **_: object) -> HttpResponse:  # noqa: ANN001
+        published.append(request)
+        return HttpResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", respond)
+    frame = np.zeros((1, 2, 4), dtype=np.uint8)
+
+    AvatarPublisher("http://127.0.0.1:8742").publish("stylized-3d", 42, 1234, frame)
+
+    assert published[0].get_header("X-tarsier-avatar-engine") == "stylized-3d"
 
 
 def test_avatar_motion_maps_mediapipe_expressions() -> None:

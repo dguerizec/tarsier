@@ -53,6 +53,16 @@ pub enum AvatarEngine {
     Liveportrait,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum VideoIdentity {
+    #[default]
+    Camera,
+    #[serde(rename = "stylized-3d")]
+    Stylized3d,
+    Liveportrait,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct VideoEffectsState {
     pub output_mode: VideoOutputMode,

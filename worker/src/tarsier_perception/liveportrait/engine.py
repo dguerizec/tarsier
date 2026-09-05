@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 from collections import OrderedDict
 from contextlib import nullcontext
 from pathlib import Path
@@ -199,9 +200,7 @@ class ComicAvatarEngine:
             driving_info["pitch"], driving_info["yaw"], driving_info["roll"]
         )
         if self._driving_initial_info is None:
-            self._driving_initial_info = {
-                key: value.clone() for key, value in driving_info.items()
-            }
+            self._driving_initial_info = {key: value.clone() for key, value in driving_info.items()}
             self._driving_initial_rotation = driving_rotation.clone()
         assert self._driving_initial_rotation is not None
 
@@ -215,9 +214,7 @@ class ComicAvatarEngine:
         translation[..., 2].fill_(0)
         driven = scale * (self._source_info["kp"] @ rotation + expression) + translation
 
-        features = torch.cat(
-            [self._source_keypoints.reshape(1, -1), driven.reshape(1, -1)], dim=1
-        )
+        features = torch.cat([self._source_keypoints.reshape(1, -1), driven.reshape(1, -1)], dim=1)
         with torch.inference_mode():
             delta = self._stitching(features)
         keypoint_count = self._source_keypoints.shape[1]
@@ -237,3 +234,24 @@ class ComicAvatarEngine:
         rendered_rgb = output.float().clamp(0, 1).mul(255).byte()
         rendered_rgb = rendered_rgb[0].permute(1, 2, 0).cpu().numpy()
         return cv2.cvtColor(rendered_rgb, cv2.COLOR_RGB2BGR)
+
+    def close(self) -> None:
+        self._appearance = None
+        self._motion = None
+        self._warping = None
+        self._generator = None
+        self._stitching = None
+        self._source_features = None
+        self._source_info = None
+        self._source_rotation = None
+        self._source_keypoints = None
+        self._driving_initial_info = None
+        self._driving_initial_rotation = None
+        gc.collect()
+        torch.cuda.empty_cache()
+
+    def __enter__(self) -> ComicAvatarEngine:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()

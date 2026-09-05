@@ -177,24 +177,28 @@ obsolete intermediate positions. Embedded UI assets and the health response use
 `Cache-Control: no-store`; an open page detects a new
 daemon instance and reloads itself after a restart.
 
-The **Video identity** selector switches the complete final stream between
-**Camera** and the configured avatar. The example starts the **Stylized 3D**
-engine eagerly while Camera remains selected. A dedicated MediaPipe face
-tracker drives head rotation, eye blinks, jaw opening, smiles, and eyebrow
-motion. The local OpenGL renderer draws a cel-shaded head and bust in a simple
-virtual room at the output resolution. Its colors are editable in
-`assets/avatars/stylized-3d.json`; no camera pixels are used in the final
-avatar frame. Selecting Stylized 3D replaces the whole image in both the web
-preview and `/dev/video42`. Background effects are disabled in the UI while
-this mode is active because its decor is already rendered. If animation stops
-for more than 500 ms, Tarsier outputs black until a fresh generated frame
+The **Video identity** selector switches the complete final stream among
+**Camera**, **Stylized 3D**, and **LivePortrait**. Avatar engines load on demand
+and release their rendering resources when another identity is selected. A
+dedicated MediaPipe face tracker drives head rotation, eye blinks, jaw opening,
+smiles, and eyebrow motion for Stylized 3D. The local OpenGL renderer draws a
+cel-shaded head and bust in a simple virtual room at the output resolution. Its
+colors are editable in `assets/avatars/stylized-3d.json`; no camera pixels
+are used in the final avatar frame. Selecting either avatar replaces the whole
+image in both the web preview and `/dev/video42`. Background effects are
+disabled in the UI while an avatar is active because its decor is already
+rendered. A switch immediately clears the previous avatar frame, and Tarsier
+accepts new frames only from the selected engine. If initialization or
+animation takes more than 500 ms, it outputs black until a fresh matching frame
 arrives; it never falls back to the real camera.
 
-LivePortrait remains available as an explicit experimental fallback. Set
-`avatar.engine = "liveportrait"`, install the `liveportrait` extra, download
-the additional weights with `models --download --avatar`, and configure the
-source illustration. Its first compiled inference may take roughly one minute
-on the tested RTX 3070 while PyTorch builds and caches GPU kernels.
+LivePortrait remains an experimental fallback. The supervised worker installs
+both optional dependency groups and verifies the additional local weights at
+startup, but imports PyTorch and loads the neural models only after LivePortrait
+is selected. Download the weights with `models --download --avatar` and
+configure the approved source illustration. Its first compiled inference may
+take roughly one minute on the tested RTX 3070 while PyTorch builds and caches
+GPU kernels.
 
 Hold the direction buttons below the preview or use the keyboard arrow keys to
 pan and tilt. Arrow keys keep their normal behavior while an input such as the

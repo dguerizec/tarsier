@@ -71,19 +71,17 @@ def main() -> None:
         raise SystemExit(f"avatar source image does not exist: {args.avatar_source}")
     if args.avatar_profile is not None and not args.avatar_profile.is_file():
         raise SystemExit(f"avatar profile does not exist: {args.avatar_profile}")
-    if args.avatar_engine == "liveportrait" and args.avatar_source is None:
-        raise SystemExit("--avatar-source is required for the LivePortrait engine")
-    if args.avatar_engine == "stylized-3d" and args.avatar_profile is None:
-        raise SystemExit("--avatar-profile is required for the stylized 3D engine")
+    if args.avatar_engine is not None and args.avatar_source is None:
+        raise SystemExit("--avatar-source is required for runtime avatar switching")
+    if args.avatar_engine is not None and args.avatar_profile is None:
+        raise SystemExit("--avatar-profile is required for runtime avatar switching")
     if args.avatar_engine is None and (
         args.avatar_source is not None or args.avatar_profile is not None
     ):
         raise SystemExit("--avatar-engine is required when avatar assets are configured")
     unavailable = [
         model
-        for model in describe_models(
-            args.model_dir, include_avatar=args.avatar_engine == "liveportrait"
-        )
+        for model in describe_models(args.model_dir, include_avatar=args.avatar_engine is not None)
         if not model["verified"]
     ]
     if unavailable:

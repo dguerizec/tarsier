@@ -37,15 +37,17 @@ Pass `--source /dev/video43` only when a dedicated perception device is
 preferred. The worker also accepts `--device` as a compatibility alias.
 
 Avatar output is enabled by the daemon's `[avatar]` configuration. The
-supervisor selects the dependency group and supplies the configured engine,
-profile or source image, output dimensions, and cadence automatically. Models
-and generated frames stay on the local machine. The daemon accepts avatar
-frames only on its loopback API and emits black when the latest frame is older
-than 500 ms.
+supervisor installs both optional dependency groups and supplies the 3D profile,
+LivePortrait source image, output dimensions, and cadence automatically. The
+worker polls the daemon's selected identity and loads only the requested engine;
+PyTorch is not imported while Camera or Stylized 3D is selected. Models and
+generated frames stay on the local machine. Every generated frame identifies
+its renderer, and the daemon accepts it only when that identity is still
+selected. It emits black when a matching frame is unavailable or older than
+500 ms.
 
-The optional `liveportrait` dependency group retains the earlier neural
-portrait renderer as an explicit fallback. It requires the five additional
-weights and a source illustration:
+The `liveportrait` dependency group provides the experimental neural portrait
+fallback. It requires the five additional weights and a source illustration:
 
 ```sh
 uv sync --project worker --extra liveportrait --locked

@@ -76,14 +76,11 @@ impl Config {
             bail!("avatar fps must be greater than zero");
         }
         if self.avatar.enabled {
-            match self.avatar.engine {
-                AvatarEngine::Stylized3d if self.avatar.profile.as_os_str().is_empty() => {
-                    bail!("avatar profile must not be empty for the stylized 3D engine");
-                }
-                AvatarEngine::Liveportrait if self.avatar.source_image.as_os_str().is_empty() => {
-                    bail!("avatar source_image must not be empty for the LivePortrait engine");
-                }
-                _ => {}
+            if self.avatar.profile.as_os_str().is_empty() {
+                bail!("avatar profile must not be empty when avatar output is enabled");
+            }
+            if self.avatar.source_image.as_os_str().is_empty() {
+                bail!("avatar source_image must not be empty when avatar output is enabled");
             }
         }
         if !(0.0..=1.0).contains(&self.perception.minimum_confidence)

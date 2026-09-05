@@ -392,12 +392,10 @@ function backgroundState(videoEffects) {
 }
 
 function renderOutputMode(videoEffects) {
-  const stylized3d = videoEffects.avatar_engine === "stylized-3d";
-  $("#avatar-mode-name").textContent = stylized3d ? "Stylized 3D" : "Comic avatar";
-  $("#avatar-mode-description").textContent = stylized3d
-    ? "Animate a local 3D character and virtual room"
-    : "Animate the approved portrait and virtual decor";
-  const mode = outputModeDraft || videoEffects.output_mode || "camera";
+  const configuredIdentity = videoEffects.output_mode === "comic-avatar"
+    ? (videoEffects.avatar_engine || "stylized-3d")
+    : "camera";
+  const identity = outputModeDraft || configuredIdentity;
   const publishedFresh = videoEffects.avatar_published_at_ms != null
     && Date.now() - videoEffects.avatar_published_at_ms <= 500;
   const capturedFresh = videoEffects.avatar_captured_at_ms != null
@@ -405,15 +403,15 @@ function renderOutputMode(videoEffects) {
   const avatarFresh = videoEffects.avatar_available && publishedFresh && capturedFresh;
   for (const input of outputModeInputs) {
     input.disabled = outputModePending;
-    input.checked = input.value === mode;
+    input.checked = input.value === identity;
   }
-  skeletonToggle.disabled = mode === "comic-avatar";
+  skeletonToggle.disabled = identity !== "camera";
   const status = outputModeError
     ? "Change failed"
     : outputModePending ? "Switching…"
-    : mode === "camera" ? "Real camera"
-    : avatarFresh ? (stylized3d ? "Stylized 3D active" : "Comic avatar active")
-    : `Privacy fallback · waiting for ${stylized3d ? "3D renderer" : "LivePortrait"}`;
+    : identity === "camera" ? "Real camera"
+    : avatarFresh ? (identity === "stylized-3d" ? "Stylized 3D active" : "LivePortrait active")
+    : `Privacy fallback · waiting for ${identity === "stylized-3d" ? "3D renderer" : "LivePortrait"}`;
   $("#output-status").textContent = status;
   $("#output-error").hidden = !outputModeError;
   $("#output-error").textContent = outputModeError || "";
@@ -610,23 +608,30 @@ async function setBackground(enabled, effect) {
   }
 }
 
-async function setOutputMode(mode) {
+async function setOutputMode(identity) {
   if (outputModePending || !state) return;
   outputModePending = true;
   outputModeError = null;
-  outputModeDraft = mode;
+  outputModeDraft = identity;
   render(state);
   try {
-    const response = await fetch("/api/v1/video/output-mode", {
+    const response = await fetch("/api/v1/video/identity", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ mode }),
+      body: JSON.stringify({ identity }),
     });
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}));
       throw new Error(payload.error || `Output mode failed (${response.status})`);
     }
-    state.video_effects.output_mode = mode;
+    state.video_effects.output_mode = identity === "camera" ? "camera" : "comic-avatar";
+    if (identity !== "camera") {
+      state.video_effects.avatar_engine = identity;
+      state.video_effects.avatar_available = false;
+      state.video_effects.avatar_frame_id = null;
+      state.video_effects.avatar_captured_at_ms = null;
+      state.video_effects.avatar_published_at_ms = null;
+    }
   } catch (error) {
     outputModeError = error instanceof Error ? error.message : String(error);
   } finally {

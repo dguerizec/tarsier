@@ -13,7 +13,7 @@ use axum::{
 };
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, watch};
 use tower_http::trace::TraceLayer;
@@ -24,9 +24,9 @@ use crate::{
     effects::{AvatarFrame, MAX_AVATAR_FRAME_BYTES, VideoMask},
     face_tracking::FaceTrackingController,
     model::{
-        BackgroundEffect, BuiltInGesture, CameraAttitudeSource, FaceTrackingState,
-        FaceTrackingTarget, Landmark, PerceptionObservation, ScenarioActivation, VideoOutputMode,
-        unix_ms,
+        AvatarEngine, BackgroundEffect, BuiltInGesture, CameraAttitudeSource, FaceTrackingState,
+        FaceTrackingTarget, Landmark, PerceptionObservation, ScenarioActivation, VideoIdentity,
+        VideoOutputMode, unix_ms,
     },
     pipeline::PreviewHub,
     runtime::Runtime,
@@ -43,6 +43,7 @@ struct ApiState {
     camera: Option<CameraHandle>,
     pan_tilt_motion: Arc<Mutex<PanTiltMotion>>,
     face_tracking: Arc<Mutex<FaceTrackingController>>,
+    avatar_control: Arc<Mutex<()>>,
     shutdown: watch::Receiver<bool>,
 }
 
@@ -62,6 +63,7 @@ pub fn router(
         camera,
         pan_tilt_motion: Arc::new(Mutex::new(PanTiltMotion::default())),
         face_tracking: Arc::new(Mutex::new(FaceTrackingController::default())),
+        avatar_control: Arc::new(Mutex::new(())),
         shutdown,
     };
     Router::new()
@@ -106,6 +108,10 @@ pub fn router(
             get(perception_input_mjpeg),
         )
         .route("/api/v1/video/background", post(set_background))
+        .route(
+            "/api/v1/video/identity",
+            get(current_identity).post(set_identity),
+        )
         .route("/api/v1/video/output-mode", post(set_output_mode))
         .route("/api/v1/video/green-screen", post(set_green_screen))
         .route("/api/v1/preview.mjpeg", get(preview_mjpeg))
@@ -215,6 +221,16 @@ struct BackgroundRequest {
 #[derive(Deserialize)]
 struct OutputModeRequest {
     mode: VideoOutputMode,
+}
+
+#[derive(Deserialize)]
+struct IdentityRequest {
+    identity: VideoIdentity,
+}
+
+#[derive(Serialize)]
+struct IdentityResponse {
+    identity: VideoIdentity,
 }
 
 #[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -877,14 +893,70 @@ async fn set_background(
     StatusCode::ACCEPTED.into_response()
 }
 
+async fn current_identity(State(state): State<ApiState>) -> Json<IdentityResponse> {
+    let effects = state.runtime.state().await.video_effects;
+    Json(IdentityResponse {
+        identity: video_identity(effects.output_mode, effects.avatar_engine),
+    })
+}
+
+async fn set_identity(
+    State(state): State<ApiState>,
+    Json(request): Json<IdentityRequest>,
+) -> Response {
+    if request.identity != VideoIdentity::Camera && !state.config.avatar.enabled {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "avatar output is disabled in the daemon configuration"})),
+        )
+            .into_response();
+    }
+    let _guard = state.avatar_control.lock().await;
+    let (mode, engine) = match request.identity {
+        VideoIdentity::Camera => (VideoOutputMode::Camera, None),
+        VideoIdentity::Stylized3d => (VideoOutputMode::ComicAvatar, Some(AvatarEngine::Stylized3d)),
+        VideoIdentity::Liveportrait => (
+            VideoOutputMode::ComicAvatar,
+            Some(AvatarEngine::Liveportrait),
+        ),
+    };
+    state.preview.effects().clear_avatar();
+    state.preview.effects().set_output_mode(mode);
+    state
+        .runtime
+        .update(|runtime| {
+            runtime.video_effects.output_mode = mode;
+            if let Some(engine) = engine {
+                runtime.video_effects.avatar_engine = Some(engine);
+            }
+            clear_avatar_state(runtime);
+        })
+        .await;
+    state
+        .runtime
+        .emit(
+            "video.identity",
+            "api",
+            None,
+            json!({"identity": request.identity}),
+        )
+        .await;
+    StatusCode::ACCEPTED.into_response()
+}
+
 async fn set_output_mode(
     State(state): State<ApiState>,
     Json(request): Json<OutputModeRequest>,
 ) -> Response {
+    let _guard = state.avatar_control.lock().await;
+    state.preview.effects().clear_avatar();
     state.preview.effects().set_output_mode(request.mode);
     state
         .runtime
-        .update(|runtime| runtime.video_effects.output_mode = request.mode)
+        .update(|runtime| {
+            runtime.video_effects.output_mode = request.mode;
+            clear_avatar_state(runtime);
+        })
         .await;
     state
         .runtime
@@ -899,6 +971,10 @@ async fn set_output_mode(
 }
 
 async fn avatar_frame(State(state): State<ApiState>, headers: HeaderMap, body: Bytes) -> Response {
+    let engine = match required_avatar_engine_header(&headers) {
+        Ok(value) => value,
+        Err(error) => return unprocessable_entity(error),
+    };
     let frame_id = match required_u64_header(&headers, "x-tarsier-frame-id") {
         Ok(value) => value,
         Err(error) => return unprocessable_entity(error),
@@ -919,6 +995,16 @@ async fn avatar_frame(State(state): State<ApiState>, headers: HeaderMap, body: B
         Ok(avatar) => avatar,
         Err(error) => return unprocessable_entity(error.to_string()),
     };
+    let _guard = state.avatar_control.lock().await;
+    let effects = state.runtime.state().await.video_effects;
+    if effects.output_mode != VideoOutputMode::ComicAvatar || effects.avatar_engine != Some(engine)
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "avatar frame does not match the selected video identity"})),
+        )
+            .into_response();
+    }
     let frame_id = avatar.frame_id;
     let published_at_ms = avatar.published_at_ms;
     state.preview.effects().publish_avatar(avatar);
@@ -934,6 +1020,25 @@ async fn avatar_frame(State(state): State<ApiState>, headers: HeaderMap, body: B
         })
         .await;
     StatusCode::NO_CONTENT.into_response()
+}
+
+fn video_identity(mode: VideoOutputMode, engine: Option<AvatarEngine>) -> VideoIdentity {
+    match (mode, engine) {
+        (VideoOutputMode::Camera, _) => VideoIdentity::Camera,
+        (VideoOutputMode::ComicAvatar, Some(AvatarEngine::Liveportrait)) => {
+            VideoIdentity::Liveportrait
+        }
+        (VideoOutputMode::ComicAvatar, _) => VideoIdentity::Stylized3d,
+    }
+}
+
+fn clear_avatar_state(runtime: &mut crate::model::RuntimeState) {
+    runtime.video_effects.avatar_available = false;
+    runtime.video_effects.avatar_frame_id = None;
+    runtime.video_effects.avatar_width = None;
+    runtime.video_effects.avatar_height = None;
+    runtime.video_effects.avatar_captured_at_ms = None;
+    runtime.video_effects.avatar_published_at_ms = None;
 }
 
 async fn perception_mask(
@@ -979,6 +1084,20 @@ fn required_u64_header(headers: &HeaderMap, name: &'static str) -> Result<u64, S
 
 fn required_u32_header(headers: &HeaderMap, name: &'static str) -> Result<u32, String> {
     required_header(headers, name)
+}
+
+fn required_avatar_engine_header(headers: &HeaderMap) -> Result<AvatarEngine, String> {
+    let name = "x-tarsier-avatar-engine";
+    let value = headers
+        .get(name)
+        .ok_or_else(|| format!("missing {name} header"))?
+        .to_str()
+        .map_err(|_| format!("invalid {name} header"))?;
+    match value {
+        "stylized-3d" => Ok(AvatarEngine::Stylized3d),
+        "liveportrait" => Ok(AvatarEngine::Liveportrait),
+        _ => Err(format!("invalid {name} header")),
+    }
 }
 
 fn required_header<T>(headers: &HeaderMap, name: &'static str) -> Result<T, String>
@@ -1390,7 +1509,7 @@ mod tests {
         assert!(include_str!("../web/index.html").contains("id=\"background-toggle\""));
         assert!(include_str!("../web/app.js").contains("/api/v1/video/background"));
         assert!(include_str!("../web/index.html").contains("data-output-mode"));
-        assert!(include_str!("../web/app.js").contains("/api/v1/video/output-mode"));
+        assert!(include_str!("../web/app.js").contains("/api/v1/video/identity"));
     }
 
     #[tokio::test]
@@ -1548,6 +1667,7 @@ mod tests {
     async fn avatar_frame_is_published_with_output_provenance() {
         let mut config = Config::default();
         config.perception.enabled = false;
+        config.avatar.enabled = true;
         let runtime = Runtime::new();
         let preview = PreviewHub::new();
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -1555,9 +1675,40 @@ mod tests {
         let captured_at_ms = unix_ms();
 
         let response = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/video/identity")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"identity":"stylized-3d"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+        let response = app
+            .clone()
             .oneshot(
                 Request::post("/api/v1/avatar/frame")
                     .header("content-type", "application/octet-stream")
+                    .header("x-tarsier-avatar-engine", "liveportrait")
+                    .header("x-tarsier-frame-id", "41")
+                    .header("x-tarsier-captured-at-ms", captured_at_ms.to_string())
+                    .header("x-tarsier-avatar-width", "2")
+                    .header("x-tarsier-avatar-height", "1")
+                    .body(Body::from(vec![1, 2, 3, 0, 4, 5, 6, 0]))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(preview.effects().latest_avatar().is_none());
+
+        let response = app
+            .oneshot(
+                Request::post("/api/v1/avatar/frame")
+                    .header("content-type", "application/octet-stream")
+                    .header("x-tarsier-avatar-engine", "stylized-3d")
                     .header("x-tarsier-frame-id", "42")
                     .header("x-tarsier-captured-at-ms", captured_at_ms.to_string())
                     .header("x-tarsier-avatar-width", "2")
@@ -1579,6 +1730,56 @@ mod tests {
             (effects.avatar_width, effects.avatar_height),
             (Some(2), Some(1))
         );
+    }
+
+    #[tokio::test]
+    async fn identity_control_selects_liveportrait_and_clears_the_previous_frame() {
+        let mut config = Config::default();
+        config.perception.enabled = false;
+        config.avatar.enabled = true;
+        let runtime = Runtime::new();
+        let preview = PreviewHub::new();
+        preview
+            .effects()
+            .publish_avatar(AvatarFrame::new(1, unix_ms(), 1, 1, vec![1, 2, 3, 0]).unwrap());
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = router(config, runtime.clone(), preview.clone(), None, shutdown_rx);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/video/identity")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"identity":"liveportrait"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            preview.effects().output_mode(),
+            VideoOutputMode::ComicAvatar
+        );
+        assert!(preview.effects().latest_avatar().is_none());
+        let effects = runtime.state().await.video_effects;
+        assert_eq!(effects.avatar_engine, Some(AvatarEngine::Liveportrait));
+        assert!(!effects.avatar_available);
+
+        let response = app
+            .oneshot(
+                Request::get("/api/v1/video/identity")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let payload: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 1024).await.unwrap()).unwrap();
+        assert_eq!(payload["identity"], "liveportrait");
+        let events = runtime.recent_events().await;
+        assert_eq!(events[0].kind, "video.identity");
+        assert_eq!(events[0].data["identity"], "liveportrait");
     }
 
     #[tokio::test]
