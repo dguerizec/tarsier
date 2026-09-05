@@ -18,7 +18,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class HandLandmark:
+class Landmark:
     x: float
     y: float
     z: float
@@ -29,8 +29,9 @@ class Observation:
     frame_id: int
     captured_at_ms: int
     face_detected: bool
+    face_landmarks: list[Landmark]
     hand_detected: bool
-    hand_landmarks: list[HandLandmark]
+    hand_landmarks: list[Landmark]
     gesture: str | None
     confidence: float
     latency_ms: float
@@ -54,12 +55,11 @@ def select_gesture(gestures: list[list[Any]]) -> tuple[str | None, float]:
     return max(candidates, key=lambda candidate: candidate[1])
 
 
-def select_hand_landmarks(hands: list[list[Any]]) -> list[HandLandmark]:
-    if not hands:
-        return []
+def select_landmarks(groups: list[list[Any]], limit: int) -> list[Landmark]:
     return [
-        HandLandmark(x=float(point.x), y=float(point.y), z=float(point.z))
-        for point in hands[0]
+        Landmark(x=float(point.x), y=float(point.y), z=float(point.z))
+        for group in groups[:limit]
+        for point in group
     ]
 
 
@@ -73,7 +73,7 @@ class MediaPipeDetector:
                     model_asset_path=str(model_dir / "gesture_recognizer.task")
                 ),
                 running_mode=vision.RunningMode.VIDEO,
-                num_hands=1,
+                num_hands=2,
                 min_hand_detection_confidence=minimum_confidence,
                 min_hand_presence_confidence=minimum_confidence,
                 min_tracking_confidence=minimum_confidence,
@@ -82,32 +82,28 @@ class MediaPipeDetector:
                 ),
             )
         )
-        self._face = vision.FaceDetector.create_from_options(
-            vision.FaceDetectorOptions(
-                base_options=base_options(
-                    model_asset_path=str(model_dir / "blaze_face_short_range.tflite")
-                ),
+        self._face = vision.FaceLandmarker.create_from_options(
+            vision.FaceLandmarkerOptions(
+                base_options=base_options(model_asset_path=str(model_dir / "face_landmarker.task")),
                 running_mode=vision.RunningMode.VIDEO,
-                min_detection_confidence=minimum_confidence,
+                num_faces=1,
+                min_face_detection_confidence=minimum_confidence,
+                min_face_presence_confidence=minimum_confidence,
+                min_tracking_confidence=minimum_confidence,
             )
         )
 
     def detect(
         self, frame_bgr: np.ndarray, timestamp_ms: int
-    ) -> tuple[bool, bool, list[HandLandmark], str | None, float]:
+    ) -> tuple[list[Landmark], list[Landmark], str | None, float]:
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
         face_result = self._face.detect_for_video(image, timestamp_ms)
         gesture_result = self._gesture.recognize_for_video(image, timestamp_ms)
         gesture, confidence = select_gesture(gesture_result.gestures)
-        landmarks = select_hand_landmarks(gesture_result.hand_landmarks)
-        return (
-            bool(face_result.detections),
-            bool(landmarks),
-            landmarks,
-            gesture,
-            confidence,
-        )
+        face_landmarks = select_landmarks(face_result.face_landmarks, 1)
+        hand_landmarks = select_landmarks(gesture_result.hand_landmarks, 2)
+        return face_landmarks, hand_landmarks, gesture, confidence
 
     def close(self) -> None:
         self._gesture.close()
@@ -186,14 +182,17 @@ def run_worker(
             timestamp_ms = max(0, int((now - started_at) * 1000))
             captured_at_ms = time.time_ns() // 1_000_000
             inference_started = time.perf_counter()
-            face, hand, landmarks, gesture, confidence = detector.detect(frame, timestamp_ms)
+            face_landmarks, hand_landmarks, gesture, confidence = detector.detect(
+                frame, timestamp_ms
+            )
             latency_ms = (time.perf_counter() - inference_started) * 1000.0
             observation = Observation(
                 frame_id=frame_id,
                 captured_at_ms=captured_at_ms,
-                face_detected=face,
-                hand_detected=hand,
-                hand_landmarks=landmarks,
+                face_detected=bool(face_landmarks),
+                face_landmarks=face_landmarks,
+                hand_detected=bool(hand_landmarks),
+                hand_landmarks=hand_landmarks,
                 gesture=gesture,
                 confidence=confidence,
                 latency_ms=latency_ms,
@@ -214,6 +213,7 @@ def run_mock(daemon_url: str, fps: float, open_palm: bool) -> None:
                 frame_id=frame_id,
                 captured_at_ms=time.time_ns() // 1_000_000,
                 face_detected=True,
+                face_landmarks=[],
                 hand_detected=open_palm,
                 hand_landmarks=[],
                 gesture="open_palm" if open_palm else None,

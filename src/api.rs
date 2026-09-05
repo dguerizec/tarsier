@@ -651,10 +651,19 @@ async fn perception_observation(
         )
             .into_response();
     }
-    if !observation.hand_landmarks.is_empty() && observation.hand_landmarks.len() != 21 {
+    if !observation.face_landmarks.is_empty() && observation.face_landmarks.len() != 478 {
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
-            Json(json!({"error": "hand_landmarks must contain exactly 21 points"})),
+            Json(json!({"error": "face_landmarks must contain exactly 478 points"})),
+        )
+            .into_response();
+    }
+    if !observation.hand_landmarks.is_empty()
+        && !matches!(observation.hand_landmarks.len(), 21 | 42)
+    {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"error": "hand_landmarks must contain exactly 21 or 42 points"})),
         )
             .into_response();
     }
@@ -666,6 +675,11 @@ async fn perception_observation(
             runtime.perception.error = None;
             runtime.perception.frame_id = Some(observation.frame_id);
             runtime.perception.face_detected = observation.face_detected;
+            runtime.perception.face_landmarks = if observation.face_detected {
+                observation.face_landmarks.clone()
+            } else {
+                Vec::new()
+            };
             runtime.perception.hand_detected = observation.hand_detected;
             runtime.perception.hand_landmarks = if observation.hand_detected {
                 observation.hand_landmarks.clone()
@@ -1127,7 +1141,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn perception_state_remembers_a_hand_and_peak_after_release() {
+    async fn perception_state_tracks_a_face_and_two_hands_then_clears_landmarks() {
         let mut config = Config::default();
         config.perception.enabled = false;
         let runtime = Runtime::new();
@@ -1140,14 +1154,18 @@ mod tests {
             shutdown_rx,
         );
 
-        let hand_landmarks = (0..21)
-            .map(|index| json!({"x": index as f32 / 20.0, "y": 0.5, "z": -0.1}))
+        let face_landmarks = (0..478)
+            .map(|index| json!({"x": index as f32 / 477.0, "y": 0.4, "z": -0.2}))
+            .collect::<Vec<_>>();
+        let hand_landmarks = (0..42)
+            .map(|index| json!({"x": index as f32 / 41.0, "y": 0.5, "z": -0.1}))
             .collect::<Vec<_>>();
         for (index, observation) in [
             json!({
                 "frame_id": 1,
                 "captured_at_ms": 1000,
                 "face_detected": true,
+                "face_landmarks": face_landmarks,
                 "hand_detected": true,
                 "hand_landmarks": hand_landmarks,
                 "gesture": "open_palm",
@@ -1157,7 +1175,7 @@ mod tests {
             json!({
                 "frame_id": 2,
                 "captured_at_ms": 1100,
-                "face_detected": true,
+                "face_detected": false,
                 "hand_detected": false,
                 "gesture": null,
                 "confidence": 0.0,
@@ -1179,11 +1197,15 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), StatusCode::NO_CONTENT);
             if index == 0 {
-                assert_eq!(runtime.state().await.perception.hand_landmarks.len(), 21);
+                let perception = runtime.state().await.perception;
+                assert_eq!(perception.face_landmarks.len(), 478);
+                assert_eq!(perception.hand_landmarks.len(), 42);
             }
         }
 
         let state = runtime.state().await;
+        assert!(!state.perception.face_detected);
+        assert!(state.perception.face_landmarks.is_empty());
         assert!(!state.perception.hand_detected);
         assert!(state.perception.hand_landmarks.is_empty());
         assert_eq!(state.perception.last_hand_at_ms, Some(1000));

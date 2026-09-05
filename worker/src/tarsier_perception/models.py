@@ -21,10 +21,10 @@ MODEL_ASSETS = (
         "97952348cf6a6a4915c2ea1496b4b37ebabc50cbbf80571435643c455f2b0482",
     ),
     ModelAsset(
-        "blaze_face_short_range.tflite",
-        "https://storage.googleapis.com/mediapipe-models/face_detector/"
-        "blaze_face_short_range/float16/1/blaze_face_short_range.tflite",
-        "b4578f35940bf5a1a655214a1cce5cab13eba73c1297cd78e1a04c2380b0152f",
+        "face_landmarker.task",
+        "https://storage.googleapis.com/mediapipe-models/face_landmarker/"
+        "face_landmarker/float16/1/face_landmarker.task",
+        "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff",
     ),
 )
 

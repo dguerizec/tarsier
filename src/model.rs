@@ -115,8 +115,9 @@ pub struct PerceptionState {
     pub error: Option<String>,
     pub frame_id: Option<u64>,
     pub face_detected: bool,
+    pub face_landmarks: Vec<Landmark>,
     pub hand_detected: bool,
-    pub hand_landmarks: Vec<HandLandmark>,
+    pub hand_landmarks: Vec<Landmark>,
     pub last_hand_at_ms: Option<u64>,
     pub gesture: Option<String>,
     pub confidence: Option<f32>,
@@ -128,7 +129,7 @@ pub struct PerceptionState {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
-pub struct HandLandmark {
+pub struct Landmark {
     pub x: f32,
     pub y: f32,
     pub z: f32,
@@ -160,9 +161,11 @@ pub struct PerceptionObservation {
     #[serde(default)]
     pub face_detected: bool,
     #[serde(default)]
+    pub face_landmarks: Vec<Landmark>,
+    #[serde(default)]
     pub hand_detected: bool,
     #[serde(default)]
-    pub hand_landmarks: Vec<HandLandmark>,
+    pub hand_landmarks: Vec<Landmark>,
     pub gesture: Option<String>,
     #[serde(default)]
     pub confidence: f32,

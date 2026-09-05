@@ -32,7 +32,7 @@ main { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(17rem, .85
 .preview-stage { position: relative; min-height: 22rem; display: grid; place-items: center; background: #030504; }
 .preview-stage img { position: relative; z-index: 1; display: block; width: 100%; height: 100%; object-fit: contain; }
 .preview-stage img.disconnected { visibility: hidden; }
-#hand-overlay { position: absolute; inset: 0; z-index: 2; width: 100%; height: 100%; pointer-events: none; }
+#landmark-overlay { position: absolute; inset: 0; z-index: 2; width: 100%; height: 100%; pointer-events: none; }
 #preview-placeholder { position: absolute; color: var(--muted); }
 .pan-tilt-bar { min-height: 7rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .75rem 1rem 1rem; border-top: 1px solid var(--panel-edge); }
 .pan-tilt-copy { display: grid; gap: .25rem; }

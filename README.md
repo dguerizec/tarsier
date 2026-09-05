@@ -34,13 +34,13 @@ mischievous personality without tying its core to one camera vendor.
 - bounded absolute gimbal moves, continuous held pan/tilt movement, x1-to-x4 zoom,
   HDR, recentering, tracking, named presets, and separate Tiny 2 built-in
   gesture controls are available over HTTP;
-- a supervised Python 3.12 worker performs local MediaPipe face and canned
-  gesture recognition;
+- a supervised Python 3.12 worker performs local MediaPipe face landmarking and
+  canned gesture recognition for up to two hands;
 - face presence and open-palm observations pass through dwell, release, and
   cooldown stabilization before becoming semantic events;
 - a responsive local web UI shows the preview, telemetry, perception state,
-  presets, scenarios, and recent events, with an optional 21-point hand
-  skeleton overlay and a direction pad with page-level arrow-key control; it
+  presets, scenarios, and recent events, with optional face and two-hand
+  skeleton overlays and a direction pad with page-level arrow-key control; it
   reloads its embedded assets after a daemon upgrade and reconnects the MJPEG
   preview after either a pipeline or daemon restart;
 - snapshots are available as JPEG over HTTP and as image content over MCP.
@@ -123,11 +123,12 @@ cargo run -- serve --config config/tarsier.example.toml
 ```
 
 Open <http://127.0.0.1:8742/> for the embedded preview and controls. In another
-terminal, inspect the daemon or consume its public virtual camera. The **Hand
-skeleton** button overlays MediaPipe landmarks in the UI without modifying the
-public V4L2 feed. The manual zoom slider applies x1-to-x4 changes continuously
-while coalescing obsolete intermediate positions. Embedded UI assets and the
-health response use `Cache-Control: no-store`; an open page detects a new
+terminal, inspect the daemon or consume its public virtual camera. The
+**Skeletons** button overlays the detected face mesh and both 21-point hand
+skeletons in the UI without modifying the public V4L2 feed. The manual zoom
+slider applies x1-to-x4 changes continuously while coalescing obsolete
+intermediate positions. Embedded UI assets and the health response use
+`Cache-Control: no-store`; an open page detects a new
 daemon instance and reloads itself after a restart.
 
 Hold the direction buttons below the preview or use the keyboard arrow keys to
@@ -338,11 +339,13 @@ The first vertical slice was validated on 2026-09-05 with an OBSBOT Tiny 2
   move, tracking, snapshot, UI, and MCP checks;
 - a bounded move and tracking-disable request were accepted, reflected in
   telemetry/state, and recorded on the event bus;
-- the supervised MediaPipe worker detected a real face with roughly 10 ms
+- the then-current MediaPipe worker detected a real face with roughly 10 ms
   processing latency on the tested machine;
-- the worker published all 21 normalized landmarks for a real detected hand,
-  which the UI can draw as a toggleable canvas overlay without re-encoding the
-  preview or modifying `/dev/video42`;
+- the worker published all 21 normalized landmarks for one real detected hand,
+  which the UI drew as a toggleable canvas overlay without re-encoding the
+  preview or modifying `/dev/video42`; face-mesh and simultaneous two-hand
+  rendering were added afterward and have automated coverage but still need a
+  physical visual revalidation;
 - a physically held open palm emitted `gesture.open_palm.held` at 67.6%
   confidence after the calibrated 60% trigger threshold and activated the
   configured `open-palm-demo` scenario;
@@ -397,6 +400,8 @@ run before unattended use.
 - open-palm thresholds were calibrated for one operator and environment;
   broader lighting, distance, skin-tone, orientation, and operator coverage is
   still required;
+- face-mesh and simultaneous two-hand overlays have not yet been visually
+  revalidated against the physical camera;
 - pipeline telemetry reports effective FPS, frame count, last frame, errors,
   and restart count, but not queue pressure or dropped-frame attribution;
 - configuration changes require a restart and runtime state is not persisted;
