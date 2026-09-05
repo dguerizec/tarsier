@@ -341,10 +341,6 @@ function renderTracking(camera) {
   });
 }
 
-function faceTrackingActive(camera = state?.camera) {
-  return camera?.face_tracking?.enabled === true;
-}
-
 function renderFaceTracking(camera) {
   const tracking = camera.face_tracking || {};
   const targetName = tracking.target_source === "shoulders" ? "shoulders" : "face";
@@ -365,7 +361,7 @@ function activeDirection() {
 
 function renderPanTilt(camera) {
   const direction = activeDirection();
-  const trackingLocked = faceTrackingActive(camera) || faceTrackingPending || trackingPending;
+  const trackingLocked = faceTrackingPending || trackingPending;
   for (const button of panTiltButtons) {
     button.disabled = !camera.available || trackingLocked;
     button.setAttribute("aria-pressed", String(heldDirections.includes(button.dataset.panTilt)));
@@ -503,8 +499,7 @@ function render(next) {
   $("#camera-error").hidden = !cameraError;
   $("#camera-error").textContent = cameraError || "";
   document.querySelectorAll("[data-action], [data-preset]").forEach((button) => {
-    button.disabled = !camera.available || faceTrackingActive(camera)
-      || faceTrackingPending || trackingPending;
+    button.disabled = !camera.available || faceTrackingPending || trackingPending;
   });
   drawSkeletons(
     socketConnected && pipeline.running ? perception.face_landmarks : [],
@@ -682,7 +677,7 @@ function clearHeldDirections() {
 }
 
 function holdDirection(direction) {
-  if (faceTrackingActive() || faceTrackingPending || trackingPending) return;
+  if (faceTrackingPending || trackingPending) return;
   const previous = activeDirection();
   heldDirections = heldDirections.filter((held) => held !== direction);
   heldDirections.push(direction);
@@ -780,7 +775,7 @@ function blocksArrowControl(target) {
 document.addEventListener("keydown", (event) => {
   const direction = arrowDirections[event.key];
   if (!direction || event.altKey || event.ctrlKey || event.metaKey || blocksArrowControl(event.target)
-    || faceTrackingActive() || faceTrackingPending || trackingPending) return;
+    || faceTrackingPending || trackingPending) return;
   event.preventDefault();
   if (!heldDirections.includes(direction)) holdDirection(direction);
 });

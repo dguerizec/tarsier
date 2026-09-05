@@ -62,10 +62,9 @@ mischievous personality without tying its core to one camera vendor.
 - a responsive local web UI shows the preview, telemetry, perception state,
   presets, scenarios, and recent events, with optional face, body, and two-hand
   skeleton overlays, face tracking, and a direction pad with page-level
-  arrow-key control; manual movement disables built-in camera tracking and is
-  blocked only while Tarsier face tracking owns the gimbal, and the UI reloads
-  its embedded assets after a daemon upgrade and reconnects the MJPEG preview
-  after either a pipeline or daemon restart;
+  arrow-key control; manual movement disables whichever tracking mode owns the
+  gimbal, and the UI reloads its embedded assets after a daemon upgrade and
+  reconnects the MJPEG preview after either a pipeline or daemon restart;
 - snapshots are available as JPEG over HTTP and as image content over MCP.
 
 OBS, Stream Deck, scripts, and similar tools are possible API clients. OBS is
@@ -212,8 +211,8 @@ Tarsier face tracking. The detected face is the preferred target. While face
 and pose are both visible, their vertical offset is calibrated continuously;
 when the face disappears, stable shoulders therefore preserve the inferred
 head height instead of causing a tilt jump. Manual pan, tilt, recenter, and
-preset controls stop built-in camera tracking before moving. They remain
-unavailable while Tarsier face tracking is active.
+preset controls stop either tracking mode before moving and remain available
+whenever the camera is connected.
 
 ```sh
 cargo run -- status

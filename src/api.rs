@@ -275,13 +275,10 @@ async fn move_camera(
     State(state): State<ApiState>,
     Json(request): Json<MoveCameraRequest>,
 ) -> Response {
-    if face_tracking_active(&state).await {
-        return tracking_conflict();
-    }
     let Some(camera) = state.camera.clone() else {
         return camera_unavailable();
     };
-    if let Err(error) = disable_camera_tracking_for_manual_control(&state, &camera).await {
+    if let Err(error) = disable_tracking_for_manual_control(&state, &camera).await {
         return command_error(error);
     }
     match camera
@@ -306,14 +303,11 @@ async fn nudge_camera(
     State(state): State<ApiState>,
     axum::extract::Path(direction): axum::extract::Path<PanTiltDirection>,
 ) -> Response {
-    if direction != PanTiltDirection::Stop && face_tracking_active(&state).await {
-        return tracking_conflict();
-    }
     let Some(camera) = state.camera.clone() else {
         return camera_unavailable();
     };
     if direction != PanTiltDirection::Stop
-        && let Err(error) = disable_camera_tracking_for_manual_control(&state, &camera).await
+        && let Err(error) = disable_tracking_for_manual_control(&state, &camera).await
     {
         return command_error(error);
     }
@@ -481,11 +475,9 @@ async fn camera_action(
     let Some(camera) = state.camera.clone() else {
         return camera_unavailable();
     };
-    let tracking_active = action == "recenter" && face_tracking_active(&state).await;
     match action.as_str() {
-        "recenter" if tracking_active => tracking_conflict(),
         "recenter" => {
-            if let Err(error) = disable_camera_tracking_for_manual_control(&state, &camera).await {
+            if let Err(error) = disable_tracking_for_manual_control(&state, &camera).await {
                 return command_error(error);
             }
             match camera.recenter().await {
@@ -511,9 +503,6 @@ async fn recall_camera_preset(
     State(state): State<ApiState>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Response {
-    if face_tracking_active(&state).await {
-        return tracking_conflict();
-    }
     let Some(preset) = state
         .config
         .presets
@@ -530,7 +519,7 @@ async fn recall_camera_preset(
     let Some(camera) = state.camera.clone() else {
         return camera_unavailable();
     };
-    if let Err(error) = disable_camera_tracking_for_manual_control(&state, &camera).await {
+    if let Err(error) = disable_tracking_for_manual_control(&state, &camera).await {
         return command_error(error);
     }
     match camera.move_to(preset.yaw, preset.pitch, preset.roll).await {
@@ -673,14 +662,36 @@ async fn clear_pan_tilt_motion(state: &ApiState) {
     motion.expires_at = None;
 }
 
-async fn face_tracking_active(state: &ApiState) -> bool {
-    state.face_tracking.lock().await.enabled()
-}
-
-async fn disable_camera_tracking_for_manual_control(
+async fn disable_tracking_for_manual_control(
     state: &ApiState,
     camera: &CameraHandle,
 ) -> anyhow::Result<()> {
+    let face_tracking_disabled = {
+        let mut face_tracking = state.face_tracking.lock().await;
+        if face_tracking.enabled() {
+            camera.set_face_tracking_speed(0, 0, 0.0).await?;
+            face_tracking.set_enabled(false);
+            true
+        } else {
+            false
+        }
+    };
+    if face_tracking_disabled {
+        clear_pan_tilt_motion(state).await;
+        state
+            .runtime
+            .update(|runtime| {
+                runtime.camera.face_tracking = FaceTrackingState::default();
+            })
+            .await;
+        record_camera_command(
+            state,
+            "camera.face_tracking",
+            json!({"enabled": false, "reason": "manual-gimbal-control"}),
+        )
+        .await;
+    }
+
     if state.runtime.state().await.camera.tracking != Some(true) {
         return Ok(());
     }
@@ -701,14 +712,6 @@ async fn disable_camera_tracking_for_manual_control(
     )
     .await;
     Ok(())
-}
-
-fn tracking_conflict() -> Response {
-    (
-        StatusCode::CONFLICT,
-        Json(json!({"error": "manual pan/tilt is unavailable while face tracking controls the gimbal"})),
-    )
-        .into_response()
 }
 
 async fn record_camera_command(state: &ApiState, kind: &str, data: Value) {
@@ -2022,7 +2025,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tracking_modes_switch_and_manual_pan_tilt_overrides_camera_tracking() {
+    async fn tracking_modes_and_manual_pan_tilt_switch_each_other_off() {
         let mut config = Config::default();
         config.camera.adapter = CameraAdapter::Mock;
         config.perception.enabled = false;
@@ -2103,7 +2106,10 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let state = runtime.state().await;
+        assert!(!state.camera.face_tracking.enabled);
+        assert_eq!(state.camera.tracking, Some(false));
     }
 
     #[tokio::test]
