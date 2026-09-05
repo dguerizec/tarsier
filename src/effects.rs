@@ -22,6 +22,13 @@ pub const MAX_AVATAR_FRAME_BYTES: usize = 1920 * 1080 * 4;
 pub const MAX_DEPTH_FRAME_BYTES: usize = 1920 * 1080 * size_of::<f32>();
 const BLUR_DOWNSAMPLE: usize = 8;
 const BLUR_RADIUS: usize = 3;
+const PIXEL_PARTY_BLOCK_SIZE: usize = 16;
+const PIXEL_PARTY_CYCLE_MS: u64 = 24_000;
+const PIXEL_PARTY_SCENE_WIDTH: usize = 80;
+const PIXEL_PARTY_SCENE_HEIGHT: usize = 45;
+const PIXEL_PARTY_SCENE_BYTES: usize = PIXEL_PARTY_SCENE_WIDTH * PIXEL_PARTY_SCENE_HEIGHT * 3;
+static PIXEL_PARTY_SCENE: &[u8; PIXEL_PARTY_SCENE_BYTES] =
+    include_bytes!("../assets/backgrounds/pixel-party.bgr");
 
 #[derive(Clone, Debug)]
 pub struct VideoMask {
@@ -427,6 +434,13 @@ impl VideoEffects {
                 };
                 apply_background_blur(frame, width, height, &mask, &mut scratch);
             }
+            BackgroundEffect::PixelParty => {
+                let Ok(mut scratch) = self.scratch.lock() else {
+                    frame[..expected_len].fill(0);
+                    return true;
+                };
+                apply_pixel_party(frame, width, height, &mask, now_ms, &mut scratch);
+            }
         }
         true
     }
@@ -462,12 +476,14 @@ fn effect_code(effect: BackgroundEffect) -> u8 {
     match effect {
         BackgroundEffect::GreenScreen => 0,
         BackgroundEffect::Blur => 1,
+        BackgroundEffect::PixelParty => 2,
     }
 }
 
 fn effect_from_code(code: u8) -> BackgroundEffect {
     match code {
         1 => BackgroundEffect::Blur,
+        2 => BackgroundEffect::PixelParty,
         _ => BackgroundEffect::GreenScreen,
     }
 }
@@ -658,6 +674,136 @@ fn apply_background_blur(
             mask_y = (mask_y + 1).min(mask_height - 1);
         }
     }
+}
+
+fn apply_pixel_party(
+    frame: &mut [u8],
+    width: usize,
+    height: usize,
+    mask: &VideoMask,
+    now_ms: u64,
+    scratch: &mut EffectScratch,
+) {
+    let reduced_width = width.div_ceil(PIXEL_PARTY_BLOCK_SIZE);
+    let reduced_height = height.div_ceil(PIXEL_PARTY_BLOCK_SIZE);
+    let reduced_len = reduced_width * reduced_height * 3;
+    scratch.reduced.resize(reduced_len, 0);
+
+    for reduced_y in 0..reduced_height {
+        for reduced_x in 0..reduced_width {
+            let target_offset = (reduced_y * reduced_width + reduced_x) * 3;
+            let color =
+                pixel_party_color(reduced_x, reduced_y, reduced_width, reduced_height, now_ms);
+            scratch.reduced[target_offset..target_offset + 3].copy_from_slice(&color);
+        }
+    }
+
+    let mask_width = mask.width as usize;
+    let mask_height = mask.height as usize;
+    let mut mask_y = 0;
+    let mut mask_y_error = 0;
+    for y in 0..height {
+        let reduced_y = y / PIXEL_PARTY_BLOCK_SIZE;
+        let mask_row = mask_y * mask_width;
+        let mut mask_x = 0;
+        let mut mask_x_error = 0;
+        for x in 0..width {
+            let offset = (y * width + x) * 4;
+            let reduced_offset = (reduced_y * reduced_width + x / PIXEL_PARTY_BLOCK_SIZE) * 3;
+            let alpha = feather_alpha(mask.pixels[mask_row + mask_x]) as u16;
+            match alpha {
+                0 => frame[offset..offset + 3]
+                    .copy_from_slice(&scratch.reduced[reduced_offset..reduced_offset + 3]),
+                255 => {}
+                _ => {
+                    let background = 255 - alpha;
+                    for channel in 0..3 {
+                        frame[offset + channel] = ((frame[offset + channel] as u16 * alpha
+                            + scratch.reduced[reduced_offset + channel] as u16 * background)
+                            / 255) as u8;
+                    }
+                }
+            }
+
+            mask_x_error += mask_width;
+            while mask_x_error >= width {
+                mask_x_error -= width;
+                mask_x = (mask_x + 1).min(mask_width - 1);
+            }
+        }
+        mask_y_error += mask_height;
+        while mask_y_error >= height {
+            mask_y_error -= height;
+            mask_y = (mask_y + 1).min(mask_height - 1);
+        }
+    }
+}
+
+fn pixel_party_color(
+    block_x: usize,
+    block_y: usize,
+    block_width: usize,
+    block_height: usize,
+    now_ms: u64,
+) -> [u8; 3] {
+    let x = (block_x as f32 + 0.5) / block_width.max(1) as f32;
+    let y = (block_y as f32 + 0.5) / block_height.max(1) as f32;
+    let scene_x = block_x * PIXEL_PARTY_SCENE_WIDTH / block_width.max(1);
+    let scene_y = block_y * PIXEL_PARTY_SCENE_HEIGHT / block_height.max(1);
+    let scene_offset = (scene_y.min(PIXEL_PARTY_SCENE_HEIGHT - 1) * PIXEL_PARTY_SCENE_WIDTH
+        + scene_x.min(PIXEL_PARTY_SCENE_WIDTH - 1))
+        * 3;
+    // Frames and the bundled scene use BGR channel order.
+    let mut color = [
+        PIXEL_PARTY_SCENE[scene_offset],
+        PIXEL_PARTY_SCENE[scene_offset + 1],
+        PIXEL_PARTY_SCENE[scene_offset + 2],
+    ];
+    let phase = (now_ms % PIXEL_PARTY_CYCLE_MS) as f32 / PIXEL_PARTY_CYCLE_MS as f32
+        * std::f32::consts::TAU;
+
+    // The scene supplies the art direction. Animation stays local and restrained:
+    // the monitor and practical lamp breathe, while a few shelf highlights twinkle.
+    let monitor_weight = pixel_party_radial_weight(x, y, 0.27, 0.44, 0.25, 0.28);
+    let monitor_pulse = (phase + x * 2.5).sin().mul_add(0.5, 0.5);
+    color = scale_pixel_party_color(color, 1.0 + monitor_weight * (monitor_pulse - 0.5) * 0.08);
+
+    let lamp_weight = pixel_party_radial_weight(x, y, 0.80, 0.43, 0.13, 0.24);
+    let lamp_pulse = (phase * 0.72 + 0.8).sin().mul_add(0.5, 0.5);
+    color = scale_pixel_party_color(color, 1.0 + lamp_weight * (lamp_pulse - 0.5) * 0.07);
+
+    let luminance = (color[0] as u16 + color[1] as u16 + color[2] as u16) / 3;
+    let highlight_seed = pixel_party_hash(scene_x, scene_y);
+    if x > 0.56 && y < 0.64 && luminance > 92 && highlight_seed > 0.86 {
+        let twinkle = (phase * 0.55 + highlight_seed * std::f32::consts::TAU).sin();
+        color = scale_pixel_party_color(color, 1.0 + twinkle * 0.035);
+    }
+    color
+}
+
+fn pixel_party_radial_weight(
+    x: f32,
+    y: f32,
+    center_x: f32,
+    center_y: f32,
+    radius_x: f32,
+    radius_y: f32,
+) -> f32 {
+    let distance =
+        (((x - center_x) / radius_x).powi(2) + ((y - center_y) / radius_y).powi(2)).sqrt();
+    (1.0 - distance).clamp(0.0, 1.0)
+}
+
+fn scale_pixel_party_color(color: [u8; 3], amount: f32) -> [u8; 3] {
+    std::array::from_fn(|channel| (color[channel] as f32 * amount).round().clamp(0.0, 255.0) as u8)
+}
+
+fn pixel_party_hash(x: usize, y: usize) -> f32 {
+    let mut value = (x as u32)
+        .wrapping_mul(374_761_393)
+        .wrapping_add((y as u32).wrapping_mul(668_265_263));
+    value = (value ^ (value >> 13)).wrapping_mul(1_274_126_177);
+    ((value ^ (value >> 16)) & 0xffff) as f32 / u16::MAX as f32
 }
 
 fn box_blur_horizontal(
@@ -874,6 +1020,11 @@ mod tests {
         effects.set_background(true, BackgroundEffect::Blur);
         assert!(effects.apply_background(&mut frame, 1, 1, published_at_ms + MASK_MAX_AGE_MS + 1,));
         assert_eq!(frame, [0, 0, 0, 0]);
+
+        frame = [10, 20, 30, 255];
+        effects.set_background(true, BackgroundEffect::PixelParty);
+        assert!(effects.apply_background(&mut frame, 1, 1, published_at_ms + MASK_MAX_AGE_MS + 1,));
+        assert_eq!(frame, [0, 0, 0, 0]);
     }
 
     #[test]
@@ -883,6 +1034,10 @@ mod tests {
 
         assert!(effects.background_enabled());
         assert_eq!(effects.background_effect(), BackgroundEffect::Blur);
+        assert!(!effects.green_screen_enabled());
+
+        effects.set_background(true, BackgroundEffect::PixelParty);
+        assert_eq!(effects.background_effect(), BackgroundEffect::PixelParty);
         assert!(!effects.green_screen_enabled());
 
         effects.set_green_screen_enabled(true);
@@ -926,5 +1081,53 @@ mod tests {
 
         assert!(effects.apply_background(&mut frame, 0, 1, unix_ms()));
         assert_eq!(frame, [0; 4]);
+    }
+
+    #[test]
+    fn pixel_party_keeps_foreground_crisp_and_replaces_background() {
+        let effects = VideoEffects::new();
+        effects.set_background(true, BackgroundEffect::PixelParty);
+        let captured_at_ms = unix_ms();
+        let mut mask_pixels = vec![0; 48 * 24];
+        let foreground_index = 10 * 48 + 30;
+        mask_pixels[foreground_index] = 255;
+        let mask = VideoMask::new(1, captured_at_ms, 48, 24, mask_pixels).unwrap();
+        let published_at_ms = mask.published_at_ms;
+        effects.publish_mask(mask);
+        let mut frame = Vec::with_capacity(48 * 24 * 4);
+        for y in 0..24 {
+            for x in 0..48 {
+                frame.extend_from_slice(&[x as u8 * 3, y as u8 * 7, (x + y) as u8 * 2, 255]);
+            }
+        }
+        let foreground_offset = foreground_index * 4;
+        frame[foreground_offset..foreground_offset + 3].copy_from_slice(&[7, 17, 27]);
+        let mut alternate_source = vec![250; 48 * 24 * 4];
+        for alpha in alternate_source[3..].iter_mut().step_by(4) {
+            *alpha = 255;
+        }
+        alternate_source[foreground_offset..foreground_offset + 3].copy_from_slice(&[7, 17, 27]);
+
+        assert!(effects.apply_background(&mut frame, 48, 24, published_at_ms));
+        assert!(effects.apply_background(&mut alternate_source, 48, 24, published_at_ms,));
+        assert_eq!(
+            &frame[foreground_offset..foreground_offset + 3],
+            &[7, 17, 27]
+        );
+        assert_eq!(frame, alternate_source);
+        assert_eq!(&frame[0..3], &frame[(8 * 48 + 8) * 4..(8 * 48 + 8) * 4 + 3]);
+        assert_ne!(&frame[0..3], &frame[24 * 4..24 * 4 + 3]);
+    }
+
+    #[test]
+    fn pixel_party_studio_animates_and_loops() {
+        let start = pixel_party_color(4, 3, 12, 8, 0);
+
+        assert_eq!(start, pixel_party_color(4, 3, 12, 8, PIXEL_PARTY_CYCLE_MS));
+        assert_ne!(
+            start,
+            pixel_party_color(4, 3, 12, 8, PIXEL_PARTY_CYCLE_MS / 4)
+        );
+        assert_ne!(start, pixel_party_color(5, 3, 12, 8, 0));
     }
 }

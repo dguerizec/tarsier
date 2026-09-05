@@ -632,7 +632,7 @@ function renderCameraPower(camera) {
 }
 
 function backgroundState(videoEffects) {
-  const effect = ["green-screen", "blur"].includes(videoEffects.background_effect)
+  const effect = ["green-screen", "blur", "pixel-party"].includes(videoEffects.background_effect)
     ? videoEffects.background_effect
     : "green-screen";
   const enabled = videoEffects.background_enabled
@@ -688,7 +688,11 @@ function renderBackground(videoEffects) {
     input.checked = input.value === current.effect;
   }
 
-  const effectLabel = current.effect === "blur" ? "Blur" : "Green screen";
+  const effectLabel = {
+    "green-screen": "Green screen",
+    blur: "Blur",
+    "pixel-party": "Pixel Party",
+  }[current.effect] || "Green screen";
   const status = backgroundError
     ? "Change failed"
     : (alternateOutputActive ? "Available only for the real camera"

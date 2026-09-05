@@ -2543,7 +2543,7 @@ mod tests {
             .oneshot(
                 Request::post("/api/v1/video/background")
                     .header("content-type", "application/json")
-                    .body(Body::from(r#"{"enabled":true,"effect":"blur"}"#))
+                    .body(Body::from(r#"{"enabled":true,"effect":"pixel-party"}"#))
                     .unwrap(),
             )
             .await
@@ -2553,20 +2553,20 @@ mod tests {
         assert!(preview.effects().background_enabled());
         assert_eq!(
             preview.effects().background_effect(),
-            BackgroundEffect::Blur
+            BackgroundEffect::PixelParty
         );
         assert!(!preview.effects().green_screen_enabled());
         let state = runtime.state().await;
         assert!(state.video_effects.background_enabled);
         assert_eq!(
             state.video_effects.background_effect,
-            BackgroundEffect::Blur
+            BackgroundEffect::PixelParty
         );
         assert!(!state.video_effects.green_screen_enabled);
         let events = runtime.recent_events().await;
         assert_eq!(events[0].kind, "video.effect.background");
         assert_eq!(events[0].data["enabled"], true);
-        assert_eq!(events[0].data["effect"], "blur");
+        assert_eq!(events[0].data["effect"], "pixel-party");
     }
 
     #[tokio::test]

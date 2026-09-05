@@ -34,6 +34,7 @@ pub enum BackgroundEffect {
     #[default]
     GreenScreen,
     Blur,
+    PixelParty,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]

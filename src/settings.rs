@@ -268,7 +268,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .set_background(true, BackgroundEffect::Blur)
+            .set_background(true, BackgroundEffect::PixelParty)
             .await
             .unwrap();
         store.set_face_tracking(true).await.unwrap();
@@ -279,7 +279,7 @@ mod tests {
             .unwrap();
         assert_eq!(restored.video_identity, VideoIdentity::Liveportrait);
         assert!(restored.background_enabled);
-        assert_eq!(restored.background_effect, BackgroundEffect::Blur);
+        assert_eq!(restored.background_effect, BackgroundEffect::PixelParty);
         assert!(restored.face_tracking_enabled);
         assert!(restored.auto_zoom_enabled);
         assert_eq!(restored.output_mode(), VideoOutputMode::ComicAvatar);

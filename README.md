@@ -52,8 +52,10 @@ mischievous personality without tying its core to one camera vendor.
 - a reusable internal 8-bit video-mask channel feeds a final-output effects
   stage; the **Background** switch enables one exclusive effect at a time:
   **Green screen** replaces the background with green, while **Blur** keeps the
-  subject sharp and softens the background. Both affect the preview and virtual
-  camera using exact source-PTS pairing and a narrow edge transition. When
+  subject sharp and softens the background, and **Pixel Party** replaces the
+  room with an art-directed pixelated studio on a calm 24-second loop. All
+  three affect the preview and virtual camera using exact source-PTS pairing
+  and a narrow edge transition. When
   depth is enabled, the worker combines MediaPipe's semantic person
   probability with the local depth distribution to suppress background leaks
   at depth breaks. The output branch waits for the mask generated from the
@@ -174,13 +176,18 @@ terminal, inspect the daemon or consume its public virtual camera. The
 **Skeletons** button overlays the detected face mesh, a 33-point body pose, and
 both 21-point hand skeletons in the UI without modifying the public V4L2 feed.
 The **Background** switch below the pan/tilt controls applies the exclusively
-selected **Green screen** or **Blur** effect to both the embedded preview and
-`/dev/video42`, so conferencing applications consume the same final image.
+selected **Green screen**, **Blur**, or **Pixel Party** effect to both the
+embedded preview and `/dev/video42`, so conferencing applications consume the
+same final image.
 Green screen replaces detected background pixels with solid green. Blur builds
 a reduced, softened background image and composites the original sharp subject
-over it with the same person mask. While either effect is active, Tarsier emits
-black frames rather than expose the original image if the worker has not
-published a fresh mask.
+over it with the same person mask. Pixel Party replaces the room with a bundled,
+art-directed pixelated studio containing a desk, monitor, shelves, lamps, plants,
+and layered lounge decor. The teal, indigo, plum, wood, and amber scene animates
+only its monitor glow, practical lamp, and a few distant highlights on a gentle
+24-second loop while leaving the subject untouched. While any effect is active,
+Tarsier emits black frames rather than expose the original image if the worker
+has not published a fresh mask.
 The final stream is held for one frame so the inferred mask remains aligned
 during subject or camera motion. Disabling the switch restores the original
 image without changing the public virtual-camera device. The reference camera
@@ -362,7 +369,7 @@ The default server binds only to `127.0.0.1:8742`.
 | `POST` | `/api/v1/camera/face-tracking` | Enable or disable Tarsier face tracking |
 | `GET`, `POST` | `/api/v1/video/identity` | Read or select `camera`, `depth-map`, `stylized-3d`, or `liveportrait` |
 | `POST` | `/api/v1/video/output-mode` | Compatibility selector for the underlying output mode |
-| `POST` | `/api/v1/video/background` | Enable one final-output background effect with `{"enabled": bool, "effect": "green-screen" or "blur"}` |
+| `POST` | `/api/v1/video/background` | Enable one final-output background effect with `{"enabled": bool, "effect": string}`; accepted effects are `green-screen`, `blur`, and `pixel-party` |
 | `POST` | `/api/v1/video/green-screen` | Compatibility control that selects and enables or disables Green screen |
 | `GET` | `/api/v1/depth/frame` | Latest raw relative inverse-depth field as little-endian `float32`, with dimensions and provenance in headers |
 | `POST` | `/api/v1/camera/built-in-gestures/{feature}` | Enable or disable `target-selection`, `zoom`, or `dynamic-zoom` gestures |
@@ -597,7 +604,7 @@ The first vertical slice was validated on 2026-09-05 with an OBSBOT Tiny 2
 - after the repair restart, the real 720p30 pipeline remained healthy for more
   than six minutes on the camera's 480 Mbit/s fallback link, passing 11,000
   frames without another USB event or required restart;
-- all 98 daemon tests, 2 MCP tests, 25 Python tests, JavaScript syntax checks,
+- all 121 daemon tests, 2 MCP tests, 32 Python tests, JavaScript syntax checks,
   formatting, lint, configuration, protocol, and API checks passed.
 
 An extended run changed the camera result: after approximately six minutes of
@@ -641,8 +648,9 @@ run before unattended use.
   framing thresholds still need live tuning across distances and lighting;
 - background-effect routing, privacy fallback, Green screen synthetic pans,
   live Blur output, and a short physical motion sequence have runtime or visual
-  coverage, but long-duration use and broader clothing, motion-speed, distance,
-  and lighting conditions still need validation;
+  coverage; Pixel Party has focused bundled-scene coverage but still needs
+  long-duration use plus broader clothing,
+  motion-speed, distance, and lighting conditions still need validation;
 - avatar routing and its stale-frame privacy fallback have synthetic
   end-to-end coverage; the stylized 3D renderer has visual pose coverage, but
   sustained physical-camera use, expression calibration, occlusions, and
