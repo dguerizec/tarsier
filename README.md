@@ -45,10 +45,12 @@ mischievous personality without tying its core to one camera vendor.
   at the video rate and a widened pose silhouette rejects attached background
   objects without clipping normal inter-frame motion;
 - a reusable internal 8-bit video-mask channel feeds a final-output effects
-  stage; the **Green screen** control replaces the background with green in both
-  the preview and virtual camera using one-frame alignment and a narrow edge
-  transition, while a missing or stale mask fails closed to black until the
-  effect is explicitly disabled;
+  stage; the **Background** switch enables one exclusive effect at a time:
+  **Green screen** replaces the background with green, while **Blur** keeps the
+  subject sharp and softens the background. Both affect the preview and virtual
+  camera using one-frame alignment and a narrow edge transition, while a
+  missing or stale mask fails closed to black until the effect is explicitly
+  disabled;
 - face presence and open-palm observations pass through dwell, release, and
   cooldown stabilization before becoming semantic events;
 - a responsive local web UI shows the preview, telemetry, perception state,
@@ -145,15 +147,21 @@ Open <http://127.0.0.1:8742/> for the embedded preview and controls. In another
 terminal, inspect the daemon or consume its public virtual camera. The
 **Skeletons** button overlays the detected face mesh, a 33-point body pose, and
 both 21-point hand skeletons in the UI without modifying the public V4L2 feed.
-The **Green screen** button replaces the detected background in both the embedded
-preview and `/dev/video42`, so conferencing applications consume the same
-final image. While the effect is active, Tarsier emits black frames rather than
-expose the original image if the worker has not published a fresh mask.
+The **Background** switch below the pan/tilt controls applies the exclusively
+selected **Green screen** or **Blur** effect to both the embedded preview and
+`/dev/video42`, so conferencing applications consume the same final image.
+Green screen replaces detected background pixels with solid green. Blur builds
+a reduced, softened background image and composites the original sharp subject
+over it with the same person mask. While either effect is active, Tarsier emits
+black frames rather than expose the original image if the worker has not
+published a fresh mask.
 The final stream is held for one frame so the inferred mask remains aligned
-during subject or camera motion. Disabling the button restores the original
+during subject or camera motion. Disabling the switch restores the original
 image without changing the public virtual-camera device. The reference camera
-configuration starts the effect enabled and therefore emits black, never the
-unprocessed frame, while the first mask is still pending after a restart.
+configuration starts Green screen enabled and therefore emits black, never the
+unprocessed frame, while the first mask is still pending after a restart. The
+previous `/api/v1/video/green-screen` endpoint remains available for compatible
+clients and selects Green screen when called.
 The manual zoom slider applies x1-to-x4 changes continuously while coalescing
 obsolete intermediate positions. Embedded UI assets and the health response use
 `Cache-Control: no-store`; an open page detects a new
@@ -202,7 +210,7 @@ configuration. It defines:
 
 - the loopback-only server address;
 - physical and virtual video devices, frame size, rate, preview quality,
-  initial green-screen state, and pipeline recovery delay;
+  initial background-effect state and selection, and pipeline recovery delay;
 - camera adapter, extension-unit selector, polling cadence, and movement
   limits;
 - worker supervision, independent landmark and person-mask rates, confidence,
@@ -247,7 +255,8 @@ The default server binds only to `127.0.0.1:8742`.
 | `POST` | `/api/v1/camera/hdr` | Enable or disable HDR/WDR |
 | `POST` | `/api/v1/camera/tracking` | Enable or disable built-in tracking |
 | `POST` | `/api/v1/camera/face-tracking` | Enable or disable Tarsier face tracking |
-| `POST` | `/api/v1/video/green-screen` | Enable or disable green background replacement on the final output |
+| `POST` | `/api/v1/video/background` | Enable one final-output background effect with `{"enabled": bool, "effect": "green-screen" or "blur"}` |
+| `POST` | `/api/v1/video/green-screen` | Compatibility control that selects and enables or disables Green screen |
 | `POST` | `/api/v1/camera/built-in-gestures/{feature}` | Enable or disable `target-selection`, `zoom`, or `dynamic-zoom` gestures |
 | `POST` | `/api/v1/camera/actions/recenter` | Recenter the gimbal |
 | `GET` | `/api/v1/camera/presets` | List configured presets |
@@ -411,19 +420,24 @@ The first vertical slice was validated on 2026-09-05 with an OBSBOT Tiny 2
 - the effects stage was exercised end to end on the synthetic pipeline: the
   supervised worker consumed the raw branch and published 640x360 masks, the
   final stream became green for an empty-person mask, a full-person mask
-  preserved the source, and an absent or stale mask produced black frames;
+  preserved the source, Blur preserved foreground pixels while softening a
+  varied background, and an absent or stale mask produced black frames;
 - a 90-frame live motion sequence covered raised and lowering arms, head motion,
   and changing poses without the earlier chair trail; a synthetic 120-pixel pan
   showed that a 10 FPS stale mask could expose up to 1.51% of the frame, while
   the video-rate mask and one-frame output alignment removed that temporal
   mismatch;
-- with a 300-frame `/dev/video42` consumer attached, the debug daemon sustained
-  30 FPS while the worker logged 29-30 masks and 10 observations per second;
-  their combined average CPU use was 188% across the machine's 24 logical CPUs;
+- with a 180-frame `/dev/video42` consumer attached and Blur active, the
+  development daemon sustained 30.0 FPS while the worker continued publishing
+  masks at the video rate; daemon and worker CPU averaged 34.4% and 71.8%, or
+  about 1.06 logical cores combined across the machine's 24 logical CPUs;
+- the live Blur result kept the real subject sharp while visibly softening the
+  room, and the relocated Background controls fit both 1440x1000 desktop and
+  390x844 mobile renders without horizontal overflow;
 - after the repair restart, the real 720p30 pipeline remained healthy for more
   than six minutes on the camera's 480 Mbit/s fallback link, passing 11,000
   frames without another USB event or required restart;
-- all 64 daemon tests, 2 MCP tests, 12 Python tests, JavaScript syntax checks,
+- all 69 daemon tests, 2 MCP tests, 12 Python tests, JavaScript syntax checks,
   formatting, lint, configuration, protocol, and API checks passed.
 
 An extended run changed the camera result: after approximately six minutes of
@@ -460,10 +474,10 @@ run before unattended use.
 - Tarsier face-tracking direction, mutual exclusion, dead-zone hysteresis, and
   low-speed diagonal commands have automated coverage, but its physical
   framing thresholds still need live tuning across distances and lighting;
-- green-screen routing, privacy fallback, synthetic pans, and a short physical
-  motion sequence have runtime or visual coverage, but long-duration use and
-  broader clothing, motion-speed, distance, and lighting conditions still need
-  validation;
+- background-effect routing, privacy fallback, Green screen synthetic pans,
+  live Blur output, and a short physical motion sequence have runtime or visual
+  coverage, but long-duration use and broader clothing, motion-speed, distance,
+  and lighting conditions still need validation;
 - pipeline telemetry reports effective FPS, frame count, last frame, errors,
   and restart count, but not queue pressure or dropped-frame attribution;
 - configuration changes require a restart and runtime state is not persisted;

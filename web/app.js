@@ -5,7 +5,8 @@ const preview = $("#preview");
 const overlay = $("#landmark-overlay");
 const overlayContext = overlay.getContext("2d");
 const skeletonToggle = $("#skeleton-toggle");
-const greenScreenToggle = $("#green-screen-toggle");
+const backgroundToggle = $("#background-toggle");
+const backgroundEffectInputs = [...document.querySelectorAll("[data-background-effect]")];
 const faceTrackingToggle = $("#face-tracking-toggle");
 const zoomSlider = $("#zoom-slider");
 const zoomReset = $("#zoom-reset");
@@ -28,8 +29,9 @@ let zoomSendTimer = null;
 let hdrPending = false;
 let trackingPending = false;
 let faceTrackingPending = false;
-let greenScreenPending = false;
-let greenScreenError = null;
+let backgroundPending = false;
+let backgroundError = null;
+let backgroundDraft = null;
 let panTiltPending = false;
 let panTiltSyncQueued = false;
 let panTiltKeepaliveTimer = null;
@@ -376,19 +378,40 @@ function renderPanTilt(camera) {
     : panTiltPending ? "Stopping…" : "Hold a button or use the arrow keys";
 }
 
-function renderGreenScreen(videoEffects) {
-  const enabled = videoEffects.green_screen_enabled === true;
-  const maskFresh = videoEffects.mask_published_at_ms != null
-    && Date.now() - videoEffects.mask_published_at_ms <= 750;
-  greenScreenToggle.disabled = greenScreenPending;
-  greenScreenToggle.setAttribute("aria-pressed", String(enabled));
-  greenScreenToggle.textContent = greenScreenPending ? "Applying…" : "Green screen";
-  greenScreenToggle.title = greenScreenError
-    || (enabled
-      ? maskFresh
-        ? "The background is replaced with green in the final video output"
-        : "Privacy fallback active: the final video stays black until a fresh mask is available"
-      : "Replace the background with green in the final video output");
+function backgroundState(videoEffects) {
+  const effect = ["green-screen", "blur"].includes(videoEffects.background_effect)
+    ? videoEffects.background_effect
+    : "green-screen";
+  const enabled = videoEffects.background_enabled
+    ?? (videoEffects.green_screen_enabled === true);
+  return { enabled, effect };
+}
+
+function renderBackground(videoEffects) {
+  const current = backgroundDraft || backgroundState(videoEffects);
+  const publishedFresh = videoEffects.mask_published_at_ms != null
+    && Date.now() - videoEffects.mask_published_at_ms <= 200;
+  const capturedFresh = videoEffects.mask_captured_at_ms != null
+    && Date.now() - videoEffects.mask_captured_at_ms <= 200;
+  const maskFresh = publishedFresh && capturedFresh;
+  backgroundToggle.disabled = backgroundPending;
+  backgroundToggle.checked = current.enabled;
+  for (const input of backgroundEffectInputs) {
+    input.disabled = backgroundPending;
+    input.checked = input.value === current.effect;
+  }
+
+  const effectLabel = current.effect === "blur" ? "Blur" : "Green screen";
+  const status = backgroundError
+    ? "Change failed"
+    : (backgroundPending ? `Applying ${effectLabel.toLowerCase()}…`
+      : !current.enabled ? "Off"
+      : !maskFresh ? "Privacy fallback · waiting for a fresh mask"
+      : `${effectLabel} active`);
+  $("#background-status").textContent = status;
+  $("#background-error").hidden = !backgroundError;
+  $("#background-error").textContent = backgroundError || "";
+  backgroundToggle.title = current.enabled ? "Disable the background effect" : "Enable the selected background effect";
 }
 
 function render(next) {
@@ -423,7 +446,7 @@ function render(next) {
   renderFaceTracking(camera);
   renderPanTilt(camera);
   renderBuiltInGestures(camera);
-  renderGreenScreen(next.video_effects);
+  renderBackground(next.video_effects);
   $("#pipeline-summary").textContent = pipeline.running
     ? `${pipeline.width}×${pipeline.height} · ${pipeline.fps.toFixed(1)} fps · ${pipeline.frame_count} frames`
     : pipeline.error || "Pipeline stopped";
@@ -522,29 +545,48 @@ $("#demo-trigger").addEventListener("click", async () => {
 });
 
 skeletonToggle.addEventListener("click", () => setSkeletonEnabled(!skeletonEnabled));
-greenScreenToggle.addEventListener("click", async () => {
-  if (greenScreenPending || !state) return;
-  const enabled = state.video_effects.green_screen_enabled !== true;
-  greenScreenPending = true;
-  greenScreenError = null;
+async function setBackground(enabled, effect) {
+  if (backgroundPending || !state) return;
+  backgroundPending = true;
+  backgroundError = null;
+  backgroundDraft = { enabled, effect };
   render(state);
   try {
-    const response = await fetch("/api/v1/video/green-screen", {
+    const response = await fetch("/api/v1/video/background", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ enabled }),
+      body: JSON.stringify({ enabled, effect }),
     });
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}));
       throw new Error(payload.error || `Video effect failed (${response.status})`);
     }
+    Object.assign(state.video_effects, {
+      background_enabled: enabled,
+      background_effect: effect,
+      green_screen_enabled: enabled && effect === "green-screen",
+    });
   } catch (error) {
-    greenScreenError = error instanceof Error ? error.message : String(error);
+    backgroundError = error instanceof Error ? error.message : String(error);
   } finally {
-    greenScreenPending = false;
+    backgroundPending = false;
+    backgroundDraft = null;
     if (state) render(state);
   }
+}
+
+backgroundToggle.addEventListener("change", () => {
+  if (!state) return;
+  const { effect } = backgroundState(state.video_effects);
+  void setBackground(backgroundToggle.checked, effect);
 });
+for (const input of backgroundEffectInputs) {
+  input.addEventListener("change", () => {
+    if (!input.checked || !state) return;
+    const { enabled } = backgroundState(state.video_effects);
+    void setBackground(enabled, input.value);
+  });
+}
 preview.addEventListener("load", () => {
   preview.classList.remove("disconnected");
   drawSkeletons();

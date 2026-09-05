@@ -153,7 +153,7 @@ impl ActivePipeline {
             .static_pad("src")
             .context("effect processor source pad is missing")?
             .add_probe(gst::PadProbeType::BUFFER, move |_, info| {
-                if !effects.green_screen_enabled() {
+                if !effects.background_enabled() {
                     return gst::PadProbeReturn::Ok;
                 }
                 let Some(buffer) = info.buffer_mut() else {
@@ -163,7 +163,7 @@ impl ActivePipeline {
                 let Ok(mut map) = buffer.map_writable() else {
                     return gst::PadProbeReturn::Drop;
                 };
-                effects.apply_green_screen(map.as_mut_slice(), width, height, unix_ms());
+                effects.apply_background(map.as_mut_slice(), width, height, unix_ms());
                 gst::PadProbeReturn::Ok
             });
 

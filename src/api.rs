@@ -24,8 +24,8 @@ use crate::{
     effects::VideoMask,
     face_tracking::FaceTrackingController,
     model::{
-        BuiltInGesture, CameraAttitudeSource, FaceTrackingState, FaceTrackingTarget, Landmark,
-        PerceptionObservation, ScenarioActivation, unix_ms,
+        BackgroundEffect, BuiltInGesture, CameraAttitudeSource, FaceTrackingState,
+        FaceTrackingTarget, Landmark, PerceptionObservation, ScenarioActivation, unix_ms,
     },
     pipeline::PreviewHub,
     runtime::Runtime,
@@ -100,6 +100,7 @@ pub fn router(
             "/api/v1/perception/input.mjpeg",
             get(perception_input_mjpeg),
         )
+        .route("/api/v1/video/background", post(set_background))
         .route("/api/v1/video/green-screen", post(set_green_screen))
         .route("/api/v1/preview.mjpeg", get(preview_mjpeg))
         .route("/api/v1/camera/snapshot", get(snapshot))
@@ -197,6 +198,12 @@ struct ZoomRequest {
 #[derive(Deserialize)]
 struct GreenScreenRequest {
     enabled: bool,
+}
+
+#[derive(Deserialize)]
+struct BackgroundRequest {
+    enabled: bool,
+    effect: BackgroundEffect,
 }
 
 #[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -812,7 +819,11 @@ async fn set_green_screen(
         .set_green_screen_enabled(request.enabled);
     state
         .runtime
-        .update(|runtime| runtime.video_effects.green_screen_enabled = request.enabled)
+        .update(|runtime| {
+            runtime.video_effects.background_enabled = request.enabled;
+            runtime.video_effects.background_effect = BackgroundEffect::GreenScreen;
+            runtime.video_effects.green_screen_enabled = request.enabled;
+        })
         .await;
     state
         .runtime
@@ -821,6 +832,35 @@ async fn set_green_screen(
             "api",
             None,
             json!({"enabled": request.enabled}),
+        )
+        .await;
+    StatusCode::ACCEPTED.into_response()
+}
+
+async fn set_background(
+    State(state): State<ApiState>,
+    Json(request): Json<BackgroundRequest>,
+) -> Response {
+    state
+        .preview
+        .effects()
+        .set_background(request.enabled, request.effect);
+    state
+        .runtime
+        .update(|runtime| {
+            runtime.video_effects.background_enabled = request.enabled;
+            runtime.video_effects.background_effect = request.effect;
+            runtime.video_effects.green_screen_enabled =
+                request.enabled && request.effect == BackgroundEffect::GreenScreen;
+        })
+        .await;
+    state
+        .runtime
+        .emit(
+            "video.effect.background",
+            "api",
+            None,
+            json!({"enabled": request.enabled, "effect": request.effect}),
         )
         .await;
     StatusCode::ACCEPTED.into_response()
@@ -1277,8 +1317,8 @@ mod tests {
         }
         assert!(include_str!("../web/index.html").contains("id=\"face-tracking-toggle\""));
         assert!(include_str!("../web/app.js").contains("/api/v1/camera/face-tracking"));
-        assert!(include_str!("../web/index.html").contains("id=\"green-screen-toggle\""));
-        assert!(include_str!("../web/app.js").contains("/api/v1/video/green-screen"));
+        assert!(include_str!("../web/index.html").contains("id=\"background-toggle\""));
+        assert!(include_str!("../web/app.js").contains("/api/v1/video/background"));
     }
 
     #[tokio::test]
@@ -1348,10 +1388,55 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::ACCEPTED);
         assert!(preview.effects().green_screen_enabled());
-        assert!(runtime.state().await.video_effects.green_screen_enabled);
+        let state = runtime.state().await;
+        assert!(state.video_effects.background_enabled);
+        assert_eq!(
+            state.video_effects.background_effect,
+            BackgroundEffect::GreenScreen
+        );
+        assert!(state.video_effects.green_screen_enabled);
         let events = runtime.recent_events().await;
         assert_eq!(events[0].kind, "video.effect.green_screen");
         assert_eq!(events[0].data["enabled"], true);
+    }
+
+    #[tokio::test]
+    async fn background_control_selects_one_live_effect() {
+        let mut config = Config::default();
+        config.perception.enabled = false;
+        let runtime = Runtime::new();
+        let preview = PreviewHub::new();
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = router(config, runtime.clone(), preview.clone(), None, shutdown_rx);
+
+        let response = app
+            .oneshot(
+                Request::post("/api/v1/video/background")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"enabled":true,"effect":"blur"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert!(preview.effects().background_enabled());
+        assert_eq!(
+            preview.effects().background_effect(),
+            BackgroundEffect::Blur
+        );
+        assert!(!preview.effects().green_screen_enabled());
+        let state = runtime.state().await;
+        assert!(state.video_effects.background_enabled);
+        assert_eq!(
+            state.video_effects.background_effect,
+            BackgroundEffect::Blur
+        );
+        assert!(!state.video_effects.green_screen_enabled);
+        let events = runtime.recent_events().await;
+        assert_eq!(events[0].kind, "video.effect.background");
+        assert_eq!(events[0].data["enabled"], true);
+        assert_eq!(events[0].data["effect"], "blur");
     }
 
     #[tokio::test]

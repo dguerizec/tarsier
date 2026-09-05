@@ -7,6 +7,8 @@ use std::{
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
+use crate::model::BackgroundEffect;
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Config {
@@ -152,7 +154,9 @@ pub struct VideoConfig {
     pub preview_height: u32,
     pub preview_quality: u32,
     pub loopback_enabled: bool,
-    pub green_screen_enabled: bool,
+    #[serde(alias = "green_screen_enabled")]
+    pub background_enabled: bool,
+    pub background_effect: BackgroundEffect,
     pub restart_delay_ms: u64,
 }
 
@@ -169,7 +173,8 @@ impl Default for VideoConfig {
             preview_height: 360,
             preview_quality: 75,
             loopback_enabled: true,
-            green_screen_enabled: false,
+            background_enabled: false,
+            background_effect: BackgroundEffect::default(),
             restart_delay_ms: 1000,
         }
     }
@@ -335,6 +340,17 @@ mod tests {
     fn example_configuration_is_loadable() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("config/tarsier.example.toml");
         Config::load(Some(&path)).unwrap();
+    }
+
+    #[test]
+    fn legacy_green_screen_setting_maps_to_the_background_control() {
+        let config: Config = toml::from_str("[video]\ngreen_screen_enabled = true").unwrap();
+
+        assert!(config.video.background_enabled);
+        assert_eq!(
+            config.video.background_effect,
+            BackgroundEffect::GreenScreen
+        );
     }
 
     #[test]

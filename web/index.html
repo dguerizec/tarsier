@@ -22,7 +22,6 @@
           <h2>Preview</h2>
           <div class="preview-tools">
             <span id="pipeline-summary">Pipeline stopped</span>
-            <button id="green-screen-toggle" class="secondary compact" type="button" aria-pressed="false">Green screen</button>
             <button id="skeleton-toggle" class="secondary compact" type="button" aria-pressed="false">Skeletons</button>
           </div>
         </div>
@@ -46,6 +45,33 @@
               <button class="secondary direction-down" type="button" data-pan-tilt="down" aria-label="Tilt down" title="Tilt down · Arrow Down">↓</button>
             </div>
           </div>
+        </div>
+        <div class="background-control">
+          <div class="background-heading">
+            <label class="background-switch" for="background-toggle">
+              <input id="background-toggle" type="checkbox" role="switch" disabled>
+              <span class="switch-track" aria-hidden="true"></span>
+              <strong>Background</strong>
+            </label>
+            <span id="background-status" aria-live="polite">Loading effects</span>
+          </div>
+          <div class="background-effect-list" role="radiogroup" aria-label="Background effect">
+            <label class="background-effect-option">
+              <input type="radio" name="background-effect" value="green-screen" data-background-effect disabled>
+              <span class="background-effect-card">
+                <strong>Green screen</strong>
+                <small>Replace the background with solid green</small>
+              </span>
+            </label>
+            <label class="background-effect-option">
+              <input type="radio" name="background-effect" value="blur" data-background-effect disabled>
+              <span class="background-effect-card">
+                <strong>Blur</strong>
+                <small>Keep the subject sharp and soften the background</small>
+              </span>
+            </label>
+          </div>
+          <p id="background-error" class="error" role="alert" hidden></p>
         </div>
       </section>
 

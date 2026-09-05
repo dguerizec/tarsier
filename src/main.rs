@@ -79,12 +79,16 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
     config.validate()?;
     let runtime = Runtime::new();
     let preview = PreviewHub::new();
-    preview
-        .effects()
-        .set_green_screen_enabled(config.video.green_screen_enabled);
+    preview.effects().set_background(
+        config.video.background_enabled,
+        config.video.background_effect,
+    );
     runtime
         .update(|state| {
-            state.video_effects.green_screen_enabled = config.video.green_screen_enabled;
+            state.video_effects.background_enabled = config.video.background_enabled;
+            state.video_effects.background_effect = config.video.background_effect;
+            state.video_effects.green_screen_enabled = config.video.background_enabled
+                && config.video.background_effect == crate::model::BackgroundEffect::GreenScreen;
         })
         .await;
     let _pipeline = VideoPipeline::start(config.video.clone(), runtime.clone(), preview.clone())

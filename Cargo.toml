@@ -29,6 +29,9 @@ tower-http = { version = "0.6", features = ["trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
+[profile.dev.package.tarsier]
+opt-level = 2
+
 [dev-dependencies]
 rmcp = { version = "3.2", features = ["client"] }
 tower = { version = "0.5", features = ["util"] }

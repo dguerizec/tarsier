@@ -28,8 +28,19 @@ impl Default for RuntimeState {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum BackgroundEffect {
+    #[default]
+    GreenScreen,
+    Blur,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct VideoEffectsState {
+    pub background_enabled: bool,
+    pub background_effect: BackgroundEffect,
+    // Compatibility state for clients using the original dedicated control.
     pub green_screen_enabled: bool,
     pub mask_available: bool,
     pub mask_frame_id: Option<u64>,
