@@ -68,6 +68,8 @@ pub enum VideoIdentity {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct VideoEffectsState {
+    #[serde(default)]
+    pub transform: crate::video_transform::VideoTransform,
     pub output_mode: VideoOutputMode,
     pub avatar_engine: Option<AvatarEngine>,
     pub background_enabled: bool,

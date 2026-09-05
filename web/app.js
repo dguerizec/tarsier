@@ -374,11 +374,14 @@ function drawSkeletons(
   const renderedHeight = sourceHeight * scale;
   const offsetX = (bounds.width - renderedWidth) / 2;
   const offsetY = (bounds.height - renderedHeight) / 2;
-  const project = (landmarks) => landmarks.map((point) => ({
-    x: offsetX + point.x * renderedWidth,
-    y: offsetY + point.y * renderedHeight,
-    visibility: point.visibility,
-  }));
+  const project = (landmarks) => landmarks.map((point) => {
+    const transformed = transformLandmark(point, sourceWidth, sourceHeight);
+    return {
+      x: offsetX + transformed.x * renderedWidth,
+      y: offsetY + transformed.y * renderedHeight,
+      visibility: point.visibility,
+    };
+  });
 
   overlayContext.lineCap = "round";
   overlayContext.lineJoin = "round";
@@ -739,6 +742,7 @@ function renderBackground(videoEffects) {
 function render(next) {
   observeDaemon(next.started_at_ms);
   state = next;
+  renderVideoTransform();
   const camera = next.camera;
   const pipeline = next.pipeline;
   const perception = next.perception;
@@ -1065,7 +1069,7 @@ function clearHeldDirections() {
 }
 
 function holdDirection(direction) {
-  if (faceTrackingPending || handsTrackingPending || trackingPending
+  if (videoTransformPending || faceTrackingPending || handsTrackingPending || trackingPending
     || !cameraControlsAvailable(state?.camera || {})) return;
   const previous = activeDirection();
   heldDirections = heldDirections.filter((held) => held !== direction);
@@ -1106,7 +1110,7 @@ async function syncPanTiltMotion() {
   if (state) render(state);
   let failed = false;
   try {
-    const response = await fetch(`/api/v1/camera/nudge/${direction ?? "stop"}`, {
+    const response = await fetch(`/api/v1/camera/nudge/${sourceDirection(direction) ?? "stop"}`, {
       method: "POST",
       keepalive: direction == null,
     });
@@ -1442,6 +1446,77 @@ autoZoomToggle.addEventListener("change", async () => {
     if (state) render(state);
   }
 });
+
+let videoTransformPending = false;
+
+function videoTransform() {
+  return state?.video_effects?.transform || { rotation: 0, mirror: false };
+}
+
+function transformLandmark(point, width, height) {
+  const { rotation, mirror } = videoTransform();
+  let { x, y } = point;
+  if (rotation === 90) [x, y] = [1 - y, x];
+  if (rotation === 180) [x, y] = [1 - x, 1 - y];
+  if (rotation === 270) [x, y] = [y, 1 - x];
+  if (rotation === 90 || rotation === 270) {
+    const scale = Math.min(width / height, height / width);
+    const rw = Math.round(height * scale);
+    const rh = Math.round(width * scale);
+    x = (Math.floor((width - rw) / 2) + x * rw) / width;
+    y = (Math.floor((height - rh) / 2) + y * rh) / height;
+  }
+  return { x: mirror ? 1 - x : x, y };
+}
+
+function sourceDirection(direction) {
+  if (direction == null) return null;
+  const { rotation, mirror } = videoTransform();
+  if (mirror && direction === "left") direction = "right";
+  else if (mirror && direction === "right") direction = "left";
+  const directions = ["right", "down", "left", "up"];
+  return directions[(directions.indexOf(direction) - rotation / 90 + 4) % 4];
+}
+
+function renderVideoTransform() {
+  const transform = videoTransform();
+  for (const button of document.querySelectorAll("[data-video-rotation]")) {
+    button.setAttribute("aria-pressed", String(Number(button.dataset.videoRotation) === transform.rotation));
+    button.disabled = !socketConnected || videoTransformPending;
+  }
+  $("#video-mirror").checked = transform.mirror;
+  $("#video-mirror").disabled = !socketConnected || videoTransformPending;
+}
+
+async function setVideoTransform(transform) {
+  if (videoTransformPending) return;
+  videoTransformPending = true;
+  clearHeldDirections();
+  renderVideoTransform();
+  const errorElement = $("#video-transform-error");
+  errorElement.hidden = true;
+  try {
+    const response = await fetch("/api/v1/video/transform", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(transform),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Could not update video orientation");
+    if (state) state.video_effects.transform = payload;
+  } catch (error) {
+    errorElement.textContent = error.message;
+    errorElement.hidden = false;
+  } finally {
+    videoTransformPending = false;
+    if (state) render(state);
+  }
+}
+
+for (const button of document.querySelectorAll("[data-video-rotation]")) {
+  button.addEventListener("click", () => void setVideoTransform({ ...videoTransform(), rotation: Number(button.dataset.videoRotation) }));
+}
+$("#video-mirror").addEventListener("change", (event) => void setVideoTransform({ ...videoTransform(), mirror: event.target.checked }));
 
 buildImageSettingsUi();
 setInterval(() => state && render(state), 500);

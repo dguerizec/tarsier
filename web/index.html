@@ -68,6 +68,17 @@
           </div>
         </div>
         <div class="output-control">
+          <div class="output-heading"><strong>Video orientation</strong><span>Clockwise · fits the output frame</span></div>
+          <div class="controls" id="video-transform-controls" role="group" aria-label="Video rotation">
+            <button type="button" class="secondary" data-video-rotation="0" aria-pressed="true">0°</button>
+            <button type="button" class="secondary" data-video-rotation="90" aria-pressed="false">90°</button>
+            <button type="button" class="secondary" data-video-rotation="180" aria-pressed="false">180°</button>
+            <button type="button" class="secondary" data-video-rotation="270" aria-pressed="false">270°</button>
+            <label class="toggle-switch" for="video-mirror"><strong>Mirror</strong><input id="video-mirror" type="checkbox" role="switch"><span class="switch-track" aria-hidden="true"></span></label>
+          </div>
+          <p id="video-transform-error" class="error" role="alert" hidden></p>
+        </div>
+        <div class="output-control">
           <div class="output-heading">
             <strong>Video identity</strong>
             <span id="output-status" aria-live="polite">Loading output</span>

@@ -21,6 +21,8 @@ const SETTINGS_PATH_ENVIRONMENT: &str = "TARSIER_USER_SETTINGS_PATH";
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct UserSettings {
+    #[serde(default)]
+    pub video_transform: crate::video_transform::VideoTransform,
     version: u32,
     pub video_identity: VideoIdentity,
     pub background_enabled: bool,
@@ -36,6 +38,7 @@ impl UserSettings {
     pub fn from_config(config: &Config) -> Self {
         Self {
             version: SETTINGS_VERSION,
+            video_transform: Default::default(),
             video_identity: identity_from_mode(config.video.output_mode, config.avatar.engine),
             background_enabled: config.video.background_enabled,
             background_effect: config.video.background_effect,
@@ -62,6 +65,9 @@ impl UserSettings {
     }
 
     fn validate(self) -> Result<Self> {
+        if !self.video_transform.valid() {
+            bail!("video rotation must be 0, 90, 180, or 270 degrees");
+        }
         if self.version != SETTINGS_VERSION {
             bail!(
                 "unsupported user settings version {}, expected {SETTINGS_VERSION}",
@@ -126,6 +132,14 @@ impl UserSettingsStore {
 
     pub async fn set_video_identity(&self, identity: VideoIdentity) -> Result<()> {
         self.replace(|settings| settings.video_identity = identity)
+            .await
+    }
+
+    pub async fn set_video_transform(
+        &self,
+        transform: crate::video_transform::VideoTransform,
+    ) -> Result<()> {
+        self.replace(|settings| settings.video_transform = transform)
             .await
     }
 

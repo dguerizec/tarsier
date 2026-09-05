@@ -200,6 +200,8 @@ fn mask_len(width: u32, height: u32) -> Result<usize> {
 
 #[derive(Clone)]
 pub struct VideoEffects {
+    transform: Arc<AtomicU8>,
+    transform_scratch: Arc<Mutex<crate::video_transform::TransformScratch>>,
     output_mode: Arc<AtomicU8>,
     background_enabled: Arc<AtomicBool>,
     background_effect: Arc<AtomicU8>,
@@ -227,6 +229,8 @@ impl VideoEffects {
         let (depth_tx, _) = watch::channel(None);
         Self {
             output_mode: Arc::new(AtomicU8::new(output_mode_code(VideoOutputMode::Camera))),
+            transform: Arc::new(AtomicU8::new(0)),
+            transform_scratch: Arc::new(Mutex::new(Default::default())),
             background_enabled: Arc::new(AtomicBool::new(false)),
             background_effect: Arc::new(AtomicU8::new(effect_code(BackgroundEffect::GreenScreen))),
             masks: Arc::new((Mutex::new(MaskStore::default()), Condvar::new())),
@@ -246,7 +250,13 @@ impl VideoEffects {
     }
 
     pub fn processing_enabled(&self) -> bool {
-        self.output_mode() != VideoOutputMode::Camera || self.background_enabled()
+        self.output_mode() != VideoOutputMode::Camera
+            || self.background_enabled()
+            || self.transform.load(Ordering::Relaxed) != 0
+    }
+
+    pub fn set_transform(&self, transform: crate::video_transform::VideoTransform) {
+        self.transform.store(transform.code(), Ordering::Relaxed);
     }
 
     pub fn background_enabled(&self) -> bool {
@@ -343,7 +353,7 @@ impl VideoEffects {
         now_ms: u64,
         frame_id: Option<u64>,
     ) -> bool {
-        match self.output_mode() {
+        let changed = match self.output_mode() {
             VideoOutputMode::Camera => {
                 self.apply_background_for_frame(frame, width, height, now_ms, frame_id)
             }
@@ -371,7 +381,20 @@ impl VideoEffects {
                 }
                 true
             }
+        };
+        let code = self.transform.load(Ordering::Relaxed);
+        if code != 0 {
+            self.transform_scratch
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .apply(
+                    frame,
+                    width,
+                    height,
+                    crate::video_transform::VideoTransform::from_code(code),
+                );
         }
+        changed || code != 0
     }
 
     #[cfg(test)]

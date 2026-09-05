@@ -191,6 +191,10 @@ pub fn router_with_controls(
         )
         .route("/api/v1/video/background", post(set_background))
         .route(
+            "/api/v1/video/transform",
+            get(current_transform).post(set_transform),
+        )
+        .route(
             "/api/v1/video/identity",
             get(current_identity).post(set_identity),
         )
@@ -1456,6 +1460,41 @@ async fn set_background(
         )
         .await;
     StatusCode::ACCEPTED.into_response()
+}
+
+async fn current_transform(
+    State(state): State<ApiState>,
+) -> Json<crate::video_transform::VideoTransform> {
+    Json(state.runtime.state().await.video_effects.transform)
+}
+
+async fn set_transform(
+    State(state): State<ApiState>,
+    Json(transform): Json<crate::video_transform::VideoTransform>,
+) -> Response {
+    if !transform.valid() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "rotation must be 0, 90, 180, or 270 degrees"})),
+        )
+            .into_response();
+    }
+    let _guard = state.video_output_control.lock().await;
+    if let Some(settings) = &state.user_settings
+        && let Err(error) = settings.set_video_transform(transform).await
+    {
+        return user_settings_error(error);
+    }
+    state.preview.effects().set_transform(transform);
+    state
+        .runtime
+        .update(|runtime| runtime.video_effects.transform = transform)
+        .await;
+    state
+        .runtime
+        .emit("video.transform", "api", None, json!(transform))
+        .await;
+    Json(transform).into_response()
 }
 
 async fn current_identity(State(state): State<ApiState>) -> Json<IdentityResponse> {
@@ -2885,6 +2924,79 @@ mod tests {
         let events = runtime.recent_events().await;
         assert_eq!(events[0].kind, "video.output.mode");
         assert_eq!(events[0].data["mode"], "comic-avatar");
+    }
+
+    #[tokio::test]
+    async fn video_transform_validates_persists_and_updates_output() {
+        let config = Config::default();
+        let path = std::env::temp_dir().join(format!(
+            "tarsier-transform-{}-{}/settings.json",
+            std::process::id(),
+            unix_ms()
+        ));
+        let fallback = UserSettings::from_config(&config);
+        let (settings, _) = UserSettingsStore::load(path.clone(), fallback)
+            .await
+            .unwrap();
+        let runtime = Runtime::new();
+        let preview = PreviewHub::new();
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = router_with_controls(
+            config,
+            runtime.clone(),
+            preview.clone(),
+            None,
+            ApiOptions {
+                user_settings: Some(settings),
+                ..ApiOptions::default()
+            },
+            shutdown_rx,
+        );
+        for (rotation, status) in [(90, StatusCode::OK), (45, StatusCode::BAD_REQUEST)] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post("/api/v1/video/transform")
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            json!({"rotation": rotation, "mirror": true}).to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), status);
+        }
+        let (_, restored) = UserSettingsStore::load(path.clone(), fallback)
+            .await
+            .unwrap();
+        assert_eq!(restored.video_transform.rotation, 90);
+        assert!(restored.video_transform.mirror);
+        assert_eq!(
+            runtime.state().await.video_effects.transform,
+            restored.video_transform
+        );
+        let mut pixels = [1, 2, 3, 4]
+            .into_iter()
+            .flat_map(|v| [v; 4])
+            .collect::<Vec<_>>();
+        assert!(preview.effects().processing_enabled());
+        preview.effects().apply_output(&mut pixels, 2, 2, unix_ms());
+        assert_eq!(
+            pixels.chunks_exact(4).map(|p| p[0]).collect::<Vec<_>>(),
+            [1, 3, 2, 4]
+        );
+        let response = app
+            .oneshot(
+                Request::get("/api/v1/video/transform")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(runtime.recent_events().await[0].kind, "video.transform");
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[tokio::test]

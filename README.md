@@ -363,6 +363,21 @@ run arbitrary shell commands or make outbound requests.
 
 ## HTTP and WebSocket API
 
+Video orientation controls select a clockwise rotation of 0, 90, 180, or 270
+degrees and an independent horizontal mirror applied after rotation. The
+transformation runs after output effects and before the shared preview/virtual
+camera branches, including avatar and depth output. The output dimensions stay
+fixed: quarter turns fit the whole image with black borders, without stretching
+or cropping. The selection is persisted across daemon restarts.
+
+`GET /api/v1/video/transform` reads `{ "rotation": 0, "mirror": false }`;
+`POST` to the same endpoint replaces both values and emits `video.transform`.
+Runtime state exposes the selection as `video_effects.transform`. UI arrows
+use the displayed image's axes and skeleton overlays follow the same transform.
+Perception and local face/hand tracking retain source-image coordinates; their
+center target is invariant under these output transformations. Camera mounting
+orientation telemetry and automatic orientation scenarios are not implemented.
+
 The default server binds only to `127.0.0.1:8742`.
 
 | Method | Path | Purpose |

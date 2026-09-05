@@ -10,6 +10,7 @@ mod pipeline;
 mod runtime;
 mod scenario;
 mod settings;
+mod video_transform;
 
 use std::path::PathBuf;
 
@@ -92,12 +93,16 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
         .avatar_engine()
         .or(config.avatar.enabled.then_some(config.avatar.engine));
     preview.effects().set_output_mode(output_mode);
+    preview
+        .effects()
+        .set_transform(user_settings.video_transform);
     preview.effects().set_background(
         user_settings.background_enabled,
         user_settings.background_effect,
     );
     runtime
         .update(|state| {
+            state.video_effects.transform = user_settings.video_transform;
             state.video_effects.output_mode = output_mode;
             state.video_effects.avatar_engine = avatar_engine;
             state.video_effects.background_enabled = user_settings.background_enabled;
