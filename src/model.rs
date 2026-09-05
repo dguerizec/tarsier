@@ -9,6 +9,7 @@ pub struct RuntimeState {
     pub started_at_ms: u64,
     pub camera: CameraState,
     pub pipeline: PipelineState,
+    pub video_effects: VideoEffectsState,
     pub perception: PerceptionState,
     pub last_scenario: Option<ScenarioActivation>,
 }
@@ -20,10 +21,22 @@ impl Default for RuntimeState {
             started_at_ms: unix_ms(),
             camera: CameraState::default(),
             pipeline: PipelineState::default(),
+            video_effects: VideoEffectsState::default(),
             perception: PerceptionState::default(),
             last_scenario: None,
         }
     }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct VideoEffectsState {
+    pub green_screen_enabled: bool,
+    pub mask_available: bool,
+    pub mask_frame_id: Option<u64>,
+    pub mask_width: Option<u32>,
+    pub mask_height: Option<u32>,
+    pub mask_captured_at_ms: Option<u64>,
+    pub mask_published_at_ms: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]

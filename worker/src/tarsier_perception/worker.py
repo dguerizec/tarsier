@@ -73,6 +73,15 @@ def select_landmarks(groups: list[list[Any]], limit: int) -> list[Landmark]:
     ]
 
 
+def encode_segmentation_mask(masks: list[Any], width: int, height: int) -> np.ndarray:
+    if not masks:
+        return np.zeros((height, width), dtype=np.uint8)
+    probabilities = np.asarray(masks[0].numpy_view(), dtype=np.float32).squeeze()
+    if probabilities.shape != (height, width):
+        probabilities = cv2.resize(probabilities, (width, height), interpolation=cv2.INTER_LINEAR)
+    return np.clip(probabilities * 255.0, 0.0, 255.0).astype(np.uint8)
+
+
 class MediaPipeDetector:
     def __init__(self, model_dir: Path, minimum_confidence: float) -> None:
         vision = mp.tasks.vision
@@ -112,12 +121,20 @@ class MediaPipeDetector:
                 min_pose_detection_confidence=minimum_confidence,
                 min_pose_presence_confidence=minimum_confidence,
                 min_tracking_confidence=minimum_confidence,
+                output_segmentation_masks=True,
             )
         )
 
     def detect(
         self, frame_bgr: np.ndarray, timestamp_ms: int
-    ) -> tuple[list[Landmark], list[Landmark], list[Landmark], str | None, float]:
+    ) -> tuple[
+        list[Landmark],
+        list[Landmark],
+        list[Landmark],
+        str | None,
+        float,
+        np.ndarray,
+    ]:
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
         face_result = self._face.detect_for_video(image, timestamp_ms)
@@ -127,7 +144,9 @@ class MediaPipeDetector:
         face_landmarks = select_landmarks(face_result.face_landmarks, 1)
         hand_landmarks = select_landmarks(gesture_result.hand_landmarks, 2)
         pose_landmarks = select_landmarks(pose_result.pose_landmarks, 1)
-        return face_landmarks, hand_landmarks, pose_landmarks, gesture, confidence
+        height, width = frame_bgr.shape[:2]
+        mask = encode_segmentation_mask(pose_result.segmentation_masks, width, height)
+        return face_landmarks, hand_landmarks, pose_landmarks, gesture, confidence, mask
 
     def close(self) -> None:
         self._gesture.close()
@@ -144,6 +163,7 @@ class MediaPipeDetector:
 class ObservationPublisher:
     def __init__(self, daemon_url: str, timeout_seconds: float = 2.0) -> None:
         self._url = f"{daemon_url.rstrip('/')}/api/v1/perception/observations"
+        self._mask_url = f"{daemon_url.rstrip('/')}/api/v1/perception/mask"
         self._timeout_seconds = timeout_seconds
 
     def publish(self, observation: Observation) -> None:
@@ -160,6 +180,29 @@ class ObservationPublisher:
                     raise RuntimeError(f"daemon returned HTTP {response.status}")
         except urllib.error.URLError as error:
             raise RuntimeError(f"failed to publish observation: {error.reason}") from error
+
+    def publish_mask(self, frame_id: int, captured_at_ms: int, mask: np.ndarray) -> None:
+        if mask.ndim != 2 or mask.dtype != np.uint8:
+            raise ValueError("segmentation mask must be a two-dimensional uint8 array")
+        height, width = mask.shape
+        request = urllib.request.Request(
+            self._mask_url,
+            data=np.ascontiguousarray(mask).tobytes(),
+            headers={
+                "Content-Type": "application/octet-stream",
+                "X-Tarsier-Frame-Id": str(frame_id),
+                "X-Tarsier-Captured-At-Ms": str(captured_at_ms),
+                "X-Tarsier-Mask-Width": str(width),
+                "X-Tarsier-Mask-Height": str(height),
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:  # noqa: S310
+                if response.status != 204:
+                    raise RuntimeError(f"daemon returned HTTP {response.status}")
+        except urllib.error.URLError as error:
+            raise RuntimeError(f"failed to publish video mask: {error.reason}") from error
 
 
 def capture_frames(source: str, width: int, height: int) -> Iterator[np.ndarray]:
@@ -207,9 +250,14 @@ def run_worker(
             timestamp_ms = max(0, int((now - started_at) * 1000))
             captured_at_ms = time.time_ns() // 1_000_000
             inference_started = time.perf_counter()
-            face_landmarks, hand_landmarks, pose_landmarks, gesture, confidence = detector.detect(
-                frame, timestamp_ms
-            )
+            (
+                face_landmarks,
+                hand_landmarks,
+                pose_landmarks,
+                gesture,
+                confidence,
+                mask,
+            ) = detector.detect(frame, timestamp_ms)
             latency_ms = (time.perf_counter() - inference_started) * 1000.0
             observation = Observation(
                 frame_id=frame_id,
@@ -224,6 +272,10 @@ def run_worker(
                 confidence=confidence,
                 latency_ms=latency_ms,
             )
+            try:
+                publisher.publish_mask(frame_id, captured_at_ms, mask)
+            except RuntimeError as error:
+                LOGGER.warning("%s", error)
             try:
                 publisher.publish(observation)
             except RuntimeError as error:

@@ -59,7 +59,7 @@ def main() -> None:
             "`tarsier-perception models --download` first"
         )
     try:
-        source = args.source or f"{args.daemon_url.rstrip('/')}/api/v1/preview.mjpeg"
+        source = args.source or f"{args.daemon_url.rstrip('/')}/api/v1/perception/input.mjpeg"
         run_worker(
             source=source,
             width=args.width,

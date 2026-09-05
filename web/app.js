@@ -5,6 +5,7 @@ const preview = $("#preview");
 const overlay = $("#landmark-overlay");
 const overlayContext = overlay.getContext("2d");
 const skeletonToggle = $("#skeleton-toggle");
+const greenScreenToggle = $("#green-screen-toggle");
 const faceTrackingToggle = $("#face-tracking-toggle");
 const zoomSlider = $("#zoom-slider");
 const zoomReset = $("#zoom-reset");
@@ -27,6 +28,8 @@ let zoomSendTimer = null;
 let hdrPending = false;
 let trackingPending = false;
 let faceTrackingPending = false;
+let greenScreenPending = false;
+let greenScreenError = null;
 let panTiltPending = false;
 let panTiltSyncQueued = false;
 let panTiltKeepaliveTimer = null;
@@ -373,6 +376,21 @@ function renderPanTilt(camera) {
     : panTiltPending ? "Stopping…" : "Hold a button or use the arrow keys";
 }
 
+function renderGreenScreen(videoEffects) {
+  const enabled = videoEffects.green_screen_enabled === true;
+  const maskFresh = videoEffects.mask_published_at_ms != null
+    && Date.now() - videoEffects.mask_published_at_ms <= 750;
+  greenScreenToggle.disabled = greenScreenPending;
+  greenScreenToggle.setAttribute("aria-pressed", String(enabled));
+  greenScreenToggle.textContent = greenScreenPending ? "Applying…" : "Green screen";
+  greenScreenToggle.title = greenScreenError
+    || (enabled
+      ? maskFresh
+        ? "The background is replaced with green in the final video output"
+        : "Privacy fallback active: the final video stays black until a fresh mask is available"
+      : "Replace the background with green in the final video output");
+}
+
 function render(next) {
   observeDaemon(next.started_at_ms);
   state = next;
@@ -405,6 +423,7 @@ function render(next) {
   renderFaceTracking(camera);
   renderPanTilt(camera);
   renderBuiltInGestures(camera);
+  renderGreenScreen(next.video_effects);
   $("#pipeline-summary").textContent = pipeline.running
     ? `${pipeline.width}×${pipeline.height} · ${pipeline.fps.toFixed(1)} fps · ${pipeline.frame_count} frames`
     : pipeline.error || "Pipeline stopped";
@@ -503,6 +522,29 @@ $("#demo-trigger").addEventListener("click", async () => {
 });
 
 skeletonToggle.addEventListener("click", () => setSkeletonEnabled(!skeletonEnabled));
+greenScreenToggle.addEventListener("click", async () => {
+  if (greenScreenPending || !state) return;
+  const enabled = state.video_effects.green_screen_enabled !== true;
+  greenScreenPending = true;
+  greenScreenError = null;
+  render(state);
+  try {
+    const response = await fetch("/api/v1/video/green-screen", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.error || `Video effect failed (${response.status})`);
+    }
+  } catch (error) {
+    greenScreenError = error instanceof Error ? error.message : String(error);
+  } finally {
+    greenScreenPending = false;
+    if (state) render(state);
+  }
+});
 preview.addEventListener("load", () => {
   preview.classList.remove("disconnected");
   drawSkeletons();

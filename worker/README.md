@@ -2,8 +2,9 @@
 
 This project-local Python 3.12 worker reads the daemon's internal MJPEG preview,
 runs the official MediaPipe face and pose landmarkers plus the canned gesture
-recognizer, and publishes versioned observations to the Rust daemon. The public
-V4L2 loopback therefore remains available to external video clients.
+recognizer, and publishes versioned observations together with an 8-bit person
+mask to the Rust daemon. The worker reads a raw internal branch; the public V4L2
+loopback remains available for the daemon's final, optionally processed output.
 
 The model files are cached outside the repository and checked against pinned
 SHA-256 digests. Set up the worker with:
@@ -29,9 +30,10 @@ stabilizers without a camera:
 uv run --project worker tarsier-perception mock --open-palm
 ```
 
-No frame or landmark leaves the machine. Only an observation containing face
+No frame or landmark leaves the machine. An observation containing face
 presence, the 478 normalized face landmarks, the best gesture candidate,
 confidence, processing latency, 33 normalized pose landmarks, and up to 42
-normalized hand landmarks is sent over the loopback HTTP API. The web UI
-renders the face, body, and each detected hand locally as toggleable skeleton
-overlays.
+normalized hand landmarks is sent over the loopback HTTP API. A separate raw
+grayscale mask is published to the daemon's internal video-mask channel for
+background and future final-output effects. The web UI renders the face, body,
+and each detected hand locally as toggleable skeleton overlays.

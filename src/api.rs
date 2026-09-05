@@ -7,7 +7,7 @@ use axum::{
         State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
-    http::{StatusCode, header},
+    http::{HeaderMap, StatusCode, header},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
@@ -21,6 +21,7 @@ use tower_http::trace::TraceLayer;
 use crate::{
     camera::{CameraHandle, PAN_TILT_LEASE},
     config::{CameraPresetConfig, Config, ScenarioConfig},
+    effects::VideoMask,
     face_tracking::FaceTrackingController,
     model::{
         BuiltInGesture, CameraAttitudeSource, FaceTrackingState, FaceTrackingTarget, Landmark,
@@ -94,6 +95,12 @@ pub fn router(
             "/api/v1/perception/observations",
             post(perception_observation),
         )
+        .route("/api/v1/perception/mask", post(perception_mask))
+        .route(
+            "/api/v1/perception/input.mjpeg",
+            get(perception_input_mjpeg),
+        )
+        .route("/api/v1/video/green-screen", post(set_green_screen))
         .route("/api/v1/preview.mjpeg", get(preview_mjpeg))
         .route("/api/v1/camera/snapshot", get(snapshot))
         .layer(TraceLayer::new_for_http())
@@ -185,6 +192,11 @@ struct BuiltInGestureRequest {
 #[derive(Deserialize)]
 struct ZoomRequest {
     magnification: f32,
+}
+
+#[derive(Deserialize)]
+struct GreenScreenRequest {
+    enabled: bool,
 }
 
 #[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -741,8 +753,17 @@ async fn snapshot(State(state): State<ApiState>) -> Response {
 }
 
 async fn preview_mjpeg(State(state): State<ApiState>) -> Response {
-    let mut receiver = state.preview.subscribe();
-    let mut shutdown = state.shutdown.clone();
+    mjpeg_response(state.preview.subscribe(), state.shutdown.clone())
+}
+
+async fn perception_input_mjpeg(State(state): State<ApiState>) -> Response {
+    mjpeg_response(state.preview.subscribe_perception(), state.shutdown.clone())
+}
+
+fn mjpeg_response(
+    mut receiver: watch::Receiver<Option<Bytes>>,
+    mut shutdown: watch::Receiver<bool>,
+) -> Response {
     let stream = async_stream::stream! {
         loop {
             tokio::select! {
@@ -779,6 +800,86 @@ async fn preview_mjpeg(State(state): State<ApiState>) -> Response {
         .header(header::CACHE_CONTROL, "no-store")
         .body(Body::from_stream(stream))
         .expect("static preview response is valid")
+}
+
+async fn set_green_screen(
+    State(state): State<ApiState>,
+    Json(request): Json<GreenScreenRequest>,
+) -> Response {
+    state
+        .preview
+        .effects()
+        .set_green_screen_enabled(request.enabled);
+    state
+        .runtime
+        .update(|runtime| runtime.video_effects.green_screen_enabled = request.enabled)
+        .await;
+    state
+        .runtime
+        .emit(
+            "video.effect.green_screen",
+            "api",
+            None,
+            json!({"enabled": request.enabled}),
+        )
+        .await;
+    StatusCode::ACCEPTED.into_response()
+}
+
+async fn perception_mask(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let frame_id = match required_u64_header(&headers, "x-tarsier-frame-id") {
+        Ok(value) => value,
+        Err(error) => return unprocessable_entity(error),
+    };
+    let captured_at_ms = match required_u64_header(&headers, "x-tarsier-captured-at-ms") {
+        Ok(value) => value,
+        Err(error) => return unprocessable_entity(error),
+    };
+    let width = match required_u32_header(&headers, "x-tarsier-mask-width") {
+        Ok(value) => value,
+        Err(error) => return unprocessable_entity(error),
+    };
+    let height = match required_u32_header(&headers, "x-tarsier-mask-height") {
+        Ok(value) => value,
+        Err(error) => return unprocessable_entity(error),
+    };
+    let mask = match VideoMask::new(frame_id, captured_at_ms, width, height, body.to_vec()) {
+        Ok(mask) => mask,
+        Err(error) => return unprocessable_entity(error.to_string()),
+    };
+    state.preview.effects().publish_mask(mask);
+    StatusCode::NO_CONTENT.into_response()
+}
+
+fn unprocessable_entity(error: String) -> Response {
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        Json(json!({"error": error})),
+    )
+        .into_response()
+}
+
+fn required_u64_header(headers: &HeaderMap, name: &'static str) -> Result<u64, String> {
+    required_header(headers, name)
+}
+
+fn required_u32_header(headers: &HeaderMap, name: &'static str) -> Result<u32, String> {
+    required_header(headers, name)
+}
+
+fn required_header<T>(headers: &HeaderMap, name: &'static str) -> Result<T, String>
+where
+    T: std::str::FromStr,
+{
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse().ok())
+        .ok_or_else(|| format!("missing or invalid {name} header"))
 }
 
 async fn trigger_scenario(
@@ -851,6 +952,15 @@ async fn perception_observation(
             .into_response();
     }
 
+    let mask_state = state.preview.effects().latest_mask().map(|mask| {
+        (
+            mask.frame_id,
+            mask.width,
+            mask.height,
+            mask.captured_at_ms,
+            mask.published_at_ms,
+        )
+    });
     state
         .runtime
         .update(|runtime| {
@@ -893,6 +1003,14 @@ async fn perception_observation(
             }
             runtime.perception.sample_at_ms = Some(observation.captured_at_ms);
             runtime.perception.latency_ms = observation.latency_ms;
+            if let Some(mask) = mask_state {
+                runtime.video_effects.mask_available = true;
+                runtime.video_effects.mask_frame_id = Some(mask.0);
+                runtime.video_effects.mask_width = Some(mask.1);
+                runtime.video_effects.mask_height = Some(mask.2);
+                runtime.video_effects.mask_captured_at_ms = Some(mask.3);
+                runtime.video_effects.mask_published_at_ms = Some(mask.4);
+            }
         })
         .await;
 
@@ -1159,6 +1277,8 @@ mod tests {
         }
         assert!(include_str!("../web/index.html").contains("id=\"face-tracking-toggle\""));
         assert!(include_str!("../web/app.js").contains("/api/v1/camera/face-tracking"));
+        assert!(include_str!("../web/index.html").contains("id=\"green-screen-toggle\""));
+        assert!(include_str!("../web/app.js").contains("/api/v1/video/green-screen"));
     }
 
     #[tokio::test]
@@ -1191,6 +1311,7 @@ mod tests {
         let app = router(config, runtime, PreviewHub::new(), None, shutdown_rx);
 
         let response = app
+            .clone()
             .oneshot(
                 Request::get("/api/v1/preview.mjpeg")
                     .body(Body::empty())
@@ -1204,6 +1325,115 @@ mod tests {
             .await
             .expect("preview stream should stop after shutdown")
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn green_screen_control_updates_the_live_effect_and_runtime_state() {
+        let mut config = Config::default();
+        config.perception.enabled = false;
+        let runtime = Runtime::new();
+        let preview = PreviewHub::new();
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = router(config, runtime.clone(), preview.clone(), None, shutdown_rx);
+
+        let response = app
+            .oneshot(
+                Request::post("/api/v1/video/green-screen")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"enabled":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert!(preview.effects().green_screen_enabled());
+        assert!(runtime.state().await.video_effects.green_screen_enabled);
+        let events = runtime.recent_events().await;
+        assert_eq!(events[0].kind, "video.effect.green_screen");
+        assert_eq!(events[0].data["enabled"], true);
+    }
+
+    #[tokio::test]
+    async fn perception_mask_is_published_with_frame_provenance() {
+        let mut config = Config::default();
+        config.perception.enabled = false;
+        let runtime = Runtime::new();
+        let preview = PreviewHub::new();
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = router(config, runtime.clone(), preview.clone(), None, shutdown_rx);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/perception/mask")
+                    .header("content-type", "application/octet-stream")
+                    .header("x-tarsier-frame-id", "42")
+                    .header("x-tarsier-captured-at-ms", "123456")
+                    .header("x-tarsier-mask-width", "2")
+                    .header("x-tarsier-mask-height", "2")
+                    .body(Body::from(vec![0, 63, 127, 255]))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let mask = preview.effects().latest_mask().unwrap();
+        assert_eq!(mask.frame_id, 42);
+        assert_eq!(mask.captured_at_ms, 123456);
+        assert_eq!((mask.width, mask.height), (2, 2));
+
+        let observation = json!({
+            "frame_id": 42,
+            "captured_at_ms": 123456,
+            "face_detected": false,
+            "hand_detected": false,
+            "pose_detected": false,
+            "gesture": null,
+            "confidence": 0.0,
+            "latency_ms": 10.0
+        });
+        let response = app
+            .oneshot(
+                Request::post("/api/v1/perception/observations")
+                    .header("content-type", "application/json")
+                    .body(Body::from(observation.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let effects = runtime.state().await.video_effects;
+        assert!(effects.mask_available);
+        assert_eq!(effects.mask_frame_id, Some(42));
+        assert_eq!(
+            (effects.mask_width, effects.mask_height),
+            (Some(2), Some(2))
+        );
+    }
+
+    #[tokio::test]
+    async fn perception_mask_rejects_inconsistent_dimensions() {
+        let mut config = Config::default();
+        config.perception.enabled = false;
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = router(config, Runtime::new(), PreviewHub::new(), None, shutdown_rx);
+
+        let response = app
+            .oneshot(
+                Request::post("/api/v1/perception/mask")
+                    .header("x-tarsier-frame-id", "1")
+                    .header("x-tarsier-captured-at-ms", "100")
+                    .header("x-tarsier-mask-width", "2")
+                    .header("x-tarsier-mask-height", "2")
+                    .body(Body::from(vec![0, 255]))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     #[tokio::test]

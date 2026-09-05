@@ -6,6 +6,7 @@ from pathlib import Path
 from tarsier_perception.models import describe_models
 from tarsier_perception.worker import (
     Landmark,
+    encode_segmentation_mask,
     normalize_gesture,
     select_gesture,
     select_landmarks,
@@ -28,6 +29,14 @@ class SourceLandmark:
 @dataclass
 class SourcePoseLandmark(SourceLandmark):
     visibility: float
+
+
+class SourceMask:
+    def __init__(self, values: list[list[float]]) -> None:
+        self._values = values
+
+    def numpy_view(self):  # noqa: ANN201
+        return self._values
 
 
 def test_normalizes_mediapipe_gesture_names() -> None:
@@ -78,6 +87,16 @@ def test_preserves_pose_landmark_visibility() -> None:
     assert select_landmarks([[SourcePoseLandmark(0.1, 0.2, -0.3, 0.85)]], 1) == [
         Landmark(0.1, 0.2, -0.3, 0.85)
     ]
+
+
+def test_encodes_segmentation_probability_as_grayscale_mask() -> None:
+    mask = encode_segmentation_mask([SourceMask([[0.0, 0.5], [1.0, 0.25]])], 2, 2)
+    assert mask.dtype.name == "uint8"
+    assert mask.tolist() == [[0, 127], [255, 63]]
+
+
+def test_missing_segmentation_is_an_empty_mask() -> None:
+    assert encode_segmentation_mask([], 3, 2).tolist() == [[0, 0, 0], [0, 0, 0]]
 
 
 def test_missing_models_are_reported_as_unverified(tmp_path: Path) -> None:

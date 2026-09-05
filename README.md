@@ -22,7 +22,8 @@ mischievous personality without tying its core to one camera vendor.
 ## What works
 
 - one Rust daemon owns `/dev/video0` and serializes OBSBOT extension-unit I/O;
-- a GStreamer tee feeds an MJPEG preview and `/dev/video42` at 720p30;
+- a GStreamer pipeline keeps a raw internal perception branch separate from
+  the final MJPEG preview and `/dev/video42` output at 720p30;
 - a video supervisor closes stale streams and rebuilds the pipeline against the
   stable device path after runtime errors or end-of-stream;
 - generic V4L2 clients can consume `/dev/video42` while perception uses the
@@ -39,7 +40,12 @@ mischievous personality without tying its core to one camera vendor.
   the face mesh disappears, and switches exclusively with the camera's built-in
   tracking;
 - a supervised Python 3.12 worker performs local MediaPipe face and body-pose
-  landmarking plus canned gesture recognition for up to two hands;
+  landmarking, person-mask segmentation, and canned gesture recognition for up
+  to two hands;
+- a reusable internal 8-bit video-mask channel feeds a final-output effects
+  stage; the **Green screen** control replaces the background with green in both
+  the preview and virtual camera, while a missing or stale mask fails closed to
+  black until the effect is explicitly disabled;
 - face presence and open-palm observations pass through dwell, release, and
   cooldown stabilization before becoming semantic events;
 - a responsive local web UI shows the preview, telemetry, perception state,
@@ -61,10 +67,14 @@ flowchart LR
     Camera[Motorized UVC camera] -->|MJPEG| Pipeline[Managed GStreamer pipeline]
     Camera <-->|serialized UVC/XU| Adapter[Camera adapter]
 
-    Pipeline -->|YUY2 720p30| Loopback[V4L2 loopback]
-    Pipeline --> Preview[Internal MJPEG preview]
+    Pipeline --> RawPreview[Raw internal MJPEG branch]
+    RawPreview --> Worker[MediaPipe worker]
+    Worker -->|8-bit person mask| Mask[Internal video-mask channel]
+    Pipeline --> Effects[Final-output effects]
+    Mask --> Effects
+    Effects -->|YUY2 720p30| Loopback[V4L2 loopback]
+    Effects --> Preview[Final MJPEG preview]
     Preview --> UI[Local web UI]
-    Preview --> Worker[MediaPipe worker]
 
     Adapter <--> Core[Rust runtime and event bus]
     Worker -->|versioned observations| API[HTTP API]
@@ -77,8 +87,8 @@ flowchart LR
 
 The process-local bus uses Tokio primitives. External modules communicate
 through versioned HTTP schemas; they do not gain direct access to hardware or
-the bus. The Python worker receives only downscaled JPEG frames and posts
-compact observations back to the loopback-only API.
+the bus. The Python worker receives only downscaled raw-camera JPEG frames and
+posts compact observations plus person masks back to the loopback-only API.
 
 ## Requirements
 
@@ -132,6 +142,11 @@ Open <http://127.0.0.1:8742/> for the embedded preview and controls. In another
 terminal, inspect the daemon or consume its public virtual camera. The
 **Skeletons** button overlays the detected face mesh, a 33-point body pose, and
 both 21-point hand skeletons in the UI without modifying the public V4L2 feed.
+The **Green screen** button replaces the detected background in both the embedded
+preview and `/dev/video42`, so conferencing applications consume the same
+final image. While the effect is active, Tarsier emits black frames rather than
+expose the original image if the worker has not published a fresh mask.
+Disabling the button restores the original image immediately.
 The manual zoom slider applies x1-to-x4 changes continuously while coalescing
 obsolete intermediate positions. Embedded UI assets and the health response use
 `Cache-Control: no-store`; an open page detects a new
@@ -225,6 +240,7 @@ The default server binds only to `127.0.0.1:8742`.
 | `POST` | `/api/v1/camera/hdr` | Enable or disable HDR/WDR |
 | `POST` | `/api/v1/camera/tracking` | Enable or disable built-in tracking |
 | `POST` | `/api/v1/camera/face-tracking` | Enable or disable Tarsier face tracking |
+| `POST` | `/api/v1/video/green-screen` | Enable or disable green background replacement on the final output |
 | `POST` | `/api/v1/camera/built-in-gestures/{feature}` | Enable or disable `target-selection`, `zoom`, or `dynamic-zoom` gestures |
 | `POST` | `/api/v1/camera/actions/recenter` | Recenter the gimbal |
 | `GET` | `/api/v1/camera/presets` | List configured presets |
@@ -236,8 +252,10 @@ The default server binds only to `127.0.0.1:8742`.
 | `GET` | `/api/v1/events/recent` | Recent semantic and control events |
 | `WS` | `/api/v1/events` | Live event stream |
 
-`POST /api/v1/perception/observations` is the local worker ingestion endpoint.
-It is not intended as an operator control.
+`GET /api/v1/perception/input.mjpeg`, `POST /api/v1/perception/observations`,
+and `POST /api/v1/perception/mask` are local worker endpoints. The first keeps
+inference on the raw camera image, while the latter two publish semantic
+observations and a grayscale person mask. They are not operator controls.
 
 Examples:
 
@@ -355,6 +373,9 @@ The first vertical slice was validated on 2026-09-05 with an OBSBOT Tiny 2
   telemetry/state, and recorded on the event bus;
 - the then-current MediaPipe worker detected a real face with roughly 10 ms
   processing latency on the tested machine;
+- the segmentation-enabled worker produced a full-range 640x360 person mask on
+  a current physical-camera snapshot; local compositing preserved the visible
+  head, torso, and arms while replacing the observed background with green;
 - the worker published all 21 normalized landmarks for one real detected hand,
   which the UI drew as a toggleable canvas overlay without re-encoding the
   preview or modifying `/dev/video42`; face-mesh and simultaneous two-hand
@@ -379,10 +400,14 @@ The first vertical slice was validated on 2026-09-05 with an OBSBOT Tiny 2
   client assets, returned to `Live`, and received a new 640x360 MJPEG stream;
 - the video supervisor rebuilt a live synthetic GStreamer pipeline after a
   controlled EOS and recorded both failure and restart events;
+- the effects stage was exercised end to end on the synthetic pipeline: the
+  supervised worker consumed the raw branch and published 640x360 masks, the
+  final stream became green for an empty-person mask, a full-person mask
+  preserved the source, and an absent or stale mask produced black frames;
 - after the repair restart, the real 720p30 pipeline remained healthy for more
   than six minutes on the camera's 480 Mbit/s fallback link, passing 11,000
   frames without another USB event or required restart;
-- all 50 daemon tests, 2 MCP tests, 6 Python tests, JavaScript syntax checks,
+- all 64 daemon tests, 2 MCP tests, 9 Python tests, JavaScript syntax checks,
   formatting, lint, configuration, protocol, and API checks passed.
 
 An extended run changed the camera result: after approximately six minutes of
@@ -419,6 +444,10 @@ run before unattended use.
 - Tarsier face-tracking direction, mutual exclusion, dead-zone hysteresis, and
   low-speed diagonal commands have automated coverage, but its physical
   framing thresholds still need live tuning across distances and lighting;
+- green-screen routing, privacy fallback, synthetic masks, and one physical
+  still-frame mask have runtime or visual coverage, but moving-edge quality and
+  sustained performance still need validation on the physical camera across
+  clothing, motion, and lighting conditions;
 - pipeline telemetry reports effective FPS, frame count, last frame, errors,
   and restart count, but not queue pressure or dropped-frame attribution;
 - configuration changes require a restart and runtime state is not persisted;
@@ -443,6 +472,6 @@ run before unattended use.
   control surface.
 
 The next focused increments are extended telemetry and USB recovery soak
-testing plus broader gesture robustness testing. Background replacement,
-avatars, speech, robotics, ROS, cloud video processing, and a large gesture
-vocabulary remain outside the first version.
+testing plus broader gesture and segmentation robustness testing. Avatars,
+speech, robotics, ROS, cloud video processing, and a large gesture vocabulary
+remain outside the first version.
