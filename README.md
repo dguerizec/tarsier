@@ -385,6 +385,7 @@ The default server binds only to `127.0.0.1:8742`.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
+| `POST` | `/api/v1/camera/photos` | Save the final full-resolution JPEG locally; returns its path |
 | `GET` | `/api/v1/health` | Health, version, daemon start time, uptime, and restart availability |
 | `POST` | `/api/v1/daemon/restart` | Gracefully exit for restart by the active service supervisor |
 | `GET` | `/api/v1/state` | Complete runtime state |
@@ -726,3 +727,18 @@ The next focused increments are physical-camera expression calibration,
 stylized-avatar refinement, extended telemetry, and USB recovery soak testing.
 Speech, robotics, ROS, cloud video processing, and a large gesture vocabulary
 remain outside the first version.
+
+### Photo capture
+
+Click **Take photo** above the preview or press **Space** to save the latest fresh output JPEG to
+`~/Pictures/Tarsier` on the daemon's machine. Override the directory with
+`TARSIER_PHOTOS_DIR` in the daemon environment. Each photo has a unique filename;
+existing files are never overwritten. The UI displays the saved path or an error.
+
+Photos include the current identity, background effects, rotation, and mirror,
+at the configured output resolution (default 1280×720), before preview downscaling.
+The UI skeleton overlay is not part of the video output. Disable effects when
+collecting training photos. No photo is saved if the frame is over one second old.
+
+The Space shortcut ignores key repeats, modifiers, focused controls, editable
+fields, and open dialogs. It works while the Tarsier page has keyboard focus.

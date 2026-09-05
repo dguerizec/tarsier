@@ -27,6 +27,7 @@ use crate::{
 pub struct PreviewHub {
     output_tx: watch::Sender<Option<Bytes>>,
     perception_tx: watch::Sender<Option<PerceptionFrame>>,
+    photo_tx: watch::Sender<Option<PerceptionFrame>>,
     effects: VideoEffects,
 }
 
@@ -71,6 +72,7 @@ impl PreviewHub {
         let (output_tx, _) = watch::channel(None);
         let (perception_tx, _) = watch::channel(None);
         Self {
+            photo_tx: watch::channel(None).0,
             output_tx,
             perception_tx,
             effects: VideoEffects::new(),
@@ -89,6 +91,17 @@ impl PreviewHub {
         self.output_tx.borrow().clone()
     }
 
+    pub(crate) fn latest_photo(&self) -> Option<PerceptionFrame> {
+        self.photo_tx
+            .borrow()
+            .clone()
+            .filter(|frame| unix_ms().saturating_sub(frame.captured_at_ms) <= 1000)
+    }
+
+    pub(crate) fn publish_photo(&self, frame: PerceptionFrame) {
+        self.photo_tx.send_replace(Some(frame));
+    }
+
     pub fn effects(&self) -> &VideoEffects {
         &self.effects
     }
@@ -102,6 +115,7 @@ impl PreviewHub {
     }
 
     fn clear(&self) {
+        self.photo_tx.send_replace(None);
         self.output_tx.send_replace(None);
         self.perception_tx.send_replace(None);
         self.effects.clear_mask();
@@ -249,6 +263,32 @@ impl ActivePipeline {
             .context("effect processor is missing")?;
 
         let capture_clock = Arc::new(CaptureClock::new(unix_ms(), config.fps));
+
+        let photo_sink = pipeline
+            .by_name("photo")
+            .context("photo appsink is missing")?
+            .downcast::<gst_app::AppSink>()
+            .map_err(|_| anyhow::anyhow!("photo element is not an appsink"))?;
+        photo_sink.set_callbacks(
+            gst_app::AppSinkCallbacks::builder()
+                .new_sample({
+                    let preview = preview.clone();
+                    let capture_clock = Arc::clone(&capture_clock);
+                    move |sink| {
+                        let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                        let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
+                        let pts = buffer.pts().ok_or(gst::FlowError::Error)?.nseconds();
+                        let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
+                        preview.publish_photo(PerceptionFrame {
+                            bytes: Bytes::copy_from_slice(map.as_slice()),
+                            frame_id: capture_clock.frame_id(pts),
+                            captured_at_ms: capture_clock.captured_at_ms(pts),
+                        });
+                        Ok(gst::FlowSuccess::Ok)
+                    }
+                })
+                .build(),
+        );
 
         perception_sink.set_callbacks(
             gst_app::AppSinkCallbacks::builder()
@@ -427,6 +467,10 @@ fn pipeline_description(config: &VideoConfig) -> String {
         config.preview_width,
         config.preview_height,
         config.preview_quality
+    );
+    branches.push_str(
+        " stream. ! queue leaky=downstream max-size-buffers=1 ! videoconvert ! jpegenc quality=95 ! \
+         appsink name=photo max-buffers=1 drop=true sync=false",
     );
     if config.loopback_enabled {
         branches.push_str(&format!(
@@ -836,6 +880,6 @@ mod tests {
         let description = pipeline_description(&VideoConfig::default());
         assert!(description.contains("v4l2src device=\"/dev/video0\""));
         assert!(description.contains("v4l2sink device=\"/dev/video42\""));
-        assert_eq!(description.matches("leaky=downstream").count(), 4);
+        assert_eq!(description.matches("leaky=downstream").count(), 5);
     }
 }

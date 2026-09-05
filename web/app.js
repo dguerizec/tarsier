@@ -6,6 +6,9 @@ const daemonRestartCancel = $("#daemon-restart-cancel");
 const daemonRestartConfirm = $("#daemon-restart-confirm");
 const daemonRestartError = $("#daemon-restart-error");
 const events = $("#events");
+let photoPending = false;
+const takePhoto = $("#take-photo");
+const photoStatus = $("#photo-status");
 const preview = $("#preview");
 const overlay = $("#landmark-overlay");
 const overlayContext = overlay.getContext("2d");
@@ -782,6 +785,7 @@ function render(next) {
     : camera.powered_on === false ? "Camera off"
     : pipeline.error || "Pipeline stopped";
   syncPreview(pipeline);
+  takePhoto.disabled = photoPending || !socketConnected || !pipeline.running;
   $("#worker").textContent = perception.worker_connected ? `Frame ${perception.frame_id}` : "Worker offline";
   $("#gesture").textContent = perception.gesture || "No gesture";
   $("#confidence").textContent = gestureDetail(perception);
@@ -1526,3 +1530,33 @@ loadRecentEvents().catch(console.error);
 loadPresets().catch(console.error);
 connect();
 checkDaemonInstance();
+
+takePhoto.addEventListener("click", async () => {
+  if (photoPending) return;
+  photoPending = true;
+  takePhoto.disabled = true;
+  photoStatus.classList.remove("error");
+  photoStatus.textContent = "Saving photo…";
+  try {
+    const response = await fetch("/api/v1/camera/photos", { method: "POST" });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Could not save photo");
+    photoStatus.textContent = `Saved: ${payload.path}`;
+  } catch (error) {
+    photoStatus.classList.add("error");
+    photoStatus.textContent = error instanceof Error ? error.message : String(error);
+  } finally {
+    photoPending = false;
+    takePhoto.disabled = !socketConnected || !state?.pipeline.running;
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.code !== "Space" || event.altKey || event.ctrlKey || event.metaKey
+    || event.shiftKey || event.isComposing || event.defaultPrevented
+    || blocksArrowControl(event.target)
+    || event.target?.closest?.("button, a, summary, [role='button'], [role='slider']")
+    || document.querySelector("dialog[open]")) return;
+  event.preventDefault();
+  if (!event.repeat && !takePhoto.disabled) takePhoto.click();
+});

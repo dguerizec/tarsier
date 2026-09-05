@@ -202,6 +202,7 @@ pub fn router_with_controls(
         .route("/api/v1/video/green-screen", post(set_green_screen))
         .route("/api/v1/preview.mjpeg", get(preview_mjpeg))
         .route("/api/v1/camera/snapshot", get(snapshot))
+        .route("/api/v1/camera/photos", post(take_photo))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
@@ -1283,6 +1284,70 @@ async fn scenarios(State(state): State<ApiState>) -> Json<Vec<ScenarioConfig>> {
 
 async fn recent_events(State(state): State<ApiState>) -> Json<Vec<crate::model::SemanticEvent>> {
     Json(state.runtime.recent_events().await)
+}
+
+async fn take_photo(State(state): State<ApiState>) -> Response {
+    let Some(frame) = state.preview.latest_photo() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "No fresh camera frame is available"})),
+        )
+            .into_response();
+    };
+    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<std::path::PathBuf> {
+        let directory = std::env::var_os("TARSIER_PHOTOS_DIR")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .map(|home| std::path::PathBuf::from(home).join("Pictures/Tarsier"))
+            })
+            .ok_or_else(|| anyhow::anyhow!("Set TARSIER_PHOTOS_DIR or HOME to save photos"))?;
+        save_photo(&directory, &frame.bytes)
+    })
+    .await;
+    match result {
+        Ok(Ok(path)) => (StatusCode::CREATED, Json(json!({"path": path}))).into_response(),
+        Ok(Err(error)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Could not save photo: {error}")})),
+        )
+            .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Photo task failed: {error}")})),
+        )
+            .into_response(),
+    }
+}
+
+fn save_photo(directory: &std::path::Path, bytes: &[u8]) -> anyhow::Result<std::path::PathBuf> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::{io::Write, os::unix::fs::OpenOptionsExt};
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    std::fs::create_dir_all(directory)?;
+    loop {
+        let path = directory.join(format!(
+            "photo-{}-{}-{}.jpg",
+            unix_ms(),
+            std::process::id(),
+            SEQUENCE.fetch_add(1, Ordering::Relaxed),
+        ));
+        let mut file = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        };
+        if let Err(error) = file.write_all(bytes).and_then(|()| file.sync_all()) {
+            let _ = std::fs::remove_file(&path);
+            return Err(error.into());
+        }
+        return Ok(path);
+    }
 }
 
 async fn snapshot(State(state): State<ApiState>) -> Response {
@@ -2486,6 +2551,54 @@ mod tests {
 
     use super::*;
     use crate::{camera, config::CameraAdapter, settings::UserSettings};
+
+    #[test]
+    fn photos_are_saved_without_overwriting_and_write_errors_are_reported() {
+        let directory = std::env::temp_dir().join(format!(
+            "tarsier-photo-test-{}-{}",
+            std::process::id(),
+            unix_ms()
+        ));
+        let first = save_photo(&directory, b"first JPEG").unwrap();
+        let second = save_photo(&directory, b"second JPEG").unwrap();
+        assert_ne!(first, second);
+        assert_eq!(std::fs::read(&first).unwrap(), b"first JPEG");
+        assert_eq!(std::fs::read(&second).unwrap(), b"second JPEG");
+        assert!(save_photo(&first, b"cannot write inside a file").is_err());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn photos_reject_missing_or_stale_output() {
+        let preview = PreviewHub::new();
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = router(
+            Config::default(),
+            Runtime::new(),
+            preview.clone(),
+            None,
+            shutdown_rx,
+        );
+        for stale in [false, true] {
+            if stale {
+                preview.publish_photo(PerceptionFrame {
+                    bytes: Bytes::from_static(b"stale JPEG"),
+                    frame_id: 1,
+                    captured_at_ms: unix_ms() - 2000,
+                });
+            }
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post("/api/v1/camera/photos")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        }
+    }
 
     #[test]
     fn pan_tilt_directions_match_tiny_2_speed_signs() {

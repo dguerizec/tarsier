@@ -173,3 +173,5 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   .output-mode-list, .background-effect-list { grid-template-columns: 1fr; }
   .image-setting-row { grid-template-columns: minmax(6.5rem, 1fr) minmax(7.5rem, 1fr); }
 }
+
+.photo-status { margin: 0; padding: 0.65rem 1rem; font-size: 0.8rem; overflow-wrap: anywhere; }
