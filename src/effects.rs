@@ -259,6 +259,10 @@ impl VideoEffects {
         self.transform.store(transform.code(), Ordering::Relaxed);
     }
 
+    pub fn transform(&self) -> crate::video_transform::VideoTransform {
+        crate::video_transform::VideoTransform::from_code(self.transform.load(Ordering::Relaxed))
+    }
+
     pub fn background_enabled(&self) -> bool {
         self.background_enabled.load(Ordering::Relaxed)
     }

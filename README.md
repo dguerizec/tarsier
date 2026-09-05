@@ -374,8 +374,11 @@ or cropping. The selection is persisted across daemon restarts.
 `POST` to the same endpoint replaces both values and emits `video.transform`.
 Runtime state exposes the selection as `video_effects.transform`. UI arrows
 use the displayed image's axes and skeleton overlays follow the same transform.
-Perception and local face/hand tracking retain source-image coordinates; their
-center target is invariant under these output transformations. Camera mounting
+The perception MJPEG feed carries `X-Tarsier-Inference-Rotation` on every frame.
+The worker rotates the image before face/hand/pose inference and segmentation,
+without letterboxing or mirroring, then maps landmarks and masks back to source
+coordinates. Local tracking and output overlays retain that source coordinate
+contract. Camera mounting
 orientation telemetry and automatic orientation scenarios are not implemented.
 
 The default server binds only to `127.0.0.1:8742`.

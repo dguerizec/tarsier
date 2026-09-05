@@ -1308,12 +1308,17 @@ async fn preview_mjpeg(State(state): State<ApiState>) -> Response {
 }
 
 async fn perception_input_mjpeg(State(state): State<ApiState>) -> Response {
-    perception_mjpeg_response(state.preview.subscribe_perception(), state.shutdown.clone())
+    perception_mjpeg_response(
+        state.preview.subscribe_perception(),
+        state.shutdown.clone(),
+        state.preview.effects().clone(),
+    )
 }
 
 fn perception_mjpeg_response(
     mut receiver: watch::Receiver<Option<PerceptionFrame>>,
     mut shutdown: watch::Receiver<bool>,
+    effects: crate::effects::VideoEffects,
 ) -> Response {
     let stream = async_stream::stream! {
         loop {
@@ -1335,8 +1340,8 @@ fn perception_mjpeg_response(
                 continue;
             };
             let part_header = Bytes::from(format!(
-                "--tarsier-frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\nX-Tarsier-Frame-Id: {}\r\nX-Tarsier-Captured-At-Ms: {}\r\n\r\n",
-                frame.bytes.len(), frame.frame_id, frame.captured_at_ms
+                "--tarsier-frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\nX-Tarsier-Frame-Id: {}\r\nX-Tarsier-Captured-At-Ms: {}\r\nX-Tarsier-Inference-Rotation: {}\r\n\r\n",
+                frame.bytes.len(), frame.frame_id, frame.captured_at_ms, effects.transform().rotation
             ));
             yield Ok::<Bytes, Infallible>(part_header);
             yield Ok::<Bytes, Infallible>(frame.bytes);
@@ -2802,7 +2807,12 @@ mod tests {
     async fn perception_mjpeg_carries_source_frame_provenance() {
         let (frames_tx, frames_rx) = watch::channel(None);
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
-        let response = perception_mjpeg_response(frames_rx, shutdown_rx);
+        let effects = crate::effects::VideoEffects::new();
+        effects.set_transform(crate::video_transform::VideoTransform {
+            rotation: 180,
+            mirror: true,
+        });
+        let response = perception_mjpeg_response(frames_rx, shutdown_rx, effects);
         let mut body = response.into_body().into_data_stream();
 
         frames_tx.send_replace(Some(PerceptionFrame {
@@ -2818,6 +2828,7 @@ mod tests {
         let header = std::str::from_utf8(&header).unwrap();
 
         assert!(header.contains("X-Tarsier-Frame-Id: 152\r\n"));
+        assert!(header.contains("X-Tarsier-Inference-Rotation: 180\r\n"));
         assert!(header.contains("X-Tarsier-Captured-At-Ms: 1725000000033\r\n"));
     }
 

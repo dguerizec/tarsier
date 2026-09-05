@@ -32,6 +32,31 @@ class Landmark:
     visibility: float | None = None
 
 
+def rotate_for_inference(frame: np.ndarray, rotation: int) -> np.ndarray:
+    """Rotate clockwise without letterboxing, keeping all inference pixels."""
+    if rotation not in (0, 90, 180, 270):
+        raise ValueError("inference rotation must be 0, 90, 180, or 270")
+    return np.ascontiguousarray(np.rot90(frame, -(rotation // 90)))
+
+
+def source_landmarks(
+    landmarks: list[Landmark], rotation: int, width: int, height: int
+) -> list[Landmark]:
+    """Return normalized source coordinates, including width-normalized depth."""
+    result = []
+    for point in landmarks:
+        x, y = point.x, point.y
+        if rotation == 90:
+            x, y = y, 1 - x
+        elif rotation == 180:
+            x, y = 1 - x, 1 - y
+        elif rotation == 270:
+            x, y = 1 - y, x
+        z = point.z * (height / width if rotation in (90, 270) else 1)
+        result.append(Landmark(x, y, z, point.visibility))
+    return result
+
+
 @dataclass(frozen=True)
 class Observation:
     frame_id: int
@@ -223,12 +248,14 @@ class MediaPipeSegmenter:
         )
         self._pose_constraints = pose_constraints
 
-    def segment(self, frame_bgr: np.ndarray, timestamp_ms: int) -> np.ndarray:
+    def segment(self, frame_bgr: np.ndarray, timestamp_ms: int, rotation: int = 0) -> np.ndarray:
+        frame_bgr = rotate_for_inference(frame_bgr, rotation)
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
         result = self._segmenter.segment_for_video(image, timestamp_ms)
         height, width = frame_bgr.shape[:2]
         mask = encode_segmentation_mask(result.confidence_masks, width, height)
+        mask = rotate_for_inference(mask, (-rotation) % 360)
         return self._pose_constraints.constrain(mask)
 
     def close(self) -> None:
@@ -292,6 +319,7 @@ class DetectionFrame:
     captured_at_ms: int
     timestamp_ms: int
     frame_bgr: np.ndarray
+    rotation: int = 0
 
 
 @dataclass(frozen=True)
@@ -299,6 +327,7 @@ class SourceFrame:
     frame_id: int | None
     captured_at_ms: int | None
     frame_bgr: np.ndarray
+    rotation: int = 0
 
 
 class ObservationProcessor:
@@ -368,7 +397,14 @@ class ObservationProcessor:
                         gesture,
                         confidence,
                         pose_mask,
-                    ) = detector.detect(frame.frame_bgr, frame.timestamp_ms)
+                    ) = detector.detect(
+                        rotate_for_inference(frame.frame_bgr, frame.rotation), frame.timestamp_ms
+                    )
+                    height, width = frame.frame_bgr.shape[:2]
+                    face_landmarks = source_landmarks(face_landmarks, frame.rotation, width, height)
+                    hand_landmarks = source_landmarks(hand_landmarks, frame.rotation, width, height)
+                    pose_landmarks = source_landmarks(pose_landmarks, frame.rotation, width, height)
+                    pose_mask = rotate_for_inference(pose_mask, (-frame.rotation) % 360)
                     latency_ms = (time.perf_counter() - inference_started) * 1000.0
                     self._pose_constraints.update(pose_mask)
                     observation = Observation(
@@ -440,7 +476,10 @@ def capture_mjpeg_frames(source: str, width: int, height: int) -> Iterator[Sourc
                     captured_at_ms = int(headers["x-tarsier-captured-at-ms"])
                 except (KeyError, ValueError) as error:
                     raise RuntimeError("MJPEG frame is missing Tarsier provenance") from error
-                yield SourceFrame(frame_id, captured_at_ms, frame)
+                rotation = int(headers.get("x-tarsier-inference-rotation", "0"))
+                if rotation not in (0, 90, 180, 270):
+                    raise RuntimeError("invalid inference rotation in MJPEG frame")
+                yield SourceFrame(frame_id, captured_at_ms, frame, rotation)
     except urllib.error.URLError as error:
         raise RuntimeError(f"failed to read MJPEG source: {error.reason}") from error
 
@@ -587,12 +626,14 @@ def run_worker(
                     next_observation_at, now, observation_interval
                 )
                 observation_processor.submit(
-                    DetectionFrame(frame_id, captured_at_ms, timestamp_ms, frame)
+                    DetectionFrame(
+                        frame_id, captured_at_ms, timestamp_ms, frame, source_frame.rotation
+                    )
                 )
             person_mask = None
             if mask_due:
                 next_mask_at = advance_deadline(next_mask_at, now, mask_interval)
-                person_mask = segmenter.segment(frame, timestamp_ms)
+                person_mask = segmenter.segment(frame, timestamp_ms, source_frame.rotation)
                 if depth_processor is None or not depth_processor.mask_refinement_active:
                     try:
                         publisher.publish_mask(frame_id, captured_at_ms, person_mask)
@@ -624,11 +665,7 @@ def run_worker(
                 LOGGER.info(
                     "worker cadence: masks %.1f FPS, observations %.1f FPS, avatars %.1f FPS, "
                     "depth %.1f FPS",
-                    (
-                        masks_published
-                        + refined_masks_published
-                        - previous_refined_masks_published
-                    )
+                    (masks_published + refined_masks_published - previous_refined_masks_published)
                     / metrics_elapsed,
                     (observations_published - previous_observations_published) / metrics_elapsed,
                     (avatars_published - previous_avatars_published) / metrics_elapsed,
