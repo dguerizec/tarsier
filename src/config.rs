@@ -7,7 +7,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::model::{BackgroundEffect, VideoOutputMode};
+use crate::model::{AvatarEngine, BackgroundEffect, VideoOutputMode};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
@@ -75,8 +75,16 @@ impl Config {
         if self.avatar.fps == 0 {
             bail!("avatar fps must be greater than zero");
         }
-        if self.avatar.enabled && self.avatar.source_image.as_os_str().is_empty() {
-            bail!("avatar source_image must not be empty when the avatar worker is enabled");
+        if self.avatar.enabled {
+            match self.avatar.engine {
+                AvatarEngine::Stylized3d if self.avatar.profile.as_os_str().is_empty() => {
+                    bail!("avatar profile must not be empty for the stylized 3D engine");
+                }
+                AvatarEngine::Liveportrait if self.avatar.source_image.as_os_str().is_empty() => {
+                    bail!("avatar source_image must not be empty for the LivePortrait engine");
+                }
+                _ => {}
+            }
         }
         if !(0.0..=1.0).contains(&self.perception.minimum_confidence)
             || !(0.0..=1.0).contains(&self.perception.release_confidence)
@@ -194,6 +202,8 @@ impl Default for VideoConfig {
 #[serde(default)]
 pub struct AvatarConfig {
     pub enabled: bool,
+    pub engine: AvatarEngine,
+    pub profile: PathBuf,
     pub source_image: PathBuf,
     pub fps: u32,
     pub compile: bool,
@@ -203,6 +213,8 @@ impl Default for AvatarConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            engine: AvatarEngine::default(),
+            profile: "assets/avatars/stylized-3d.json".into(),
             source_image: "assets/avatars/liveportrait-source.png".into(),
             fps: 15,
             compile: true,

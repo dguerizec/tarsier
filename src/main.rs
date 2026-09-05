@@ -87,6 +87,8 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
     runtime
         .update(|state| {
             state.video_effects.output_mode = config.video.output_mode;
+            state.video_effects.avatar_engine =
+                config.avatar.enabled.then_some(config.avatar.engine);
             state.video_effects.background_enabled = config.video.background_enabled;
             state.video_effects.background_effect = config.video.background_effect;
             state.video_effects.green_screen_enabled = config.video.background_enabled

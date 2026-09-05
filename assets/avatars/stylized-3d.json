@@ -1,0 +1,16 @@
+{
+  "skin": "#d49a78",
+  "skin_shadow": "#a96855",
+  "hair": "#4a403c",
+  "hair_grey": "#aaa39b",
+  "beard": "#5d5650",
+  "beard_grey": "#b9b4ad",
+  "eyes": "#748b83",
+  "glasses": "#302c2a",
+  "shirt": "#315c6b",
+  "shirt_accent": "#89b6bd",
+  "wall": "#e6dccb",
+  "wall_accent": "#819b82",
+  "window": "#a9c7d5",
+  "outline": "#292725"
+}

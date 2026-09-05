@@ -10,6 +10,7 @@ use tokio::{process::Command, sync::watch, task::JoinHandle, time::sleep};
 
 use crate::{
     config::{AvatarConfig, PerceptionConfig, PerceptionSource, VideoConfig},
+    model::AvatarEngine,
     runtime::Runtime,
 };
 
@@ -170,7 +171,11 @@ fn worker_arguments(
         "--locked".into(),
     ];
     if avatar.enabled {
-        arguments.extend(["--extra".into(), "avatar".into()]);
+        let extra = match avatar.engine {
+            AvatarEngine::Stylized3d => "avatar",
+            AvatarEngine::Liveportrait => "liveportrait",
+        };
+        arguments.extend(["--extra".into(), extra.into()]);
     }
     arguments.extend([
         "tarsier-perception".into(),
@@ -193,14 +198,12 @@ fn worker_arguments(
         arguments.push(config.device.clone());
     }
     if avatar.enabled {
-        let source_image = if avatar.source_image.is_absolute() {
-            avatar.source_image.clone()
-        } else {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(&avatar.source_image)
-        };
         arguments.extend([
-            "--avatar-source".into(),
-            source_image.to_string_lossy().into_owned(),
+            "--avatar-engine".into(),
+            match avatar.engine {
+                AvatarEngine::Stylized3d => "stylized-3d".into(),
+                AvatarEngine::Liveportrait => "liveportrait".into(),
+            },
             "--avatar-fps".into(),
             avatar.fps.to_string(),
             "--avatar-width".into(),
@@ -208,11 +211,35 @@ fn worker_arguments(
             "--avatar-height".into(),
             video.height.to_string(),
         ]);
-        if avatar.compile {
-            arguments.push("--avatar-compile".into());
+        match avatar.engine {
+            AvatarEngine::Stylized3d => {
+                arguments.extend([
+                    "--avatar-profile".into(),
+                    project_path(&avatar.profile).to_string_lossy().into_owned(),
+                ]);
+            }
+            AvatarEngine::Liveportrait => {
+                arguments.extend([
+                    "--avatar-source".into(),
+                    project_path(&avatar.source_image)
+                        .to_string_lossy()
+                        .into_owned(),
+                ]);
+                if avatar.compile {
+                    arguments.push("--avatar-compile".into());
+                }
+            }
         }
     }
     arguments
+}
+
+fn project_path(path: &std::path::Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_owned()
+    } else {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(path)
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -285,6 +312,8 @@ mod tests {
     fn enabled_avatar_adds_the_optional_runtime_and_output_geometry() {
         let avatar = AvatarConfig {
             enabled: true,
+            engine: AvatarEngine::Liveportrait,
+            profile: "assets/avatars/stylized-3d.json".into(),
             source_image: "assets/avatars/liveportrait-source.png".into(),
             fps: 15,
             compile: true,
@@ -301,7 +330,14 @@ mod tests {
             "http://127.0.0.1:8742",
         );
 
-        assert!(args.windows(2).any(|pair| pair == ["--extra", "avatar"]));
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--extra", "liveportrait"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--avatar-engine", "liveportrait"])
+        );
         assert!(args.windows(2).any(|pair| pair == ["--avatar-fps", "15"]));
         assert!(
             args.windows(2)
@@ -312,6 +348,36 @@ mod tests {
                 .any(|pair| pair == ["--avatar-height", "720"])
         );
         assert!(args.iter().any(|argument| argument == "--avatar-compile"));
+    }
+
+    #[test]
+    fn stylized_avatar_uses_the_opengl_runtime_and_profile() {
+        let avatar = AvatarConfig {
+            enabled: true,
+            engine: AvatarEngine::Stylized3d,
+            profile: "assets/avatars/stylized-3d.json".into(),
+            source_image: "assets/avatars/liveportrait-source.png".into(),
+            fps: 30,
+            compile: true,
+        };
+        let args = worker_arguments(
+            &PerceptionConfig::default(),
+            &avatar,
+            &VideoConfig::default(),
+            "http://127.0.0.1:8742",
+        );
+
+        assert!(args.windows(2).any(|pair| pair == ["--extra", "avatar"]));
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--avatar-engine", "stylized-3d"])
+        );
+        assert!(args.windows(2).any(|pair| pair == ["--avatar-fps", "30"]));
+        assert!(args.windows(2).any(
+            |pair| pair[0] == "--avatar-profile" && pair[1].ends_with("stylized-3d.json")
+        ));
+        assert!(!args.iter().any(|argument| argument == "--avatar-source"));
+        assert!(!args.iter().any(|argument| argument == "--avatar-compile"));
     }
 
     #[test]

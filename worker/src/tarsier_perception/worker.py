@@ -397,9 +397,7 @@ class ObservationProcessor:
 
 def capture_frames(source: str, width: int, height: int) -> Iterator[np.ndarray]:
     capture_source: int | str = int(source) if source.isdigit() else source
-    is_live_source = source.isdigit() or source.startswith(
-        ("/dev/video", "http://", "https://")
-    )
+    is_live_source = source.isdigit() or source.startswith(("/dev/video", "http://", "https://"))
     if source.isdigit() or source.startswith("/dev/video"):
         capture = cv2.VideoCapture(capture_source, cv2.CAP_V4L2)
     else:
@@ -436,7 +434,9 @@ def run_worker(
     daemon_url: str,
     model_dir: Path,
     minimum_confidence: float,
+    avatar_engine: str | None = None,
     avatar_source: Path | None = None,
+    avatar_profile: Path | None = None,
     avatar_fps: float = 15.0,
     avatar_width: int = 1280,
     avatar_height: int = 720,
@@ -470,13 +470,15 @@ def run_worker(
                 AvatarProcessor(
                     daemon_url,
                     model_dir,
+                    avatar_engine,
                     avatar_source,
+                    avatar_profile,
                     avatar_width,
                     avatar_height,
                     compile_models=avatar_compile,
                 )
             )
-            if avatar_source is not None
+            if avatar_engine is not None
             else None
         )
         for frame_id, frame in enumerate(capture_frames(source, width, height), start=1):

@@ -9,6 +9,9 @@ dependencies = [
 
 [project.optional-dependencies]
 avatar = [
+    "moderngl==5.12.0",
+]
+liveportrait = [
     "pyyaml>=6,<7",
     "torch==2.11.0",
 ]

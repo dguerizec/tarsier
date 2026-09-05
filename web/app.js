@@ -392,6 +392,11 @@ function backgroundState(videoEffects) {
 }
 
 function renderOutputMode(videoEffects) {
+  const stylized3d = videoEffects.avatar_engine === "stylized-3d";
+  $("#avatar-mode-name").textContent = stylized3d ? "Stylized 3D" : "Comic avatar";
+  $("#avatar-mode-description").textContent = stylized3d
+    ? "Animate a local 3D character and virtual room"
+    : "Animate the approved portrait and virtual decor";
   const mode = outputModeDraft || videoEffects.output_mode || "camera";
   const publishedFresh = videoEffects.avatar_published_at_ms != null
     && Date.now() - videoEffects.avatar_published_at_ms <= 500;
@@ -407,8 +412,8 @@ function renderOutputMode(videoEffects) {
     ? "Change failed"
     : outputModePending ? "Switching…"
     : mode === "camera" ? "Real camera"
-    : avatarFresh ? "Comic avatar active"
-    : "Privacy fallback · waiting for LivePortrait";
+    : avatarFresh ? (stylized3d ? "Stylized 3D active" : "Comic avatar active")
+    : `Privacy fallback · waiting for ${stylized3d ? "3D renderer" : "LivePortrait"}`;
   $("#output-status").textContent = status;
   $("#output-error").hidden = !outputModeError;
   $("#output-error").textContent = outputModeError || "";
@@ -432,7 +437,7 @@ function renderBackground(videoEffects) {
   const effectLabel = current.effect === "blur" ? "Blur" : "Green screen";
   const status = backgroundError
     ? "Change failed"
-    : (avatarActive ? "Included in the comic scene"
+    : (avatarActive ? "Included in the avatar scene"
       : backgroundPending ? `Applying ${effectLabel.toLowerCase()}…`
       : !current.enabled ? "Off"
       : !maskFresh ? "Privacy fallback · waiting for a fresh mask"

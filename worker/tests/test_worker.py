@@ -3,8 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+import pytest
+
 from tarsier_perception.avatar import compose_avatar_frame, crop_face_square
 from tarsier_perception.models import describe_models
+from tarsier_perception.stylized3d import (
+    AvatarMotion,
+    Stylized3DAvatarEngine,
+    motion_from_mediapipe,
+)
 from tarsier_perception.worker import (
     Landmark,
     PoseConstraintStore,
@@ -42,6 +49,19 @@ class SourceMask:
 
     def numpy_view(self):  # noqa: ANN201
         return self._values
+
+
+@dataclass
+class FaceCategory:
+    category_name: str
+    score: float
+
+
+@dataclass
+class FaceResult:
+    face_landmarks: list[list[SourceLandmark]]
+    face_blendshapes: list[list[FaceCategory]]
+    facial_transformation_matrixes: list
 
 
 def test_normalizes_mediapipe_gesture_names() -> None:
@@ -173,3 +193,45 @@ def test_avatar_composition_returns_full_size_bgrx_frame() -> None:
     assert output.dtype == np.uint8
     assert output[4, 8, :3].tolist() == [200, 200, 200]
     assert output[4, 0, :3].tolist() == [10, 10, 10]
+
+
+def test_avatar_motion_maps_mediapipe_expressions() -> None:
+    import numpy as np
+
+    result = FaceResult(
+        face_landmarks=[[SourceLandmark(0.5, 0.5, 0.0)]],
+        face_blendshapes=[
+            [
+                FaceCategory("eyeBlinkLeft", 0.8),
+                FaceCategory("eyeBlinkRight", 0.3),
+                FaceCategory("jawOpen", 0.7),
+                FaceCategory("mouthSmileLeft", 0.6),
+                FaceCategory("browInnerUp", 0.5),
+            ]
+        ],
+        facial_transformation_matrixes=[np.eye(4, dtype=np.float32)],
+    )
+
+    assert motion_from_mediapipe(result) == AvatarMotion(
+        blink_left=0.8,
+        blink_right=0.3,
+        jaw_open=0.7,
+        smile=0.6,
+        brow_raise=0.5,
+    )
+
+
+def test_stylized_3d_renderer_produces_an_opaque_bgrx_frame() -> None:
+    pytest.importorskip("moderngl")
+    import numpy as np
+
+    profile = Path(__file__).parents[2] / "assets/avatars/stylized-3d.json"
+    with Stylized3DAvatarEngine(profile, 320, 180) as engine:
+        neutral = engine.render(AvatarMotion.neutral())
+        expressive = engine.render(AvatarMotion(jaw_open=1.0, blink_left=1.0, yaw=0.3))
+
+    assert neutral.shape == (180, 320, 4)
+    assert neutral.dtype == np.uint8
+    assert np.all(neutral[:, :, 3] == 255)
+    assert np.unique(neutral[:, :, :3].reshape(-1, 3), axis=0).shape[0] > 20
+    assert not np.array_equal(neutral, expressive)

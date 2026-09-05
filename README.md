@@ -51,11 +51,11 @@ mischievous personality without tying its core to one camera vendor.
   camera using one-frame alignment and a narrow edge transition, while a
   missing or stale mask fails closed to black until the effect is explicitly
   disabled;
-- an optional local LivePortrait worker animates the approved line-art portrait
-  from MediaPipe-tracked camera motion, composites it into its fixed 16:9
-  virtual room, and publishes complete BGRx frames to the same preview and
-  virtual-camera output; the **Video identity** control switches between the
-  real camera and **Comic avatar**, and a missing or stale avatar frame fails
+- an optional local avatar worker defaults to a cel-shaded procedural 3D head
+  and bust driven by MediaPipe head pose and facial blendshapes; LivePortrait
+  remains an alternate engine. Both publish complete BGRx scenes to the same
+  preview and virtual-camera output. The **Video identity** control switches
+  between the real camera and avatar, and a missing or stale avatar frame fails
   closed to black instead of revealing the camera;
 - face presence and open-palm observations pass through dwell, release, and
   cooldown stabilization before becoming semantic events;
@@ -81,7 +81,7 @@ flowchart LR
     Pipeline --> RawPreview[Raw internal MJPEG branch]
     RawPreview --> Worker[MediaPipe worker]
     Worker -->|8-bit person mask| Mask[Internal video-mask channel]
-    Worker -->|LivePortrait BGRx frame| Avatar[Comic avatar channel]
+    Worker -->|3D or LivePortrait BGRx frame| Avatar[Avatar channel]
     Pipeline --> Effects[Final-output effects]
     Mask --> Effects
     Avatar --> Effects
@@ -137,13 +137,13 @@ a manual restart still finds the device after USB re-enumeration.
 
 ## Quick start
 
-Install the locked Python environment and the pinned MediaPipe and LivePortrait
-model assets:
+Install the locked Python environment, local OpenGL renderer, and pinned
+MediaPipe model assets:
 
 ```sh
 uv sync --project worker --extra avatar --locked
 uv run --project worker --extra avatar --locked \
-  tarsier-perception models --download --avatar
+  tarsier-perception models --download
 ```
 
 Validate the configuration, then start Tarsier:
@@ -178,17 +178,23 @@ obsolete intermediate positions. Embedded UI assets and the health response use
 daemon instance and reloads itself after a restart.
 
 The **Video identity** selector switches the complete final stream between
-**Camera** and **Comic avatar**. The example configuration starts the optional
-LivePortrait worker eagerly so its models can initialize while Camera remains
-selected. The first compiled inference may take up to roughly one minute on
-the tested RTX 3070 while PyTorch builds and caches GPU kernels; later starts
-reuse that cache. Once an avatar frame is available,
-selecting Comic avatar replaces the whole image, including the room, in both
-the web preview and `/dev/video42`. Background effects are disabled in the UI
-while this mode is active because the virtual decor is already part of the
-approved portrait. If animation stops for more than 500 ms, Tarsier outputs
-black until a fresh generated frame arrives; it never falls back to the real
-camera.
+**Camera** and the configured avatar. The example starts the **Stylized 3D**
+engine eagerly while Camera remains selected. A dedicated MediaPipe face
+tracker drives head rotation, eye blinks, jaw opening, smiles, and eyebrow
+motion. The local OpenGL renderer draws a cel-shaded head and bust in a simple
+virtual room at the output resolution. Its colors are editable in
+`assets/avatars/stylized-3d.json`; no camera pixels are used in the final
+avatar frame. Selecting Stylized 3D replaces the whole image in both the web
+preview and `/dev/video42`. Background effects are disabled in the UI while
+this mode is active because its decor is already rendered. If animation stops
+for more than 500 ms, Tarsier outputs black until a fresh generated frame
+arrives; it never falls back to the real camera.
+
+LivePortrait remains available as an explicit experimental fallback. Set
+`avatar.engine = "liveportrait"`, install the `liveportrait` extra, download
+the additional weights with `models --download --avatar`, and configure the
+source illustration. Its first compiled inference may take roughly one minute
+on the tested RTX 3070 while PyTorch builds and caches GPU kernels.
 
 Hold the direction buttons below the preview or use the keyboard arrow keys to
 pan and tilt. Arrow keys keep their normal behavior while an input such as the
@@ -239,7 +245,8 @@ configuration. It defines:
   limits;
 - worker supervision, independent landmark and person-mask rates, confidence,
   dwell, release, and cooldown thresholds;
-- optional LivePortrait source image, target cadence, and PyTorch compilation;
+- optional avatar engine, 3D color profile or LivePortrait source image,
+  target cadence, and LivePortrait compilation;
 - bounded named camera presets;
 - event-to-action scenario declarations.
 
@@ -458,6 +465,13 @@ The first vertical slice was validated on 2026-09-05 with an OBSBOT Tiny 2
   including MediaPipe crop, 16:9 composition, and local publication, sustained
   approximately 7-8 generated FPS while Tarsier held those frames in its 30 FPS
   output;
+- the stylized 3D path was exercised end to end on the synthetic pipeline: the
+  supervised worker selected the OpenGL-only dependency group, MediaPipe
+  produced facial controls, the renderer published complete 1280x720 BGRx
+  frames, and the daemon returned the virtual scene from its snapshot route;
+- the stylized 3D worker sustained 30.0 generated FPS end to end on the RTX
+  3070; a 150-frame recorded driving sequence was tracked on every frame and
+  sustained 36.1 FPS at 1280x720 including MediaPipe, rendering, and encoding;
 - after the avatar worker stopped, the next snapshot was verified as entirely
   black once the 500 ms freshness window expired, confirming that the real
   camera cannot appear as an implicit fallback;
@@ -517,9 +531,10 @@ run before unattended use.
   live Blur output, and a short physical motion sequence have runtime or visual
   coverage, but long-duration use and broader clothing, motion-speed, distance,
   and lighting conditions still need validation;
-- comic-avatar routing and its stale-frame privacy fallback have synthetic
-  end-to-end coverage; sustained physical-camera use, expression quality,
-  occlusions, and the first-start compilation delay still need broader testing;
+- avatar routing and its stale-frame privacy fallback have synthetic
+  end-to-end coverage; the stylized 3D renderer has visual pose coverage, but
+  sustained physical-camera use, expression calibration, occlusions, and
+  broader aesthetic review still need testing;
 - pipeline telemetry reports effective FPS, frame count, last frame, errors,
   and restart count, but not queue pressure or dropped-frame attribution;
 - configuration changes require a restart and runtime state is not persisted;
@@ -543,7 +558,7 @@ run before unattended use.
 - **Headless core:** the daemon and API are the product; the web UI is a local
   control surface.
 
-The next focused increments are extended telemetry and USB recovery soak
-testing plus broader gesture, segmentation, and comic-avatar robustness
-testing. Speech, robotics, ROS, cloud video processing, and a large gesture
-vocabulary remain outside the first version.
+The next focused increments are physical-camera expression calibration,
+stylized-avatar refinement, extended telemetry, and USB recovery soak testing.
+Speech, robotics, ROS, cloud video processing, and a large gesture vocabulary
+remain outside the first version.

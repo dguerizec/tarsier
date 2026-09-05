@@ -49,9 +49,12 @@ face_release_ms = 500
 
 [avatar]
 enabled = true
+engine = "stylized-3d"
+profile = "assets/avatars/stylized-3d.json"
+# Kept ready for the optional LivePortrait fallback.
 source_image = "assets/avatars/liveportrait-source.png"
-fps = 15
-compile = true
+fps = 30
+compile = false
 
 [[scenarios]]
 id = "open-palm-demo"

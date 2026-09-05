@@ -29,7 +29,9 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--mask-fps", type=float, default=30.0)
     serve.add_argument("--minimum-confidence", type=float, default=0.5)
     serve.add_argument("--model-dir", type=Path, default=default_model_dir())
+    serve.add_argument("--avatar-engine", choices=("stylized-3d", "liveportrait"))
     serve.add_argument("--avatar-source", type=Path)
+    serve.add_argument("--avatar-profile", type=Path)
     serve.add_argument("--avatar-fps", type=float, default=15.0)
     serve.add_argument("--avatar-width", type=int, default=1280)
     serve.add_argument("--avatar-height", type=int, default=720)
@@ -67,10 +69,20 @@ def main() -> None:
         raise SystemExit("--avatar-width and --avatar-height must be greater than zero")
     if args.avatar_source is not None and not args.avatar_source.is_file():
         raise SystemExit(f"avatar source image does not exist: {args.avatar_source}")
+    if args.avatar_profile is not None and not args.avatar_profile.is_file():
+        raise SystemExit(f"avatar profile does not exist: {args.avatar_profile}")
+    if args.avatar_engine == "liveportrait" and args.avatar_source is None:
+        raise SystemExit("--avatar-source is required for the LivePortrait engine")
+    if args.avatar_engine == "stylized-3d" and args.avatar_profile is None:
+        raise SystemExit("--avatar-profile is required for the stylized 3D engine")
+    if args.avatar_engine is None and (
+        args.avatar_source is not None or args.avatar_profile is not None
+    ):
+        raise SystemExit("--avatar-engine is required when avatar assets are configured")
     unavailable = [
         model
         for model in describe_models(
-            args.model_dir, include_avatar=args.avatar_source is not None
+            args.model_dir, include_avatar=args.avatar_engine == "liveportrait"
         )
         if not model["verified"]
     ]
@@ -90,7 +102,9 @@ def main() -> None:
             daemon_url=args.daemon_url,
             model_dir=args.model_dir,
             minimum_confidence=args.minimum_confidence,
+            avatar_engine=args.avatar_engine,
             avatar_source=args.avatar_source,
+            avatar_profile=args.avatar_profile,
             avatar_fps=args.avatar_fps,
             avatar_width=args.avatar_width,
             avatar_height=args.avatar_height,

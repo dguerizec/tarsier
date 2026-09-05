@@ -111,6 +111,41 @@ class MediaPipeFaceCropper:
         self.close()
 
 
+class MediaPipeAvatarTracker:
+    def __init__(self, model_dir: Path) -> None:
+        vision = mp.tasks.vision
+        self._landmarker = vision.FaceLandmarker.create_from_options(
+            vision.FaceLandmarkerOptions(
+                base_options=mp.tasks.BaseOptions(
+                    model_asset_path=str(model_dir / "face_landmarker.task")
+                ),
+                running_mode=vision.RunningMode.VIDEO,
+                num_faces=1,
+                min_face_detection_confidence=0.5,
+                min_face_presence_confidence=0.5,
+                min_tracking_confidence=0.5,
+                output_face_blendshapes=True,
+                output_facial_transformation_matrixes=True,
+            )
+        )
+
+    def track(self, frame_bgr: np.ndarray, timestamp_ms: int):  # noqa: ANN201
+        from .stylized3d import motion_from_mediapipe
+
+        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+        return motion_from_mediapipe(self._landmarker.detect_for_video(image, timestamp_ms))
+
+    def close(self) -> None:
+        self._landmarker.close()
+
+    def __enter__(self) -> MediaPipeAvatarTracker:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
+
 class AvatarPublisher:
     def __init__(self, daemon_url: str, timeout_seconds: float = 2.0) -> None:
         self._url = f"{daemon_url.rstrip('/')}/api/v1/avatar/frame"
@@ -153,7 +188,9 @@ class AvatarProcessor:
         self,
         daemon_url: str,
         model_dir: Path,
-        source_image: Path,
+        engine: str,
+        source_image: Path | None,
+        profile: Path | None,
         width: int,
         height: int,
         *,
@@ -161,7 +198,9 @@ class AvatarProcessor:
     ) -> None:
         self._daemon_url = daemon_url
         self._model_dir = model_dir
+        self._engine = engine
         self._source_image = source_image
+        self._profile = profile
         self._width = width
         self._height = height
         self._compile_models = compile_models
@@ -205,6 +244,36 @@ class AvatarProcessor:
 
     def _run(self) -> None:
         try:
+            if self._engine == "stylized-3d":
+                self._run_stylized_3d()
+            elif self._engine == "liveportrait":
+                self._run_liveportrait()
+            else:
+                raise RuntimeError(f"unsupported avatar engine: {self._engine}")
+        except BaseException as error:
+            LOGGER.exception("avatar processor stopped")
+            with self._lock:
+                self._error = error
+
+    def _run_stylized_3d(self) -> None:
+        from .stylized3d import Stylized3DAvatarEngine
+
+        if self._profile is None:
+            raise RuntimeError("stylized 3D avatar requires a profile")
+        publisher = AvatarPublisher(self._daemon_url)
+        with (
+            MediaPipeAvatarTracker(self._model_dir) as tracker,
+            Stylized3DAvatarEngine(self._profile, self._width, self._height) as engine,
+        ):
+            while (frame := self._frames.get()) is not None:
+                motion = tracker.track(frame.frame_bgr, frame.timestamp_ms)
+                output = engine.render(motion)
+                self._publish(publisher, frame, output)
+
+    def _run_liveportrait(self) -> None:
+        if self._source_image is None:
+            raise RuntimeError("LivePortrait avatar requires a source image")
+        try:
             from .liveportrait.engine import ComicAvatarEngine
 
             source_bgr = cv2.imread(str(self._source_image), cv2.IMREAD_COLOR)
@@ -228,16 +297,22 @@ class AvatarProcessor:
                         self._width,
                         self._height,
                     )
-                    try:
-                        publisher.publish(frame.frame_id, frame.captured_at_ms, output)
-                        with self._lock:
-                            self._published_count += 1
-                    except RuntimeError as error:
-                        LOGGER.warning("%s", error)
-        except BaseException as error:
-            LOGGER.exception("avatar processor stopped")
+                    self._publish(publisher, frame, output)
+        except ImportError as error:
+            raise RuntimeError("LivePortrait dependencies are not installed") from error
+
+    def _publish(
+        self,
+        publisher: AvatarPublisher,
+        frame: AvatarInputFrame,
+        output: np.ndarray,
+    ) -> None:
+        try:
+            publisher.publish(frame.frame_id, frame.captured_at_ms, output)
             with self._lock:
-                self._error = error
+                self._published_count += 1
+        except RuntimeError as error:
+            LOGGER.warning("%s", error)
 
     def __enter__(self) -> AvatarProcessor:
         self._thread.start()

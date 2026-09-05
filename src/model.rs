@@ -44,9 +44,19 @@ pub enum VideoOutputMode {
     ComicAvatar,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum AvatarEngine {
+    #[default]
+    #[serde(rename = "stylized-3d")]
+    Stylized3d,
+    Liveportrait,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct VideoEffectsState {
     pub output_mode: VideoOutputMode,
+    pub avatar_engine: Option<AvatarEngine>,
     pub background_enabled: bool,
     pub background_effect: BackgroundEffect,
     // Compatibility state for clients using the original dedicated control.
