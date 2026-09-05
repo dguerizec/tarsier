@@ -10,6 +10,8 @@ pub const GIM_GET_STATE: u16 = 0x0043;
 pub const GIMBAL_RECEIVER: u8 = 0x03;
 pub const GIM_SET_MOTOR: u16 = 0x00c3;
 pub const AI_RECEIVER: u8 = 0x04;
+pub const AI_GET_QUICK_STATUS: u16 = 0x0104;
+pub const AI_GET_GIM_STATE: u16 = 0x6604;
 pub const AI_SET_GIM_MOTOR_DEG: u16 = 0x6444;
 pub const AI_SET_GESTURE_TARGET: u16 = 0x30c4;
 pub const AI_SET_GESTURE_ZOOM: u16 = 0x3144;
@@ -40,6 +42,27 @@ pub struct ParsedFrame {
     pub sender: u8,
     pub receiver: u8,
     pub payload: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GimbalVector {
+    pub roll: f32,
+    pub pitch: f32,
+    pub yaw: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AiGimbalState {
+    pub euler: GimbalVector,
+    pub motor: GimbalVector,
+    pub velocity: GimbalVector,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AiGestureStatus {
+    pub target_selection: bool,
+    pub zoom: bool,
+    pub dynamic_zoom: bool,
 }
 
 pub fn build_frame(
@@ -132,6 +155,14 @@ pub fn gimbal_query(sequence: u16) -> [u8; FRAME_SIZE] {
     build_frame(sequence, GIM_GET_STATE, GIMBAL_RECEIVER, 0x01, &[]).expect("empty query fits")
 }
 
+pub fn ai_gimbal_query(sequence: u16) -> [u8; FRAME_SIZE] {
+    build_frame(sequence, AI_GET_GIM_STATE, AI_RECEIVER, 0x01, &[]).expect("empty query fits")
+}
+
+pub fn ai_status_query(sequence: u16) -> [u8; FRAME_SIZE] {
+    build_frame(sequence, AI_GET_QUICK_STATUS, AI_RECEIVER, 0x01, &[]).expect("empty query fits")
+}
+
 pub fn recenter_frame(sequence: u16) -> [u8; FRAME_SIZE] {
     build_frame(sequence, GIM_SET_MOTOR, GIMBAL_RECEIVER, 0x25, &[0; 6])
         .expect("recenter payload fits")
@@ -176,6 +207,41 @@ pub fn decode_gimbal_angles(payload: &[u8]) -> Result<(f32, f32, f32), FrameErro
     let pitch = i16::from_le_bytes([payload[2], payload[3]]) as f32 / 100.0;
     let yaw = i16::from_le_bytes([payload[4], payload[5]]) as f32 / 100.0;
     Ok((yaw, pitch, roll))
+}
+
+pub fn decode_ai_gimbal_state(payload: &[u8]) -> Result<AiGimbalState, FrameError> {
+    if payload.len() < 18 {
+        return Err(FrameError::TooShort(payload.len()));
+    }
+    let value = |offset| i16::from_le_bytes([payload[offset], payload[offset + 1]]) as f32 / 10.0;
+    Ok(AiGimbalState {
+        euler: GimbalVector {
+            roll: value(0),
+            pitch: value(2),
+            yaw: value(4),
+        },
+        motor: GimbalVector {
+            roll: value(6),
+            pitch: value(8),
+            yaw: value(10),
+        },
+        velocity: GimbalVector {
+            roll: value(12),
+            pitch: value(14),
+            yaw: value(16),
+        },
+    })
+}
+
+pub fn decode_ai_gesture_status(payload: &[u8]) -> Result<AiGestureStatus, FrameError> {
+    if payload.len() < 6 {
+        return Err(FrameError::TooShort(payload.len()));
+    }
+    Ok(AiGestureStatus {
+        target_selection: payload[3] != 0,
+        zoom: payload[4] != 0,
+        dynamic_zoom: payload[5] != 0,
+    })
 }
 
 fn crc16_usb(bytes: &[u8]) -> u16 {
@@ -246,12 +312,77 @@ mod tests {
     }
 
     #[test]
+    fn ai_queries_use_the_libdev_wire_opcodes() {
+        let gimbal = ai_gimbal_query(0x1234);
+        let parsed = parse_frame(&gimbal).unwrap();
+        assert_eq!(gimbal[1], 0x01);
+        assert_eq!(parsed.sequence, 0x1234);
+        assert_eq!(parsed.receiver, AI_RECEIVER);
+        assert_eq!(parsed.command, AI_GET_GIM_STATE);
+        assert!(parsed.payload.is_empty());
+
+        let status = ai_status_query(0x5678);
+        let parsed = parse_frame(&status).unwrap();
+        assert_eq!(status[1], 0x01);
+        assert_eq!(parsed.sequence, 0x5678);
+        assert_eq!(parsed.receiver, AI_RECEIVER);
+        assert_eq!(parsed.command, AI_GET_QUICK_STATUS);
+        assert!(parsed.payload.is_empty());
+    }
+
+    #[test]
     fn decodes_known_gimbal_prefix() {
         let payload = [0xD3, 0xFD, 0xFF, 0xF3, 0x8F, 0xEF];
         let (yaw, pitch, roll) = decode_gimbal_angles(&payload).unwrap();
         assert!((roll - -5.57).abs() < 0.01);
         assert!((pitch - -30.73).abs() < 0.01);
         assert!((yaw - -42.09).abs() < 0.01);
+    }
+
+    #[test]
+    fn decodes_libdev_ai_gimbal_state() {
+        let payload = [
+            29, 0, 38, 0, 0xb3, 0xf9, 0, 0, 76, 0, 0x85, 0x05, 0xff, 0xff, 1, 0, 8, 0, 0, 0, 0, 0,
+            0, 0,
+        ];
+        let state = decode_ai_gimbal_state(&payload).unwrap();
+        assert_eq!(
+            state.euler,
+            GimbalVector {
+                roll: 2.9,
+                pitch: 3.8,
+                yaw: -161.3,
+            }
+        );
+        assert_eq!(
+            state.motor,
+            GimbalVector {
+                roll: 0.0,
+                pitch: 7.6,
+                yaw: 141.3,
+            }
+        );
+        assert_eq!(
+            state.velocity,
+            GimbalVector {
+                roll: -0.1,
+                pitch: 0.1,
+                yaw: 0.8,
+            }
+        );
+    }
+
+    #[test]
+    fn decodes_libdev_ai_gesture_status() {
+        let payload = [0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0];
+        assert_eq!(
+            decode_ai_gesture_status(&payload).unwrap(),
+            AiGestureStatus {
+                target_selection: true,
+                zoom: false,
+                dynamic_zoom: true,
+            }
+        );
     }
 
     fn hex(value: &str) -> Vec<u8> {
