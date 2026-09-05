@@ -54,6 +54,7 @@ main { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(17rem, .85
 .telemetry-details strong { color: #f2f5ef; font-variant-numeric: tabular-nums; }
 .controls { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1rem; }
 .preset-controls { margin-top: .5rem; }
+.preset-controls:empty { display: none; }
 .camera-subsection { margin-top: 1rem; border-top: 1px solid var(--panel-edge); padding-top: .85rem; }
 .subsection-title { display: flex; align-items: center; justify-content: space-between; gap: 1rem; color: var(--muted); font-size: .7rem; }
 .subsection-title h3 { color: #f2f5ef; }

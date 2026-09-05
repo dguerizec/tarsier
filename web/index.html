@@ -59,11 +59,32 @@
         </div>
         <div class="controls">
           <button data-action="recenter">Recenter</button>
-          <button data-action="tracking-on">Track</button>
-          <button data-action="tracking-off" class="secondary">Stop tracking</button>
-          <button id="hdr-toggle" class="secondary" type="button" aria-pressed="false" disabled>HDR · Unknown</button>
         </div>
         <div id="presets" class="controls preset-controls"></div>
+        <div class="camera-subsection">
+          <div class="subsection-title">
+            <h3>Camera features</h3>
+            <span>Camera firmware</span>
+          </div>
+          <div class="feature-controls">
+            <div class="feature-control">
+              <span>Tracking</span>
+              <strong id="tracking-feature-state">Unknown</strong>
+              <div class="segmented-control" role="group" aria-label="Camera tracking">
+                <button class="secondary compact" type="button" data-camera-feature="tracking" data-camera-enabled="true">On</button>
+                <button class="secondary compact" type="button" data-camera-feature="tracking" data-camera-enabled="false">Off</button>
+              </div>
+            </div>
+            <div class="feature-control">
+              <span>HDR</span>
+              <strong id="hdr-feature-state">Unknown</strong>
+              <div class="segmented-control" role="group" aria-label="HDR imaging">
+                <button class="secondary compact" type="button" data-camera-feature="hdr" data-camera-enabled="true">On</button>
+                <button class="secondary compact" type="button" data-camera-feature="hdr" data-camera-enabled="false">Off</button>
+              </div>
+            </div>
+          </div>
+        </div>
         <div class="camera-subsection manual-zoom">
           <div class="subsection-title">
             <h3>Manual zoom</h3>

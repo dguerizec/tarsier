@@ -7,7 +7,6 @@ const overlayContext = overlay.getContext("2d");
 const skeletonToggle = $("#skeleton-toggle");
 const zoomSlider = $("#zoom-slider");
 const zoomReset = $("#zoom-reset");
-const hdrToggle = $("#hdr-toggle");
 const panTiltButtons = [...document.querySelectorAll("[data-pan-tilt]")];
 let state = null;
 let skeletonEnabled = localStorage.getItem("tarsier.handSkeleton") === "true";
@@ -22,6 +21,7 @@ let zoomPending = false;
 let queuedZoom = null;
 let zoomSendTimer = null;
 let hdrPending = false;
+let trackingPending = false;
 let panTiltPending = false;
 let panTiltSyncQueued = false;
 let panTiltKeepaliveTimer = null;
@@ -211,14 +211,31 @@ function renderZoom(camera) {
 }
 
 function renderHdr(camera) {
-  hdrToggle.textContent = hdrPending
-    ? "HDR · Applying…"
-    : camera.hdr == null ? "HDR · Unknown" : `HDR · ${camera.hdr ? "On" : "Off"}`;
-  hdrToggle.setAttribute("aria-pressed", String(camera.hdr === true));
-  hdrToggle.disabled = !camera.available || hdrPending || camera.hdr == null;
-  hdrToggle.title = camera.hdr_sample_at_ms == null
-    ? "Awaiting camera readback"
-    : `Camera readback ${age(camera.hdr_sample_at_ms)}`;
+  $("#hdr-feature-state").textContent = hdrPending
+    ? "Applying…"
+    : camera.hdr == null ? "Unknown" : camera.hdr ? "On" : "Off";
+  document.querySelectorAll('[data-camera-feature="hdr"]').forEach((button) => {
+    const buttonValue = button.dataset.cameraEnabled === "true";
+    button.setAttribute("aria-pressed", String(camera.hdr != null && camera.hdr === buttonValue));
+    button.disabled = !camera.available || hdrPending;
+    button.title = camera.hdr_sample_at_ms == null
+      ? "Awaiting camera readback"
+      : `Camera readback ${age(camera.hdr_sample_at_ms)}`;
+  });
+}
+
+function renderTracking(camera) {
+  $("#tracking-feature-state").textContent = trackingPending
+    ? "Applying…"
+    : camera.tracking == null ? "Unknown" : camera.tracking ? "On" : "Off";
+  document.querySelectorAll('[data-camera-feature="tracking"]').forEach((button) => {
+    const buttonValue = button.dataset.cameraEnabled === "true";
+    button.setAttribute("aria-pressed", String(camera.tracking != null && camera.tracking === buttonValue));
+    button.disabled = !camera.available || trackingPending;
+    button.title = camera.tracking_sample_at_ms == null
+      ? "Awaiting camera readback"
+      : `Camera readback ${age(camera.tracking_sample_at_ms)}`;
+  });
 }
 
 function activeDirection() {
@@ -256,12 +273,15 @@ function render(next) {
     camera.yaw_velocity_degrees_per_second,
     "°/s",
   );
-  $("#tracking").textContent = camera.tracking == null ? "—" : camera.tracking ? "On" : "Off";
+  $("#tracking").textContent = trackingPending
+    ? "Applying…"
+    : camera.tracking == null ? "—" : camera.tracking ? "On" : "Off";
   $("#camera-age").textContent = camera.sample_at_ms == null
     ? attitudeLabel(camera.attitude_source)
     : `${attitudeLabel(camera.attitude_source)} · ${age(camera.sample_at_ms)}`;
   renderZoom(camera);
   renderHdr(camera);
+  renderTracking(camera);
   renderPanTilt(camera);
   renderBuiltInGestures(camera);
   $("#pipeline-summary").textContent = pipeline.running
@@ -517,28 +537,33 @@ document.querySelectorAll("[data-gesture-feature]").forEach((button) => {
   });
 });
 
-hdrToggle.addEventListener("click", async () => {
-  if (state?.camera.hdr == null || hdrPending) return;
-  const enabled = !state.camera.hdr;
-  hdrPending = true;
-  cameraControlError = null;
-  render(state);
-  try {
-    const response = await fetch("/api/v1/camera/hdr", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ enabled }),
-    });
-    if (!response.ok) {
-      const payload = await response.json().catch(() => ({}));
-      throw new Error(payload.error || `Camera command failed (${response.status})`);
-    }
-  } catch (error) {
-    cameraControlError = error instanceof Error ? error.message : String(error);
-  } finally {
-    hdrPending = false;
+document.querySelectorAll("[data-camera-feature]").forEach((button) => {
+  button.addEventListener("click", async () => {
+    const feature = button.dataset.cameraFeature;
+    const enabled = button.dataset.cameraEnabled === "true";
+    if ((feature === "hdr" && hdrPending) || (feature === "tracking" && trackingPending)) return;
+    if (feature === "hdr") hdrPending = true;
+    else trackingPending = true;
+    cameraControlError = null;
     if (state) render(state);
-  }
+    try {
+      const response = await fetch(`/api/v1/camera/${feature}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || `Camera command failed (${response.status})`);
+      }
+    } catch (error) {
+      cameraControlError = error instanceof Error ? error.message : String(error);
+    } finally {
+      if (feature === "hdr") hdrPending = false;
+      else trackingPending = false;
+      if (state) render(state);
+    }
+  });
 });
 
 function scheduleZoom() {

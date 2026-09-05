@@ -174,6 +174,10 @@ configuration. It defines:
 - bounded named camera presets;
 - event-to-action scenario declarations.
 
+`Recenter` is the camera's native gimbal-zero command. Named presets are
+user-defined absolute poses; the reference configuration leaves them empty so
+it does not present a redundant `center` preset beside `Recenter`.
+
 Configuration is validated at startup and is not hot-reloaded. The default
 camera limit is +/-130 degrees yaw and +/-90 degrees pitch; every HTTP and MCP
 move is validated again by the daemon. The `mock` and `disabled` camera

@@ -25,7 +25,7 @@ impl Default for Config {
             video: VideoConfig::default(),
             camera: CameraConfig::default(),
             perception: PerceptionConfig::default(),
-            presets: vec![CameraPresetConfig::default()],
+            presets: Vec::new(),
             scenarios: vec![ScenarioConfig::default()],
         }
     }
@@ -361,10 +361,12 @@ mod tests {
     #[test]
     fn rejects_unsafe_or_duplicate_camera_presets() {
         let mut unsafe_config = Config::default();
+        unsafe_config.presets.push(CameraPresetConfig::default());
         unsafe_config.presets[0].yaw = 140.0;
         assert!(unsafe_config.validate().is_err());
 
         let mut duplicate_config = Config::default();
+        duplicate_config.presets.push(CameraPresetConfig::default());
         duplicate_config.presets.push(CameraPresetConfig::default());
         assert!(duplicate_config.validate().is_err());
     }

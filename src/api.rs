@@ -914,6 +914,7 @@ mod tests {
         let mut config = Config::default();
         config.camera.adapter = CameraAdapter::Mock;
         config.perception.enabled = false;
+        config.presets.push(CameraPresetConfig::default());
         let runtime = Runtime::new();
         let camera = camera::start(config.camera.clone(), runtime.clone())
             .await
