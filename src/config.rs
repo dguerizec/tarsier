@@ -7,7 +7,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::model::BackgroundEffect;
+use crate::model::{BackgroundEffect, VideoOutputMode};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
@@ -16,6 +16,7 @@ pub struct Config {
     pub video: VideoConfig,
     pub camera: CameraConfig,
     pub perception: PerceptionConfig,
+    pub avatar: AvatarConfig,
     pub presets: Vec<CameraPresetConfig>,
     pub scenarios: Vec<ScenarioConfig>,
 }
@@ -27,6 +28,7 @@ impl Default for Config {
             video: VideoConfig::default(),
             camera: CameraConfig::default(),
             perception: PerceptionConfig::default(),
+            avatar: AvatarConfig::default(),
             presets: Vec::new(),
             scenarios: vec![ScenarioConfig::default()],
         }
@@ -69,6 +71,12 @@ impl Config {
         }
         if self.perception.restart_delay_ms == 0 {
             bail!("perception restart_delay_ms must be greater than zero");
+        }
+        if self.avatar.fps == 0 {
+            bail!("avatar fps must be greater than zero");
+        }
+        if self.avatar.enabled && self.avatar.source_image.as_os_str().is_empty() {
+            bail!("avatar source_image must not be empty when the avatar worker is enabled");
         }
         if !(0.0..=1.0).contains(&self.perception.minimum_confidence)
             || !(0.0..=1.0).contains(&self.perception.release_confidence)
@@ -154,6 +162,7 @@ pub struct VideoConfig {
     pub preview_height: u32,
     pub preview_quality: u32,
     pub loopback_enabled: bool,
+    pub output_mode: VideoOutputMode,
     #[serde(alias = "green_screen_enabled")]
     pub background_enabled: bool,
     pub background_effect: BackgroundEffect,
@@ -173,9 +182,30 @@ impl Default for VideoConfig {
             preview_height: 360,
             preview_quality: 75,
             loopback_enabled: true,
+            output_mode: VideoOutputMode::default(),
             background_enabled: false,
             background_effect: BackgroundEffect::default(),
             restart_delay_ms: 1000,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
+pub struct AvatarConfig {
+    pub enabled: bool,
+    pub source_image: PathBuf,
+    pub fps: u32,
+    pub compile: bool,
+}
+
+impl Default for AvatarConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            source_image: "assets/avatars/liveportrait-source.png".into(),
+            fps: 15,
+            compile: true,
         }
     }
 }

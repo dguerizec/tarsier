@@ -4,7 +4,7 @@ use axum::{
     Json, Router,
     body::Body,
     extract::{
-        State, WebSocketUpgrade,
+        DefaultBodyLimit, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
     http::{HeaderMap, StatusCode, header},
@@ -21,11 +21,12 @@ use tower_http::trace::TraceLayer;
 use crate::{
     camera::{CameraHandle, PAN_TILT_LEASE},
     config::{CameraPresetConfig, Config, ScenarioConfig},
-    effects::VideoMask,
+    effects::{AvatarFrame, MAX_AVATAR_FRAME_BYTES, VideoMask},
     face_tracking::FaceTrackingController,
     model::{
         BackgroundEffect, BuiltInGesture, CameraAttitudeSource, FaceTrackingState,
-        FaceTrackingTarget, Landmark, PerceptionObservation, ScenarioActivation, unix_ms,
+        FaceTrackingTarget, Landmark, PerceptionObservation, ScenarioActivation, VideoOutputMode,
+        unix_ms,
     },
     pipeline::PreviewHub,
     runtime::Runtime,
@@ -97,10 +98,15 @@ pub fn router(
         )
         .route("/api/v1/perception/mask", post(perception_mask))
         .route(
+            "/api/v1/avatar/frame",
+            post(avatar_frame).layer(DefaultBodyLimit::max(MAX_AVATAR_FRAME_BYTES)),
+        )
+        .route(
             "/api/v1/perception/input.mjpeg",
             get(perception_input_mjpeg),
         )
         .route("/api/v1/video/background", post(set_background))
+        .route("/api/v1/video/output-mode", post(set_output_mode))
         .route("/api/v1/video/green-screen", post(set_green_screen))
         .route("/api/v1/preview.mjpeg", get(preview_mjpeg))
         .route("/api/v1/camera/snapshot", get(snapshot))
@@ -204,6 +210,11 @@ struct GreenScreenRequest {
 struct BackgroundRequest {
     enabled: bool,
     effect: BackgroundEffect,
+}
+
+#[derive(Deserialize)]
+struct OutputModeRequest {
+    mode: VideoOutputMode,
 }
 
 #[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -866,6 +877,65 @@ async fn set_background(
     StatusCode::ACCEPTED.into_response()
 }
 
+async fn set_output_mode(
+    State(state): State<ApiState>,
+    Json(request): Json<OutputModeRequest>,
+) -> Response {
+    state.preview.effects().set_output_mode(request.mode);
+    state
+        .runtime
+        .update(|runtime| runtime.video_effects.output_mode = request.mode)
+        .await;
+    state
+        .runtime
+        .emit(
+            "video.output.mode",
+            "api",
+            None,
+            json!({"mode": request.mode}),
+        )
+        .await;
+    StatusCode::ACCEPTED.into_response()
+}
+
+async fn avatar_frame(State(state): State<ApiState>, headers: HeaderMap, body: Bytes) -> Response {
+    let frame_id = match required_u64_header(&headers, "x-tarsier-frame-id") {
+        Ok(value) => value,
+        Err(error) => return unprocessable_entity(error),
+    };
+    let captured_at_ms = match required_u64_header(&headers, "x-tarsier-captured-at-ms") {
+        Ok(value) => value,
+        Err(error) => return unprocessable_entity(error),
+    };
+    let width = match required_u32_header(&headers, "x-tarsier-avatar-width") {
+        Ok(value) => value,
+        Err(error) => return unprocessable_entity(error),
+    };
+    let height = match required_u32_header(&headers, "x-tarsier-avatar-height") {
+        Ok(value) => value,
+        Err(error) => return unprocessable_entity(error),
+    };
+    let avatar = match AvatarFrame::new(frame_id, captured_at_ms, width, height, body.to_vec()) {
+        Ok(avatar) => avatar,
+        Err(error) => return unprocessable_entity(error.to_string()),
+    };
+    let frame_id = avatar.frame_id;
+    let published_at_ms = avatar.published_at_ms;
+    state.preview.effects().publish_avatar(avatar);
+    state
+        .runtime
+        .update(|runtime| {
+            runtime.video_effects.avatar_available = true;
+            runtime.video_effects.avatar_frame_id = Some(frame_id);
+            runtime.video_effects.avatar_width = Some(width);
+            runtime.video_effects.avatar_height = Some(height);
+            runtime.video_effects.avatar_captured_at_ms = Some(captured_at_ms);
+            runtime.video_effects.avatar_published_at_ms = Some(published_at_ms);
+        })
+        .await;
+    StatusCode::NO_CONTENT.into_response()
+}
+
 async fn perception_mask(
     State(state): State<ApiState>,
     headers: HeaderMap,
@@ -1319,6 +1389,8 @@ mod tests {
         assert!(include_str!("../web/app.js").contains("/api/v1/camera/face-tracking"));
         assert!(include_str!("../web/index.html").contains("id=\"background-toggle\""));
         assert!(include_str!("../web/app.js").contains("/api/v1/video/background"));
+        assert!(include_str!("../web/index.html").contains("data-output-mode"));
+        assert!(include_str!("../web/app.js").contains("/api/v1/video/output-mode"));
     }
 
     #[tokio::test]
@@ -1437,6 +1509,76 @@ mod tests {
         assert_eq!(events[0].kind, "video.effect.background");
         assert_eq!(events[0].data["enabled"], true);
         assert_eq!(events[0].data["effect"], "blur");
+    }
+
+    #[tokio::test]
+    async fn output_mode_control_switches_to_the_comic_avatar() {
+        let mut config = Config::default();
+        config.perception.enabled = false;
+        let runtime = Runtime::new();
+        let preview = PreviewHub::new();
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = router(config, runtime.clone(), preview.clone(), None, shutdown_rx);
+
+        let response = app
+            .oneshot(
+                Request::post("/api/v1/video/output-mode")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"mode":"comic-avatar"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            preview.effects().output_mode(),
+            VideoOutputMode::ComicAvatar
+        );
+        assert_eq!(
+            runtime.state().await.video_effects.output_mode,
+            VideoOutputMode::ComicAvatar
+        );
+        let events = runtime.recent_events().await;
+        assert_eq!(events[0].kind, "video.output.mode");
+        assert_eq!(events[0].data["mode"], "comic-avatar");
+    }
+
+    #[tokio::test]
+    async fn avatar_frame_is_published_with_output_provenance() {
+        let mut config = Config::default();
+        config.perception.enabled = false;
+        let runtime = Runtime::new();
+        let preview = PreviewHub::new();
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = router(config, runtime.clone(), preview.clone(), None, shutdown_rx);
+        let captured_at_ms = unix_ms();
+
+        let response = app
+            .oneshot(
+                Request::post("/api/v1/avatar/frame")
+                    .header("content-type", "application/octet-stream")
+                    .header("x-tarsier-frame-id", "42")
+                    .header("x-tarsier-captured-at-ms", captured_at_ms.to_string())
+                    .header("x-tarsier-avatar-width", "2")
+                    .header("x-tarsier-avatar-height", "1")
+                    .body(Body::from(vec![1, 2, 3, 0, 4, 5, 6, 0]))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let avatar = preview.effects().latest_avatar().unwrap();
+        assert_eq!(avatar.frame_id, 42);
+        assert_eq!((avatar.width, avatar.height), (2, 1));
+        let effects = runtime.state().await.video_effects;
+        assert!(effects.avatar_available);
+        assert_eq!(effects.avatar_frame_id, Some(42));
+        assert_eq!(
+            (effects.avatar_width, effects.avatar_height),
+            (Some(2), Some(1))
+        );
     }
 
     #[tokio::test]

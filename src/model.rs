@@ -36,8 +36,17 @@ pub enum BackgroundEffect {
     Blur,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum VideoOutputMode {
+    #[default]
+    Camera,
+    ComicAvatar,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct VideoEffectsState {
+    pub output_mode: VideoOutputMode,
     pub background_enabled: bool,
     pub background_effect: BackgroundEffect,
     // Compatibility state for clients using the original dedicated control.
@@ -48,6 +57,12 @@ pub struct VideoEffectsState {
     pub mask_height: Option<u32>,
     pub mask_captured_at_ms: Option<u64>,
     pub mask_published_at_ms: Option<u64>,
+    pub avatar_available: bool,
+    pub avatar_frame_id: Option<u64>,
+    pub avatar_width: Option<u32>,
+    pub avatar_height: Option<u32>,
+    pub avatar_captured_at_ms: Option<u64>,
+    pub avatar_published_at_ms: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]

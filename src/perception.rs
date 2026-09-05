@@ -9,7 +9,7 @@ use serde_json::json;
 use tokio::{process::Command, sync::watch, task::JoinHandle, time::sleep};
 
 use crate::{
-    config::{PerceptionConfig, PerceptionSource},
+    config::{AvatarConfig, PerceptionConfig, PerceptionSource, VideoConfig},
     runtime::Runtime,
 };
 
@@ -21,6 +21,8 @@ pub struct PerceptionSupervisor {
 impl PerceptionSupervisor {
     pub fn start(
         config: PerceptionConfig,
+        avatar: AvatarConfig,
+        video: VideoConfig,
         server_address: SocketAddr,
         runtime: Runtime,
     ) -> Option<Self> {
@@ -28,7 +30,14 @@ impl PerceptionSupervisor {
             return None;
         }
         let (shutdown, receiver) = watch::channel(false);
-        let task = tokio::spawn(supervise(config, server_address, runtime, receiver));
+        let task = tokio::spawn(supervise(
+            config,
+            avatar,
+            video,
+            server_address,
+            runtime,
+            receiver,
+        ));
         Some(Self { shutdown, task })
     }
 
@@ -40,6 +49,8 @@ impl PerceptionSupervisor {
 
 async fn supervise(
     config: PerceptionConfig,
+    avatar: AvatarConfig,
+    video: VideoConfig,
     server_address: SocketAddr,
     runtime: Runtime,
     mut shutdown: watch::Receiver<bool>,
@@ -51,7 +62,7 @@ async fn supervise(
         }
         let mut command = Command::new("uv");
         command
-            .args(worker_arguments(&config, &daemon_url))
+            .args(worker_arguments(&config, &avatar, &video, &daemon_url))
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
@@ -120,6 +131,7 @@ async fn mark_worker_offline(runtime: &Runtime, message: String) {
             state.camera.face_tracking.target_visible = false;
             state.camera.face_tracking.target_x = None;
             state.camera.face_tracking.target_y = None;
+            state.video_effects.avatar_available = false;
         })
         .await;
     runtime
@@ -140,7 +152,12 @@ fn worker_daemon_url(address: SocketAddr) -> String {
     format!("http://{host}:{}", address.port())
 }
 
-fn worker_arguments(config: &PerceptionConfig, daemon_url: &str) -> Vec<String> {
+fn worker_arguments(
+    config: &PerceptionConfig,
+    avatar: &AvatarConfig,
+    video: &VideoConfig,
+    daemon_url: &str,
+) -> Vec<String> {
     let project = if config.worker_project.is_absolute() {
         config.worker_project.clone()
     } else {
@@ -151,6 +168,11 @@ fn worker_arguments(config: &PerceptionConfig, daemon_url: &str) -> Vec<String> 
         "--project".into(),
         project.to_string_lossy().into_owned(),
         "--locked".into(),
+    ];
+    if avatar.enabled {
+        arguments.extend(["--extra".into(), "avatar".into()]);
+    }
+    arguments.extend([
         "tarsier-perception".into(),
         "--daemon-url".into(),
         daemon_url.into(),
@@ -165,10 +187,30 @@ fn worker_arguments(config: &PerceptionConfig, daemon_url: &str) -> Vec<String> 
         config.mask_fps.to_string(),
         "--minimum-confidence".into(),
         config.detection_confidence.to_string(),
-    ];
+    ]);
     if config.source == PerceptionSource::Device {
         arguments.push("--source".into());
         arguments.push(config.device.clone());
+    }
+    if avatar.enabled {
+        let source_image = if avatar.source_image.is_absolute() {
+            avatar.source_image.clone()
+        } else {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(&avatar.source_image)
+        };
+        arguments.extend([
+            "--avatar-source".into(),
+            source_image.to_string_lossy().into_owned(),
+            "--avatar-fps".into(),
+            avatar.fps.to_string(),
+            "--avatar-width".into(),
+            video.width.to_string(),
+            "--avatar-height".into(),
+            video.height.to_string(),
+        ]);
+        if avatar.compile {
+            arguments.push("--avatar-compile".into());
+        }
     }
     arguments
 }
@@ -204,7 +246,12 @@ mod tests {
     #[test]
     fn worker_command_uses_configured_stream_and_loopback_api() {
         let config = PerceptionConfig::default();
-        let args = worker_arguments(&config, "http://127.0.0.1:8742");
+        let args = worker_arguments(
+            &config,
+            &AvatarConfig::default(),
+            &VideoConfig::default(),
+            "http://127.0.0.1:8742",
+        );
         assert!(!args.iter().any(|argument| argument == "--source"));
         assert!(
             args.windows(2)
@@ -222,11 +269,49 @@ mod tests {
             device: "/dev/video43".into(),
             ..PerceptionConfig::default()
         };
-        let args = worker_arguments(&config, "http://127.0.0.1:8742");
+        let args = worker_arguments(
+            &config,
+            &AvatarConfig::default(),
+            &VideoConfig::default(),
+            "http://127.0.0.1:8742",
+        );
         assert!(
             args.windows(2)
                 .any(|pair| pair == ["--source", "/dev/video43"])
         );
+    }
+
+    #[test]
+    fn enabled_avatar_adds_the_optional_runtime_and_output_geometry() {
+        let avatar = AvatarConfig {
+            enabled: true,
+            source_image: "assets/avatars/liveportrait-source.png".into(),
+            fps: 15,
+            compile: true,
+        };
+        let video = VideoConfig {
+            width: 1280,
+            height: 720,
+            ..VideoConfig::default()
+        };
+        let args = worker_arguments(
+            &PerceptionConfig::default(),
+            &avatar,
+            &video,
+            "http://127.0.0.1:8742",
+        );
+
+        assert!(args.windows(2).any(|pair| pair == ["--extra", "avatar"]));
+        assert!(args.windows(2).any(|pair| pair == ["--avatar-fps", "15"]));
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--avatar-width", "1280"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--avatar-height", "720"])
+        );
+        assert!(args.iter().any(|argument| argument == "--avatar-compile"));
     }
 
     #[test]

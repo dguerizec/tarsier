@@ -46,6 +46,29 @@
             </div>
           </div>
         </div>
+        <div class="output-control">
+          <div class="output-heading">
+            <strong>Video identity</strong>
+            <span id="output-status" aria-live="polite">Loading output</span>
+          </div>
+          <div class="output-mode-list" role="radiogroup" aria-label="Video identity">
+            <label class="output-mode-option">
+              <input type="radio" name="output-mode" value="camera" data-output-mode disabled>
+              <span class="output-mode-card">
+                <strong>Camera</strong>
+                <small>Use the real camera image</small>
+              </span>
+            </label>
+            <label class="output-mode-option">
+              <input type="radio" name="output-mode" value="comic-avatar" data-output-mode disabled>
+              <span class="output-mode-card">
+                <strong>Comic avatar</strong>
+                <small>Animate the approved portrait and virtual decor</small>
+              </span>
+            </label>
+          </div>
+          <p id="output-error" class="error" role="alert" hidden></p>
+        </div>
         <div class="background-control">
           <div class="background-heading">
             <label class="background-switch" for="background-toggle">

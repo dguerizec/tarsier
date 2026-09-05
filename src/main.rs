@@ -79,12 +79,14 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
     config.validate()?;
     let runtime = Runtime::new();
     let preview = PreviewHub::new();
+    preview.effects().set_output_mode(config.video.output_mode);
     preview.effects().set_background(
         config.video.background_enabled,
         config.video.background_effect,
     );
     runtime
         .update(|state| {
+            state.video_effects.output_mode = config.video.output_mode;
             state.video_effects.background_enabled = config.video.background_enabled;
             state.video_effects.background_effect = config.video.background_effect;
             state.video_effects.green_screen_enabled = config.video.background_enabled
@@ -110,6 +112,8 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
         .with_context(|| format!("failed to bind {}", config.server.bind))?;
     let perception = perception::PerceptionSupervisor::start(
         config.perception.clone(),
+        config.avatar.clone(),
+        config.video.clone(),
         config.server.bind,
         runtime,
     );

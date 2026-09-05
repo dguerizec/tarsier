@@ -8,7 +8,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Iterator
-from contextlib import suppress
+from contextlib import ExitStack, suppress
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -16,6 +16,8 @@ from typing import Any
 import cv2
 import mediapipe as mp
 import numpy as np
+
+from .avatar import AvatarInputFrame, AvatarProcessor
 
 LOGGER = logging.getLogger(__name__)
 POSE_CONSTRAINT_RADIUS = 32
@@ -395,22 +397,31 @@ class ObservationProcessor:
 
 def capture_frames(source: str, width: int, height: int) -> Iterator[np.ndarray]:
     capture_source: int | str = int(source) if source.isdigit() else source
-    if source.startswith(("http://", "https://")):
-        capture = cv2.VideoCapture(capture_source)
-    else:
+    is_live_source = source.isdigit() or source.startswith(
+        ("/dev/video", "http://", "https://")
+    )
+    if source.isdigit() or source.startswith("/dev/video"):
         capture = cv2.VideoCapture(capture_source, cv2.CAP_V4L2)
+    else:
+        capture = cv2.VideoCapture(capture_source)
     capture.set(cv2.CAP_PROP_FRAME_WIDTH, width)
     capture.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
     capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
     if not capture.isOpened():
         capture.release()
         raise RuntimeError(f"failed to open video source {source}")
+    source_fps = capture.get(cv2.CAP_PROP_FPS)
+    frame_interval = 1.0 / source_fps if not is_live_source and source_fps > 0 else 0.0
+    next_frame_at = time.monotonic()
     try:
         while True:
             ok, frame = capture.read()
             if not ok:
                 raise RuntimeError(f"failed to read a frame from {source}")
             yield frame
+            if frame_interval > 0:
+                next_frame_at += frame_interval
+                time.sleep(max(0.0, next_frame_at - time.monotonic()))
     finally:
         capture.release()
 
@@ -425,32 +436,60 @@ def run_worker(
     daemon_url: str,
     model_dir: Path,
     minimum_confidence: float,
+    avatar_source: Path | None = None,
+    avatar_fps: float = 15.0,
+    avatar_width: int = 1280,
+    avatar_height: int = 720,
+    avatar_compile: bool = False,
 ) -> None:
     publisher = ObservationPublisher(daemon_url)
     pose_constraints = PoseConstraintStore()
     observation_interval = 1.0 / fps
     mask_interval = 1.0 / mask_fps
+    avatar_interval = 1.0 / avatar_fps
     next_observation_at = time.monotonic()
     next_mask_at = next_observation_at
+    next_avatar_at = next_observation_at
     started_at = time.monotonic()
     metrics_started_at = started_at
     masks_published = 0
     previous_observations_published = 0
-    with (
-        MediaPipeSegmenter(model_dir, pose_constraints) as segmenter,
-        ObservationProcessor(
-            daemon_url,
-            model_dir,
-            minimum_confidence,
-            pose_constraints,
-        ) as observation_processor,
-    ):
+    previous_avatars_published = 0
+    with ExitStack() as stack:
+        segmenter = stack.enter_context(MediaPipeSegmenter(model_dir, pose_constraints))
+        observation_processor = stack.enter_context(
+            ObservationProcessor(
+                daemon_url,
+                model_dir,
+                minimum_confidence,
+                pose_constraints,
+            )
+        )
+        avatar_processor = (
+            stack.enter_context(
+                AvatarProcessor(
+                    daemon_url,
+                    model_dir,
+                    avatar_source,
+                    avatar_width,
+                    avatar_height,
+                    compile_models=avatar_compile,
+                )
+            )
+            if avatar_source is not None
+            else None
+        )
         for frame_id, frame in enumerate(capture_frames(source, width, height), start=1):
             observation_processor.raise_if_failed()
+            if avatar_processor is not None:
+                avatar_processor.raise_if_failed()
             now = time.monotonic()
             mask_due = rate_is_due(now, next_mask_at, mask_interval)
             observation_due = rate_is_due(now, next_observation_at, observation_interval)
-            if not mask_due and not observation_due:
+            avatar_due = avatar_processor is not None and rate_is_due(
+                now, next_avatar_at, avatar_interval
+            )
+            if not mask_due and not observation_due and not avatar_due:
                 continue
             timestamp_ms = max(0, int((now - started_at) * 1000))
             captured_at_ms = time.time_ns() // 1_000_000
@@ -469,17 +508,27 @@ def run_worker(
                     masks_published += 1
                 except RuntimeError as error:
                     LOGGER.warning("%s", error)
+            if avatar_due and avatar_processor is not None:
+                next_avatar_at = advance_deadline(next_avatar_at, now, avatar_interval)
+                avatar_processor.submit(
+                    AvatarInputFrame(frame_id, captured_at_ms, timestamp_ms, frame)
+                )
             metrics_elapsed = now - metrics_started_at
             if metrics_elapsed >= 10.0:
                 observations_published = observation_processor.published_count
+                avatars_published = (
+                    avatar_processor.published_count if avatar_processor is not None else 0
+                )
                 LOGGER.info(
-                    "worker cadence: masks %.1f FPS, observations %.1f FPS",
+                    "worker cadence: masks %.1f FPS, observations %.1f FPS, avatars %.1f FPS",
                     masks_published / metrics_elapsed,
                     (observations_published - previous_observations_published) / metrics_elapsed,
+                    (avatars_published - previous_avatars_published) / metrics_elapsed,
                 )
                 metrics_started_at = now
                 masks_published = 0
                 previous_observations_published = observations_published
+                previous_avatars_published = avatars_published
 
 
 def run_mock(daemon_url: str, fps: float, open_palm: bool) -> None:

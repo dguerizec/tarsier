@@ -12,6 +12,7 @@ preview_width = 640
 preview_height = 360
 preview_quality = 75
 loopback_enabled = true
+output_mode = "camera"
 background_enabled = true
 background_effect = "green-screen"
 restart_delay_ms = 1000
@@ -45,6 +46,12 @@ release_confidence = 0.40
 cooldown_ms = 3000
 face_dwell_ms = 300
 face_release_ms = 500
+
+[avatar]
+enabled = true
+source_image = "assets/avatars/liveportrait-source.png"
+fps = 15
+compile = true
 
 [[scenarios]]
 id = "open-palm-demo"

@@ -5,6 +5,7 @@ const preview = $("#preview");
 const overlay = $("#landmark-overlay");
 const overlayContext = overlay.getContext("2d");
 const skeletonToggle = $("#skeleton-toggle");
+const outputModeInputs = [...document.querySelectorAll("[data-output-mode]")];
 const backgroundToggle = $("#background-toggle");
 const backgroundEffectInputs = [...document.querySelectorAll("[data-background-effect]")];
 const faceTrackingToggle = $("#face-tracking-toggle");
@@ -29,6 +30,9 @@ let zoomSendTimer = null;
 let hdrPending = false;
 let trackingPending = false;
 let faceTrackingPending = false;
+let outputModePending = false;
+let outputModeError = null;
+let outputModeDraft = null;
 let backgroundPending = false;
 let backgroundError = null;
 let backgroundDraft = null;
@@ -134,7 +138,7 @@ function drawSkeletons(
   }
   overlayContext.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
   overlayContext.clearRect(0, 0, bounds.width, bounds.height);
-  if (!skeletonEnabled) return;
+  if (!skeletonEnabled || state?.video_effects?.output_mode === "comic-avatar") return;
 
   const sourceWidth = preview.naturalWidth || 16;
   const sourceHeight = preview.naturalHeight || 9;
@@ -387,6 +391,29 @@ function backgroundState(videoEffects) {
   return { enabled, effect };
 }
 
+function renderOutputMode(videoEffects) {
+  const mode = outputModeDraft || videoEffects.output_mode || "camera";
+  const publishedFresh = videoEffects.avatar_published_at_ms != null
+    && Date.now() - videoEffects.avatar_published_at_ms <= 500;
+  const capturedFresh = videoEffects.avatar_captured_at_ms != null
+    && Date.now() - videoEffects.avatar_captured_at_ms <= 500;
+  const avatarFresh = videoEffects.avatar_available && publishedFresh && capturedFresh;
+  for (const input of outputModeInputs) {
+    input.disabled = outputModePending;
+    input.checked = input.value === mode;
+  }
+  skeletonToggle.disabled = mode === "comic-avatar";
+  const status = outputModeError
+    ? "Change failed"
+    : outputModePending ? "Switching…"
+    : mode === "camera" ? "Real camera"
+    : avatarFresh ? "Comic avatar active"
+    : "Privacy fallback · waiting for LivePortrait";
+  $("#output-status").textContent = status;
+  $("#output-error").hidden = !outputModeError;
+  $("#output-error").textContent = outputModeError || "";
+}
+
 function renderBackground(videoEffects) {
   const current = backgroundDraft || backgroundState(videoEffects);
   const publishedFresh = videoEffects.mask_published_at_ms != null
@@ -394,17 +421,19 @@ function renderBackground(videoEffects) {
   const capturedFresh = videoEffects.mask_captured_at_ms != null
     && Date.now() - videoEffects.mask_captured_at_ms <= 200;
   const maskFresh = publishedFresh && capturedFresh;
-  backgroundToggle.disabled = backgroundPending;
+  const avatarActive = videoEffects.output_mode === "comic-avatar";
+  backgroundToggle.disabled = backgroundPending || avatarActive;
   backgroundToggle.checked = current.enabled;
   for (const input of backgroundEffectInputs) {
-    input.disabled = backgroundPending;
+    input.disabled = backgroundPending || avatarActive;
     input.checked = input.value === current.effect;
   }
 
   const effectLabel = current.effect === "blur" ? "Blur" : "Green screen";
   const status = backgroundError
     ? "Change failed"
-    : (backgroundPending ? `Applying ${effectLabel.toLowerCase()}…`
+    : (avatarActive ? "Included in the comic scene"
+      : backgroundPending ? `Applying ${effectLabel.toLowerCase()}…`
       : !current.enabled ? "Off"
       : !maskFresh ? "Privacy fallback · waiting for a fresh mask"
       : `${effectLabel} active`);
@@ -446,6 +475,7 @@ function render(next) {
   renderFaceTracking(camera);
   renderPanTilt(camera);
   renderBuiltInGestures(camera);
+  renderOutputMode(next.video_effects);
   renderBackground(next.video_effects);
   $("#pipeline-summary").textContent = pipeline.running
     ? `${pipeline.width}×${pipeline.height} · ${pipeline.fps.toFixed(1)} fps · ${pipeline.frame_count} frames`
@@ -573,6 +603,38 @@ async function setBackground(enabled, effect) {
     backgroundDraft = null;
     if (state) render(state);
   }
+}
+
+async function setOutputMode(mode) {
+  if (outputModePending || !state) return;
+  outputModePending = true;
+  outputModeError = null;
+  outputModeDraft = mode;
+  render(state);
+  try {
+    const response = await fetch("/api/v1/video/output-mode", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ mode }),
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.error || `Output mode failed (${response.status})`);
+    }
+    state.video_effects.output_mode = mode;
+  } catch (error) {
+    outputModeError = error instanceof Error ? error.message : String(error);
+  } finally {
+    outputModePending = false;
+    outputModeDraft = null;
+    if (state) render(state);
+  }
+}
+
+for (const input of outputModeInputs) {
+  input.addEventListener("change", () => {
+    if (input.checked) void setOutputMode(input.value);
+  });
 }
 
 backgroundToggle.addEventListener("change", () => {

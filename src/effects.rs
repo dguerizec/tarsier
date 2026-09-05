@@ -6,10 +6,12 @@ use std::sync::{
 use anyhow::{Result, bail};
 use tokio::sync::watch;
 
-use crate::model::{BackgroundEffect, unix_ms};
+use crate::model::{BackgroundEffect, VideoOutputMode, unix_ms};
 
 pub const MASK_MAX_AGE_MS: u64 = 200;
+pub const AVATAR_MAX_AGE_MS: u64 = 500;
 const MAX_MASK_PIXELS: usize = 1920 * 1080;
+pub const MAX_AVATAR_FRAME_BYTES: usize = 1920 * 1080 * 4;
 const BLUR_DOWNSAMPLE: usize = 8;
 const BLUR_RADIUS: usize = 3;
 
@@ -54,6 +56,55 @@ impl VideoMask {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct AvatarFrame {
+    pub frame_id: u64,
+    pub captured_at_ms: u64,
+    pub published_at_ms: u64,
+    pub width: u32,
+    pub height: u32,
+    pixels: Arc<[u8]>,
+}
+
+impl AvatarFrame {
+    pub fn new(
+        frame_id: u64,
+        captured_at_ms: u64,
+        width: u32,
+        height: u32,
+        pixels: Vec<u8>,
+    ) -> Result<Self> {
+        let expected_len = avatar_frame_len(width, height)?;
+        if pixels.len() != expected_len {
+            bail!(
+                "avatar frame contains {} bytes, expected {expected_len}",
+                pixels.len()
+            );
+        }
+        Ok(Self {
+            frame_id,
+            captured_at_ms,
+            published_at_ms: unix_ms(),
+            width,
+            height,
+            pixels: pixels.into(),
+        })
+    }
+
+    fn is_fresh(&self, now_ms: u64) -> bool {
+        now_ms.saturating_sub(self.published_at_ms) <= AVATAR_MAX_AGE_MS
+            && now_ms.saturating_sub(self.captured_at_ms) <= AVATAR_MAX_AGE_MS
+    }
+}
+
+fn avatar_frame_len(width: u32, height: u32) -> Result<usize> {
+    let pixel_count = mask_len(width, height)?;
+    pixel_count
+        .checked_mul(4)
+        .filter(|length| *length <= MAX_AVATAR_FRAME_BYTES)
+        .ok_or_else(|| anyhow::anyhow!("avatar frame exceeds the maximum supported size"))
+}
+
 fn mask_len(width: u32, height: u32) -> Result<usize> {
     if width == 0 || height == 0 {
         bail!("video mask dimensions must be greater than zero");
@@ -69,9 +120,11 @@ fn mask_len(width: u32, height: u32) -> Result<usize> {
 
 #[derive(Clone)]
 pub struct VideoEffects {
+    output_mode: Arc<AtomicU8>,
     background_enabled: Arc<AtomicBool>,
     background_effect: Arc<AtomicU8>,
     mask_tx: watch::Sender<Option<Arc<VideoMask>>>,
+    avatar_tx: watch::Sender<Option<Arc<AvatarFrame>>>,
     scratch: Arc<Mutex<EffectScratch>>,
 }
 
@@ -84,12 +137,28 @@ struct EffectScratch {
 impl VideoEffects {
     pub fn new() -> Self {
         let (mask_tx, _) = watch::channel(None);
+        let (avatar_tx, _) = watch::channel(None);
         Self {
+            output_mode: Arc::new(AtomicU8::new(output_mode_code(VideoOutputMode::Camera))),
             background_enabled: Arc::new(AtomicBool::new(false)),
             background_effect: Arc::new(AtomicU8::new(effect_code(BackgroundEffect::GreenScreen))),
             mask_tx,
+            avatar_tx,
             scratch: Arc::new(Mutex::new(EffectScratch::default())),
         }
+    }
+
+    pub fn output_mode(&self) -> VideoOutputMode {
+        output_mode_from_code(self.output_mode.load(Ordering::Relaxed))
+    }
+
+    pub fn set_output_mode(&self, mode: VideoOutputMode) {
+        self.output_mode
+            .store(output_mode_code(mode), Ordering::Relaxed);
+    }
+
+    pub fn processing_enabled(&self) -> bool {
+        self.output_mode() == VideoOutputMode::ComicAvatar || self.background_enabled()
     }
 
     pub fn background_enabled(&self) -> bool {
@@ -125,6 +194,37 @@ impl VideoEffects {
 
     pub fn clear_mask(&self) {
         self.mask_tx.send_replace(None);
+    }
+
+    pub fn publish_avatar(&self, frame: AvatarFrame) {
+        self.avatar_tx.send_replace(Some(Arc::new(frame)));
+    }
+
+    pub fn latest_avatar(&self) -> Option<Arc<AvatarFrame>> {
+        self.avatar_tx.borrow().clone()
+    }
+
+    pub fn clear_avatar(&self) {
+        self.avatar_tx.send_replace(None);
+    }
+
+    pub fn apply_output(&self, frame: &mut [u8], width: u32, height: u32, now_ms: u64) -> bool {
+        match self.output_mode() {
+            VideoOutputMode::Camera => self.apply_background(frame, width, height, now_ms),
+            VideoOutputMode::ComicAvatar => {
+                let expected_len = avatar_frame_len(width, height).ok();
+                let avatar = self.latest_avatar().filter(|avatar| {
+                    avatar.is_fresh(now_ms) && avatar.width == width && avatar.height == height
+                });
+                match (expected_len, avatar) {
+                    (Some(expected_len), Some(avatar)) if frame.len() >= expected_len => {
+                        frame[..expected_len].copy_from_slice(&avatar.pixels);
+                    }
+                    _ => frame.fill(0),
+                }
+                true
+            }
+        }
     }
 
     pub fn apply_background(&self, frame: &mut [u8], width: u32, height: u32, now_ms: u64) -> bool {
@@ -187,6 +287,20 @@ fn effect_from_code(code: u8) -> BackgroundEffect {
     match code {
         1 => BackgroundEffect::Blur,
         _ => BackgroundEffect::GreenScreen,
+    }
+}
+
+fn output_mode_code(mode: VideoOutputMode) -> u8 {
+    match mode {
+        VideoOutputMode::Camera => 0,
+        VideoOutputMode::ComicAvatar => 1,
+    }
+}
+
+fn output_mode_from_code(code: u8) -> VideoOutputMode {
+    match code {
+        1 => VideoOutputMode::ComicAvatar,
+        _ => VideoOutputMode::Camera,
     }
 }
 
@@ -395,6 +509,46 @@ mod tests {
         assert!(VideoMask::new(1, 100, 0, 1, vec![]).is_err());
         assert!(VideoMask::new(1, 100, 2, 2, vec![0; 3]).is_err());
         assert!(VideoMask::new(1, 100, 2, 2, vec![0; 4]).is_ok());
+    }
+
+    #[test]
+    fn validates_avatar_dimensions_and_length() {
+        assert!(AvatarFrame::new(1, 100, 0, 1, vec![]).is_err());
+        assert!(AvatarFrame::new(1, 100, 2, 2, vec![0; 15]).is_err());
+        assert!(AvatarFrame::new(1, 100, 2, 2, vec![0; 16]).is_ok());
+    }
+
+    #[test]
+    fn comic_avatar_replaces_the_entire_camera_frame() {
+        let effects = VideoEffects::new();
+        effects.set_output_mode(VideoOutputMode::ComicAvatar);
+        let captured_at_ms = unix_ms();
+        let avatar =
+            AvatarFrame::new(7, captured_at_ms, 2, 1, vec![10, 20, 30, 0, 40, 50, 60, 0]).unwrap();
+        let published_at_ms = avatar.published_at_ms;
+        effects.publish_avatar(avatar);
+        let mut frame = [255; 8];
+
+        assert!(effects.apply_output(&mut frame, 2, 1, published_at_ms));
+        assert_eq!(frame, [10, 20, 30, 0, 40, 50, 60, 0]);
+    }
+
+    #[test]
+    fn comic_avatar_fails_closed_when_the_frame_is_stale_or_mismatched() {
+        let effects = VideoEffects::new();
+        effects.set_output_mode(VideoOutputMode::ComicAvatar);
+        let captured_at_ms = unix_ms();
+        let avatar = AvatarFrame::new(7, captured_at_ms, 1, 1, vec![1, 2, 3, 0]).unwrap();
+        let published_at_ms = avatar.published_at_ms;
+        effects.publish_avatar(avatar);
+
+        let mut mismatched = [255; 8];
+        assert!(effects.apply_output(&mut mismatched, 2, 1, published_at_ms));
+        assert_eq!(mismatched, [0; 8]);
+
+        let mut stale = [255; 4];
+        assert!(effects.apply_output(&mut stale, 1, 1, published_at_ms + AVATAR_MAX_AGE_MS + 1,));
+        assert_eq!(stale, [0; 4]);
     }
 
     #[test]

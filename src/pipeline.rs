@@ -69,6 +69,7 @@ impl PreviewHub {
         self.output_tx.send_replace(None);
         self.perception_tx.send_replace(None);
         self.effects.clear_mask();
+        self.effects.clear_avatar();
     }
 }
 
@@ -153,7 +154,7 @@ impl ActivePipeline {
             .static_pad("src")
             .context("effect processor source pad is missing")?
             .add_probe(gst::PadProbeType::BUFFER, move |_, info| {
-                if !effects.background_enabled() {
+                if !effects.processing_enabled() {
                     return gst::PadProbeReturn::Ok;
                 }
                 let Some(buffer) = info.buffer_mut() else {
@@ -163,7 +164,7 @@ impl ActivePipeline {
                 let Ok(mut map) = buffer.map_writable() else {
                     return gst::PadProbeReturn::Drop;
                 };
-                effects.apply_background(map.as_mut_slice(), width, height, unix_ms());
+                effects.apply_output(map.as_mut_slice(), width, height, unix_ms());
                 gst::PadProbeReturn::Ok
             });
 

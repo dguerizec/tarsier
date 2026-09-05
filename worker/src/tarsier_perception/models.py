@@ -40,20 +40,56 @@ MODEL_ASSETS = (
     ),
 )
 
+AVATAR_MODEL_ASSETS = (
+    ModelAsset(
+        "liveportrait/base_models/appearance_feature_extractor.pth",
+        "https://huggingface.co/KlingTeam/LivePortrait/resolve/main/"
+        "liveportrait/base_models/appearance_feature_extractor.pth",
+        "5279bb8654293dbdf327030b397f107237dd9212fb11dd75b83dfb635211ceb5",
+    ),
+    ModelAsset(
+        "liveportrait/base_models/motion_extractor.pth",
+        "https://huggingface.co/KlingTeam/LivePortrait/resolve/main/"
+        "liveportrait/base_models/motion_extractor.pth",
+        "251e6a94ad667a1d0c69526d292677165110ef7f0cf0f6d199f0e414e8aa0ca5",
+    ),
+    ModelAsset(
+        "liveportrait/base_models/spade_generator.pth",
+        "https://huggingface.co/KlingTeam/LivePortrait/resolve/main/"
+        "liveportrait/base_models/spade_generator.pth",
+        "4780afc7909a9f84e24c01d73b31a555ef651521a1fe3b2429bd04534d992aee",
+    ),
+    ModelAsset(
+        "liveportrait/base_models/warping_module.pth",
+        "https://huggingface.co/KlingTeam/LivePortrait/resolve/main/"
+        "liveportrait/base_models/warping_module.pth",
+        "2f61a6f265fe344f14132364859a78bdbbc2068577170693da57fb96d636e282",
+    ),
+    ModelAsset(
+        "liveportrait/retargeting_models/stitching_retargeting_module.pth",
+        "https://huggingface.co/KlingTeam/LivePortrait/resolve/main/"
+        "liveportrait/retargeting_models/stitching_retargeting_module.pth",
+        "3652d5a3f95099141a56986aaddec92fadf0a73c87a20fac9a2c07c32b28b611",
+    ),
+)
+
 
 def default_model_dir() -> Path:
     return Path.home() / ".cache" / "tarsier" / "models"
 
 
-def download_models(model_dir: Path, *, force: bool = False) -> list[Path]:
+def download_models(
+    model_dir: Path, *, force: bool = False, include_avatar: bool = False
+) -> list[Path]:
     model_dir.mkdir(parents=True, exist_ok=True)
     paths: list[Path] = []
-    for asset in MODEL_ASSETS:
+    for asset in _model_assets(include_avatar):
         destination = model_dir / asset.filename
         if destination.is_file() and _sha256(destination) == asset.sha256 and not force:
             paths.append(destination)
             continue
 
+        destination.parent.mkdir(parents=True, exist_ok=True)
         temporary = destination.with_suffix(destination.suffix + ".part")
         with (
             urllib.request.urlopen(asset.url, timeout=60) as response,  # noqa: S310
@@ -73,9 +109,11 @@ def download_models(model_dir: Path, *, force: bool = False) -> list[Path]:
     return paths
 
 
-def describe_models(model_dir: Path) -> list[dict[str, str | int | bool]]:
+def describe_models(
+    model_dir: Path, *, include_avatar: bool = False
+) -> list[dict[str, str | int | bool]]:
     descriptions = []
-    for asset in MODEL_ASSETS:
+    for asset in _model_assets(include_avatar):
         path = model_dir / asset.filename
         exists = path.is_file()
         descriptions.append(
@@ -89,6 +127,10 @@ def describe_models(model_dir: Path) -> list[dict[str, str | int | bool]]:
             }
         )
     return descriptions
+
+
+def _model_assets(include_avatar: bool) -> tuple[ModelAsset, ...]:
+    return MODEL_ASSETS + (AVATAR_MODEL_ASSETS if include_avatar else ())
 
 
 def _sha256(path: Path) -> str:

@@ -19,6 +19,7 @@ def build_parser() -> argparse.ArgumentParser:
     models.add_argument("--model-dir", type=Path, default=default_model_dir())
     models.add_argument("--download", action="store_true")
     models.add_argument("--force", action="store_true")
+    models.add_argument("--avatar", action="store_true")
 
     serve = subparsers.add_parser("serve", help="process frames from MJPEG or a V4L2 source")
     serve.add_argument("--source", "--device", dest="source")
@@ -28,6 +29,11 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--mask-fps", type=float, default=30.0)
     serve.add_argument("--minimum-confidence", type=float, default=0.5)
     serve.add_argument("--model-dir", type=Path, default=default_model_dir())
+    serve.add_argument("--avatar-source", type=Path)
+    serve.add_argument("--avatar-fps", type=float, default=15.0)
+    serve.add_argument("--avatar-width", type=int, default=1280)
+    serve.add_argument("--avatar-height", type=int, default=720)
+    serve.add_argument("--avatar-compile", action="store_true")
 
     mock = subparsers.add_parser("mock", help="publish deterministic synthetic observations")
     mock.add_argument("--fps", type=float, default=10.0)
@@ -43,8 +49,8 @@ def main() -> None:
     )
     if args.command == "models":
         if args.download:
-            download_models(args.model_dir, force=args.force)
-        print(json.dumps(describe_models(args.model_dir), indent=2))
+            download_models(args.model_dir, force=args.force, include_avatar=args.avatar)
+        print(json.dumps(describe_models(args.model_dir, include_avatar=args.avatar), indent=2))
         return
     if args.command == "mock":
         run_mock(args.daemon_url, args.fps, args.open_palm)
@@ -55,11 +61,23 @@ def main() -> None:
         raise SystemExit("--fps must be greater than zero")
     if args.mask_fps <= 0:
         raise SystemExit("--mask-fps must be greater than zero")
-    unavailable = [model for model in describe_models(args.model_dir) if not model["verified"]]
+    if args.avatar_fps <= 0:
+        raise SystemExit("--avatar-fps must be greater than zero")
+    if args.avatar_width <= 0 or args.avatar_height <= 0:
+        raise SystemExit("--avatar-width and --avatar-height must be greater than zero")
+    if args.avatar_source is not None and not args.avatar_source.is_file():
+        raise SystemExit(f"avatar source image does not exist: {args.avatar_source}")
+    unavailable = [
+        model
+        for model in describe_models(
+            args.model_dir, include_avatar=args.avatar_source is not None
+        )
+        if not model["verified"]
+    ]
     if unavailable:
         raise SystemExit(
-            "MediaPipe models are missing or invalid; run "
-            "`tarsier-perception models --download` first"
+            "worker models are missing or invalid; run `tarsier-perception models --download` "
+            "with `--avatar` when avatar output is enabled"
         )
     try:
         source = args.source or f"{args.daemon_url.rstrip('/')}/api/v1/perception/input.mjpeg"
@@ -72,6 +90,11 @@ def main() -> None:
             daemon_url=args.daemon_url,
             model_dir=args.model_dir,
             minimum_confidence=args.minimum_confidence,
+            avatar_source=args.avatar_source,
+            avatar_fps=args.avatar_fps,
+            avatar_width=args.avatar_width,
+            avatar_height=args.avatar_height,
+            avatar_compile=args.avatar_compile,
         )
     except KeyboardInterrupt:
         logging.getLogger(__name__).info("perception worker stopped")

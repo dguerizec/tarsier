@@ -51,6 +51,12 @@ mischievous personality without tying its core to one camera vendor.
   camera using one-frame alignment and a narrow edge transition, while a
   missing or stale mask fails closed to black until the effect is explicitly
   disabled;
+- an optional local LivePortrait worker animates the approved line-art portrait
+  from MediaPipe-tracked camera motion, composites it into its fixed 16:9
+  virtual room, and publishes complete BGRx frames to the same preview and
+  virtual-camera output; the **Video identity** control switches between the
+  real camera and **Comic avatar**, and a missing or stale avatar frame fails
+  closed to black instead of revealing the camera;
 - face presence and open-palm observations pass through dwell, release, and
   cooldown stabilization before becoming semantic events;
 - a responsive local web UI shows the preview, telemetry, perception state,
@@ -75,8 +81,10 @@ flowchart LR
     Pipeline --> RawPreview[Raw internal MJPEG branch]
     RawPreview --> Worker[MediaPipe worker]
     Worker -->|8-bit person mask| Mask[Internal video-mask channel]
+    Worker -->|LivePortrait BGRx frame| Avatar[Comic avatar channel]
     Pipeline --> Effects[Final-output effects]
     Mask --> Effects
+    Avatar --> Effects
     Effects -->|YUY2 720p30| Loopback[V4L2 loopback]
     Effects --> Preview[Final MJPEG preview]
     Preview --> UI[Local web UI]
@@ -129,11 +137,13 @@ a manual restart still finds the device after USB re-enumeration.
 
 ## Quick start
 
-Install the locked Python environment and the pinned MediaPipe model assets:
+Install the locked Python environment and the pinned MediaPipe and LivePortrait
+model assets:
 
 ```sh
-uv sync --project worker --locked
-uv run --project worker tarsier-perception models --download
+uv sync --project worker --extra avatar --locked
+uv run --project worker --extra avatar --locked \
+  tarsier-perception models --download --avatar
 ```
 
 Validate the configuration, then start Tarsier:
@@ -166,6 +176,19 @@ The manual zoom slider applies x1-to-x4 changes continuously while coalescing
 obsolete intermediate positions. Embedded UI assets and the health response use
 `Cache-Control: no-store`; an open page detects a new
 daemon instance and reloads itself after a restart.
+
+The **Video identity** selector switches the complete final stream between
+**Camera** and **Comic avatar**. The example configuration starts the optional
+LivePortrait worker eagerly so its models can initialize while Camera remains
+selected. The first compiled inference may take up to roughly one minute on
+the tested RTX 3070 while PyTorch builds and caches GPU kernels; later starts
+reuse that cache. Once an avatar frame is available,
+selecting Comic avatar replaces the whole image, including the room, in both
+the web preview and `/dev/video42`. Background effects are disabled in the UI
+while this mode is active because the virtual decor is already part of the
+approved portrait. If animation stops for more than 500 ms, Tarsier outputs
+black until a fresh generated frame arrives; it never falls back to the real
+camera.
 
 Hold the direction buttons below the preview or use the keyboard arrow keys to
 pan and tilt. Arrow keys keep their normal behavior while an input such as the
@@ -210,11 +233,13 @@ configuration. It defines:
 
 - the loopback-only server address;
 - physical and virtual video devices, frame size, rate, preview quality,
-  initial background-effect state and selection, and pipeline recovery delay;
+  initial video identity, background-effect state and selection, and pipeline
+  recovery delay;
 - camera adapter, extension-unit selector, polling cadence, and movement
   limits;
 - worker supervision, independent landmark and person-mask rates, confidence,
   dwell, release, and cooldown thresholds;
+- optional LivePortrait source image, target cadence, and PyTorch compilation;
 - bounded named camera presets;
 - event-to-action scenario declarations.
 
@@ -255,6 +280,7 @@ The default server binds only to `127.0.0.1:8742`.
 | `POST` | `/api/v1/camera/hdr` | Enable or disable HDR/WDR |
 | `POST` | `/api/v1/camera/tracking` | Enable or disable built-in tracking |
 | `POST` | `/api/v1/camera/face-tracking` | Enable or disable Tarsier face tracking |
+| `POST` | `/api/v1/video/output-mode` | Select `camera` or the privacy-safe `comic-avatar` output |
 | `POST` | `/api/v1/video/background` | Enable one final-output background effect with `{"enabled": bool, "effect": "green-screen" or "blur"}` |
 | `POST` | `/api/v1/video/green-screen` | Compatibility control that selects and enables or disables Green screen |
 | `POST` | `/api/v1/camera/built-in-gestures/{feature}` | Enable or disable `target-selection`, `zoom`, or `dynamic-zoom` gestures |
@@ -422,6 +448,19 @@ The first vertical slice was validated on 2026-09-05 with an OBSBOT Tiny 2
   final stream became green for an empty-person mask, a full-person mask
   preserved the source, Blur preserved foreground pixels while softening a
   varied background, and an absent or stale mask produced black frames;
+- the comic-avatar path was exercised end to end on the synthetic pipeline:
+  the integrated worker used MediaPipe to crop a recorded driving face,
+  LivePortrait rendered the approved illustration, the loopback API accepted a
+  1280x720 BGRx frame, and the daemon returned the generated virtual room from
+  its own snapshot route while `comic-avatar` was selected;
+- the compiled LivePortrait core sustained 14.6 generated FPS at steady state
+  on the RTX 3070 (68.6 ms mean, 74.2 ms p95); the complete uncompiled worker,
+  including MediaPipe crop, 16:9 composition, and local publication, sustained
+  approximately 7-8 generated FPS while Tarsier held those frames in its 30 FPS
+  output;
+- after the avatar worker stopped, the next snapshot was verified as entirely
+  black once the 500 ms freshness window expired, confirming that the real
+  camera cannot appear as an implicit fallback;
 - a 90-frame live motion sequence covered raised and lowering arms, head motion,
   and changing poses without the earlier chair trail; a synthetic 120-pixel pan
   showed that a 10 FPS stale mask could expose up to 1.51% of the frame, while
@@ -437,7 +476,7 @@ The first vertical slice was validated on 2026-09-05 with an OBSBOT Tiny 2
 - after the repair restart, the real 720p30 pipeline remained healthy for more
   than six minutes on the camera's 480 Mbit/s fallback link, passing 11,000
   frames without another USB event or required restart;
-- all 69 daemon tests, 2 MCP tests, 12 Python tests, JavaScript syntax checks,
+- all 75 daemon tests, 2 MCP tests, 15 Python tests, JavaScript syntax checks,
   formatting, lint, configuration, protocol, and API checks passed.
 
 An extended run changed the camera result: after approximately six minutes of
@@ -478,6 +517,9 @@ run before unattended use.
   live Blur output, and a short physical motion sequence have runtime or visual
   coverage, but long-duration use and broader clothing, motion-speed, distance,
   and lighting conditions still need validation;
+- comic-avatar routing and its stale-frame privacy fallback have synthetic
+  end-to-end coverage; sustained physical-camera use, expression quality,
+  occlusions, and the first-start compilation delay still need broader testing;
 - pipeline telemetry reports effective FPS, frame count, last frame, errors,
   and restart count, but not queue pressure or dropped-frame attribution;
 - configuration changes require a restart and runtime state is not persisted;
@@ -502,6 +544,6 @@ run before unattended use.
   control surface.
 
 The next focused increments are extended telemetry and USB recovery soak
-testing plus broader gesture and segmentation robustness testing. Avatars,
-speech, robotics, ROS, cloud video processing, and a large gesture vocabulary
-remain outside the first version.
+testing plus broader gesture, segmentation, and comic-avatar robustness
+testing. Speech, robotics, ROS, cloud video processing, and a large gesture
+vocabulary remain outside the first version.

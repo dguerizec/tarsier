@@ -9,12 +9,21 @@ nearby furniture is not mistaken for part of the subject during motion. The
 worker reads a raw internal branch; the public V4L2 loopback remains available
 for the daemon's final, optionally processed output.
 
+With the optional `avatar` dependency group, the same worker also runs a
+minimal local LivePortrait inference core. A dedicated MediaPipe face
+landmarker crops the private driving frame, LivePortrait transfers its relative
+head pose and expression to the approved illustration, and the worker restores
+the fixed virtual-room framing before publishing a complete BGRx frame. The
+queue retains only the newest camera frame so inference latency cannot grow
+without bound.
+
 The model files are cached outside the repository and checked against pinned
 SHA-256 digests. Set up the worker with:
 
 ```sh
-uv sync --project worker --locked
-uv run --project worker tarsier-perception models --download
+uv sync --project worker --extra avatar --locked
+uv run --project worker --extra avatar --locked \
+  tarsier-perception models --download --avatar
 ```
 
 Run real inference against the default daemon with:
@@ -25,6 +34,20 @@ uv run --project worker tarsier-perception serve
 
 Pass `--source /dev/video43` only when a dedicated perception device is
 preferred. The worker also accepts `--device` as a compatibility alias.
+
+Avatar output is enabled by the daemon's `[avatar]` configuration. The
+supervisor adds `--extra avatar`, the source portrait, output dimensions,
+cadence, and optional `torch.compile` flag automatically. Models and generated
+frames stay on the local machine. The daemon accepts avatar frames only on its
+loopback API and emits black when the latest frame is older than 500 ms.
+
+The vendored LivePortrait neural-network modules and the five downloaded core
+weights are MIT-licensed; provenance is recorded beside the integration. The
+upstream InsightFace detection assets are not included. They may be evaluated
+later as an explicit alternative in this personal, non-commercial research
+project if MediaPipe cropping proves insufficient, but their upstream
+non-commercial-research restriction must be revisited before any broader or
+commercial use.
 
 The deterministic publisher exercises the daemon's face-presence and open-palm
 stabilizers without a camera:

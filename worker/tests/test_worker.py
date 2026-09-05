@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from tarsier_perception.avatar import compose_avatar_frame, crop_face_square
 from tarsier_perception.models import describe_models
 from tarsier_perception.worker import (
     Landmark,
@@ -143,3 +144,32 @@ def test_missing_models_are_reported_as_unverified(tmp_path: Path) -> None:
     assert len(descriptions) == 4
     assert all(not model["exists"] for model in descriptions)
     assert all(not model["verified"] for model in descriptions)
+
+
+def test_avatar_models_are_opt_in(tmp_path: Path) -> None:
+    assert len(describe_models(tmp_path)) == 4
+    descriptions = describe_models(tmp_path, include_avatar=True)
+    assert len(descriptions) == 9
+    assert any(model["name"].endswith("motion_extractor.pth") for model in descriptions)
+
+
+def test_face_crop_is_square_and_pads_at_frame_edges() -> None:
+    import numpy as np
+
+    frame = np.arange(20 * 30 * 3, dtype=np.uint8).reshape(20, 30, 3)
+    landmarks = [SourceLandmark(0.0, 0.0, 0.0), SourceLandmark(0.2, 0.3, 0.0)]
+    cropped = crop_face_square(frame, landmarks, scale=3.0)
+    assert cropped.shape[0] == cropped.shape[1]
+    assert cropped.shape[2] == 3
+
+
+def test_avatar_composition_returns_full_size_bgrx_frame() -> None:
+    import numpy as np
+
+    source = np.full((9, 16, 3), 10, dtype=np.uint8)
+    animated = np.full((8, 8, 3), 200, dtype=np.uint8)
+    output = compose_avatar_frame(source, animated, 16, 9)
+    assert output.shape == (9, 16, 4)
+    assert output.dtype == np.uint8
+    assert output[4, 8, :3].tolist() == [200, 200, 200]
+    assert output[4, 0, :3].tolist() == [10, 10, 10]

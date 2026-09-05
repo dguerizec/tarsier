@@ -7,6 +7,12 @@ dependencies = [
     "mediapipe==1.0.1",
 ]
 
+[project.optional-dependencies]
+avatar = [
+    "pyyaml>=6,<7",
+    "torch==2.11.0",
+]
+
 [project.scripts]
 tarsier-perception = "tarsier_perception.cli:main"
 
@@ -30,6 +36,7 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+extend-exclude = ["src/tarsier_perception/liveportrait/modules"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
