@@ -76,6 +76,28 @@ Tarsier records a gesture setting only after the UVC write succeeds. It does
 not issue an additional proprietary readback while video is streaming, so each
 setting starts as unknown after a daemon restart.
 
+## Standard UVC pan/tilt nudges
+
+The direction pad uses the standard `V4L2_CID_PAN_SPEED` and
+`V4L2_CID_TILT_SPEED` controls instead of a proprietary query or an assumed
+absolute starting angle. Tarsier queries both supported ranges, selects 25% of
+the available speed in the requested direction, applies both axes in one
+`VIDIOC_S_EXT_CTRLS` call, waits 120 ms, and writes zero to both controls. The
+start and stop writes share the camera-owner thread with every other control.
+
+On the tested Tiny 2, pan advertises -160 through 160 and tilt -120 through
+120. The resulting pulses use pan -40 for left, pan 40 for right, tilt 30 for
+up, and tilt -30 for down. This speed-control pan convention is the reverse of
+the device's absolute-pan convention. Hardware validation confirmed movement
+on both axes and verified that `pan_speed` and `tilt_speed` return to zero after
+every API request.
+
+The UI repeats these independently bounded pulses while a direction button or
+keyboard arrow remains held. Closing or disconnecting the browser cannot make
+one pulse exceed 120 ms because stopping is owned by the daemon. A speed pulse
+does not reveal its final angle, so Tarsier clears the previous attitude sample
+instead of presenting stale absolute coordinates as current telemetry.
+
 ## Standard UVC zoom
 
 Lens zoom does not use the proprietary selector-2 mailbox. Tarsier discovers

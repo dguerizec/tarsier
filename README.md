@@ -28,17 +28,18 @@ mischievous personality without tying its core to one camera vendor.
   daemon's internal preview branch;
 - camera attitude is explicitly labelled `last-commanded`, `measured`,
   `simulated`, or `unavailable` rather than presenting an estimate as fact;
-- bounded absolute gimbal moves, x1-to-x4 zoom, recentering, tracking, named
-  presets, and separate Tiny 2 built-in gesture controls are available over
-  HTTP;
+- bounded absolute gimbal moves, short pan/tilt nudges, x1-to-x4 zoom,
+  recentering, tracking, named presets, and separate Tiny 2 built-in gesture
+  controls are available over HTTP;
 - a supervised Python 3.12 worker performs local MediaPipe face and canned
   gesture recognition;
 - face presence and open-palm observations pass through dwell, release, and
   cooldown stabilization before becoming semantic events;
 - a responsive local web UI shows the preview, telemetry, perception state,
   presets, scenarios, and recent events, with an optional 21-point hand
-  skeleton overlay; it reloads its embedded assets after a daemon upgrade and
-  reconnects the MJPEG preview after either a pipeline or daemon restart;
+  skeleton overlay and a direction pad with page-level arrow-key control; it
+  reloads its embedded assets after a daemon upgrade and reconnects the MJPEG
+  preview after either a pipeline or daemon restart;
 - snapshots are available as JPEG over HTTP and as image content over MCP.
 
 OBS, Stream Deck, scripts, and similar tools are possible API clients. OBS is
@@ -126,6 +127,11 @@ while coalescing obsolete intermediate positions. Embedded UI assets and the
 health response use `Cache-Control: no-store`; an open page detects a new
 daemon instance and reloads itself after a restart.
 
+Hold the direction buttons below the preview or use the keyboard arrow keys to
+pan and tilt. Arrow keys keep their normal behavior while an input such as the
+zoom slider has focus. Each movement is a short daemon-owned pulse with an
+automatic motor stop, so losing the page cannot leave the camera moving.
+
 ```sh
 cargo run -- status
 
@@ -189,6 +195,7 @@ The default server binds only to `127.0.0.1:8742`.
 | `GET` | `/api/v1/config` | Effective configuration |
 | `GET` | `/api/v1/camera/state` | Camera availability and attitude |
 | `POST` | `/api/v1/camera/move` | Bounded absolute yaw/pitch/roll target |
+| `POST` | `/api/v1/camera/nudge/{direction}` | Short `left`, `right`, `up`, or `down` pan/tilt pulse |
 | `POST` | `/api/v1/camera/zoom` | Set x1-to-x4 lens magnification |
 | `POST` | `/api/v1/camera/tracking` | Enable or disable built-in tracking |
 | `POST` | `/api/v1/camera/built-in-gestures/{feature}` | Enable or disable `target-selection`, `zoom`, or `dynamic-zoom` gestures |
@@ -213,6 +220,9 @@ curl -fsS http://127.0.0.1:8742/api/v1/state
 curl -fsS -X POST http://127.0.0.1:8742/api/v1/camera/move \
   -H 'content-type: application/json' \
   -d '{"yaw":-20,"pitch":5,"roll":0}'
+
+curl -fsS -X POST \
+  http://127.0.0.1:8742/api/v1/camera/nudge/left
 
 curl -fsS -X POST http://127.0.0.1:8742/api/v1/camera/zoom \
   -H 'content-type: application/json' \
@@ -291,6 +301,9 @@ The first vertical slice was validated on 2026-09-05 with an OBSBOT Tiny 2
   accepted while streaming without a pipeline restart or USB re-enumeration;
 - standard UVC zoom accepted x2.5 as raw position 50 on the discovered 0-to-100
   range, returned to x1/raw 0, and stayed healthy during live slider updates;
+- standard pan/tilt speed controls produced short movement on both physical
+  axes, used the Tiny 2's verified left/right sign convention, and returned
+  both motor speeds to zero after every pulse;
 - a short attitude-polling run returned changing live values during capture;
 - a generic GStreamer V4L2 reader consumed 90 frames from `/dev/video42` and
   exited successfully while preview, perception, and polling continued;
@@ -311,6 +324,9 @@ The first vertical slice was validated on 2026-09-05 with an OBSBOT Tiny 2
   live structured camera state and a JPEG snapshot;
 - the embedded UI was rendered against the live daemon at desktop size and
   showed the real preview, telemetry, perception health, and events;
+- the direction pad and keyboard arrows each emitted a real nudge command, the
+  zoom slider retained its own arrow-key behavior, and the controls fit a
+  390-pixel mobile viewport without horizontal overflow;
 - one browser tab remained open across a complete daemon stop/start cycle,
   detected the new daemon identity, automatically loaded the newly embedded
   client assets, returned to `Live`, and received a new 640x360 MJPEG stream;
@@ -319,7 +335,7 @@ The first vertical slice was validated on 2026-09-05 with an OBSBOT Tiny 2
 - after the repair restart, the real 720p30 pipeline remained healthy for more
   than six minutes on the camera's 480 Mbit/s fallback link, passing 11,000
   frames without another USB event or required restart;
-- all 37 daemon tests, 2 MCP tests, 6 Python tests, JavaScript syntax checks,
+- all 40 daemon tests, 2 MCP tests, 6 Python tests, JavaScript syntax checks,
   formatting, lint, configuration, protocol, and API checks passed.
 
 An extended run changed the camera result: after approximately six minutes of
@@ -342,6 +358,8 @@ polling remains disabled because its extended test is independently unsafe.
 - live vendor attitude polling can reset the tested camera during streaming;
   the safe default reports the last commanded target with explicit provenance;
 - live tracking state is only known after Tarsier issues a tracking command;
+- a pan/tilt speed nudge deliberately clears attitude values because the safe
+  default cannot measure the final physical angle after relative movement;
 - open-palm thresholds were calibrated for one operator and environment;
   broader lighting, distance, skin-tone, orientation, and operator coverage is
   still required;
