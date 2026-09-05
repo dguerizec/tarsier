@@ -1,4 +1,4 @@
-use std::{convert::Infallible, sync::Arc};
+use std::{convert::Infallible, sync::Arc, time::Instant};
 
 use axum::{
     Json, Router,
@@ -19,7 +19,7 @@ use tokio::sync::{Mutex, watch};
 use tower_http::trace::TraceLayer;
 
 use crate::{
-    camera::CameraHandle,
+    camera::{CameraHandle, PAN_TILT_LEASE},
     config::{CameraPresetConfig, Config, ScenarioConfig},
     model::{
         BuiltInGesture, CameraAttitudeSource, PerceptionObservation, ScenarioActivation, unix_ms,
@@ -37,6 +37,7 @@ struct ApiState {
     face_presence: Arc<Mutex<FacePresenceStabilizer>>,
     preview: PreviewHub,
     camera: Option<CameraHandle>,
+    pan_tilt_motion: Arc<Mutex<PanTiltMotion>>,
     shutdown: watch::Receiver<bool>,
 }
 
@@ -54,6 +55,7 @@ pub fn router(
         runtime,
         preview,
         camera,
+        pan_tilt_motion: Arc::new(Mutex::new(PanTiltMotion::default())),
         shutdown,
     };
     Router::new()
@@ -174,13 +176,20 @@ struct ZoomRequest {
     magnification: f32,
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 enum PanTiltDirection {
     Left,
     Right,
     Up,
     Down,
+    Stop,
+}
+
+#[derive(Default)]
+struct PanTiltMotion {
+    direction: Option<PanTiltDirection>,
+    expires_at: Option<Instant>,
 }
 
 impl PanTiltDirection {
@@ -190,6 +199,7 @@ impl PanTiltDirection {
             Self::Right => (1, 0),
             Self::Up => (0, 1),
             Self::Down => (0, -1),
+            Self::Stop => (0, 0),
         }
     }
 
@@ -199,6 +209,7 @@ impl PanTiltDirection {
             Self::Right => "right",
             Self::Up => "up",
             Self::Down => "down",
+            Self::Stop => "stop",
         }
     }
 }
@@ -236,24 +247,56 @@ async fn nudge_camera(
         return camera_unavailable();
     };
     let (pan_direction, tilt_direction) = direction.vector();
-    match camera.nudge(pan_direction, tilt_direction).await {
+    match camera
+        .set_pan_tilt_speed(pan_direction, tilt_direction)
+        .await
+    {
         Ok(()) => {
-            state
-                .runtime
-                .update(|runtime| {
-                    runtime.camera.yaw_degrees = None;
-                    runtime.camera.pitch_degrees = None;
-                    runtime.camera.roll_degrees = None;
-                    runtime.camera.attitude_source = CameraAttitudeSource::Unavailable;
-                    runtime.camera.sample_at_ms = None;
-                })
+            let now = Instant::now();
+            let previous = {
+                let mut motion = state.pan_tilt_motion.lock().await;
+                let previous = if motion.expires_at.is_some_and(|expires_at| expires_at > now) {
+                    motion.direction
+                } else {
+                    None
+                };
+                if direction == PanTiltDirection::Stop {
+                    motion.direction = None;
+                    motion.expires_at = None;
+                } else {
+                    motion.direction = Some(direction);
+                    motion.expires_at = Some(now + PAN_TILT_LEASE);
+                }
+                previous
+            };
+
+            if direction == PanTiltDirection::Stop {
+                if let Some(previous) = previous {
+                    record_camera_command(
+                        &state,
+                        "camera.nudge.stopped",
+                        json!({"direction": previous.as_str()}),
+                    )
+                    .await;
+                }
+            } else if previous != Some(direction) {
+                state
+                    .runtime
+                    .update(|runtime| {
+                        runtime.camera.yaw_degrees = None;
+                        runtime.camera.pitch_degrees = None;
+                        runtime.camera.roll_degrees = None;
+                        runtime.camera.attitude_source = CameraAttitudeSource::Unavailable;
+                        runtime.camera.sample_at_ms = None;
+                    })
+                    .await;
+                record_camera_command(
+                    &state,
+                    "camera.nudge",
+                    json!({"direction": direction.as_str()}),
+                )
                 .await;
-            record_camera_command(
-                &state,
-                "camera.nudge",
-                json!({"direction": direction.as_str()}),
-            )
-            .await;
+            }
             StatusCode::ACCEPTED.into_response()
         }
         Err(error) => command_error(error),
@@ -751,6 +794,7 @@ mod tests {
         assert_eq!(PanTiltDirection::Right.vector(), (1, 0));
         assert_eq!(PanTiltDirection::Up.vector(), (0, 1));
         assert_eq!(PanTiltDirection::Down.vector(), (0, -1));
+        assert_eq!(PanTiltDirection::Stop.vector(), (0, 0));
     }
 
     #[tokio::test]
@@ -949,6 +993,7 @@ mod tests {
         );
 
         let response = app
+            .clone()
             .oneshot(
                 Request::post("/api/v1/camera/nudge/left")
                     .body(Body::empty())
@@ -958,6 +1003,28 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+        let keepalive_response = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/camera/nudge/left")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(keepalive_response.status(), StatusCode::ACCEPTED);
+
+        let stop_response = app
+            .oneshot(
+                Request::post("/api/v1/camera/nudge/stop")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stop_response.status(), StatusCode::ACCEPTED);
+
         let state = runtime.state().await;
         assert_eq!(state.camera.yaw_degrees, None);
         assert_eq!(
@@ -965,8 +1032,11 @@ mod tests {
             CameraAttitudeSource::Unavailable
         );
         let events = runtime.recent_events().await;
+        assert_eq!(events.len(), 2);
         assert_eq!(events[0].kind, "camera.nudge");
         assert_eq!(events[0].data["direction"], "left");
+        assert_eq!(events[1].kind, "camera.nudge.stopped");
+        assert_eq!(events[1].data["direction"], "left");
     }
 
     #[tokio::test]

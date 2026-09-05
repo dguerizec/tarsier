@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use serde::Serialize;
 use tokio::sync::oneshot;
 
@@ -20,8 +20,8 @@ use protocol::{FRAME_SIZE, GIM_GET_STATE, TRACKING_SELECTOR, VENDOR_SELECTOR};
 
 const COMMAND_QUEUE_CAPACITY: usize = 32;
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(1);
-const NUDGE_DURATION: Duration = Duration::from_millis(120);
 const NUDGE_SPEED_FRACTION: f64 = 0.25;
+pub const PAN_TILT_LEASE: Duration = Duration::from_millis(350);
 
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct GimbalAngles {
@@ -49,7 +49,7 @@ enum Command {
     Zoom {
         magnification: f32,
     },
-    Nudge {
+    PanTiltSpeed {
         pan_direction: i8,
         tilt_direction: i8,
     },
@@ -111,14 +111,14 @@ impl CameraHandle {
             .map(|_| ())
     }
 
-    pub async fn nudge(&self, pan_direction: i8, tilt_direction: i8) -> Result<()> {
+    pub async fn set_pan_tilt_speed(&self, pan_direction: i8, tilt_direction: i8) -> Result<()> {
         if !(-1..=1).contains(&pan_direction)
             || !(-1..=1).contains(&tilt_direction)
-            || (pan_direction == 0) == (tilt_direction == 0)
+            || (pan_direction != 0 && tilt_direction != 0)
         {
-            bail!("camera nudge must select exactly one pan or tilt direction");
+            bail!("camera movement must select at most one pan or tilt direction");
         }
-        self.request(Command::Nudge {
+        self.request(Command::PanTiltSpeed {
             pan_direction,
             tilt_direction,
         })
@@ -222,6 +222,8 @@ struct Worker<T> {
     sequence: u16,
     minimum_interval: Duration,
     last_io: Option<Instant>,
+    pan_tilt_direction: (i8, i8),
+    pan_tilt_deadline: Option<Instant>,
 }
 
 impl<T: XuTransport> Worker<T> {
@@ -232,11 +234,14 @@ impl<T: XuTransport> Worker<T> {
             sequence: 0,
             minimum_interval,
             last_io: None,
+            pan_tilt_direction: (0, 0),
+            pan_tilt_deadline: None,
         }
     }
 
     fn run(mut self) {
         loop {
+            self.expire_pan_tilt_lease();
             match self.rx.try_recv() {
                 Ok(request) => {
                     let result = self
@@ -245,7 +250,12 @@ impl<T: XuTransport> Worker<T> {
                     let _ = request.response.send(result);
                 }
                 Err(TryRecvError::Empty) => std::thread::sleep(self.minimum_interval),
-                Err(TryRecvError::Disconnected) => break,
+                Err(TryRecvError::Disconnected) => {
+                    if self.pan_tilt_direction != (0, 0) {
+                        let _ = self.transport.set_pan_tilt_speed_units(0, 0);
+                    }
+                    break;
+                }
             }
         }
     }
@@ -286,26 +296,54 @@ impl<T: XuTransport> Worker<T> {
                 self.last_io = Some(Instant::now());
                 Ok(None)
             }
-            Command::Nudge {
+            Command::PanTiltSpeed {
                 pan_direction,
                 tilt_direction,
-            } => self.nudge(pan_direction, tilt_direction).map(|()| None),
+            } => self
+                .set_pan_tilt_speed(pan_direction, tilt_direction)
+                .map(|()| None),
         }
     }
 
-    fn nudge(&mut self, pan_direction: i8, tilt_direction: i8) -> Result<()> {
-        self.pace();
-        let controls = self.transport.pan_tilt_speed_controls()?;
-        let pan = speed_units(controls.pan, pan_direction)?;
-        let tilt = speed_units(controls.tilt, tilt_direction)?;
-        self.transport.set_pan_tilt_speed_units(pan, tilt)?;
-        self.last_io = Some(Instant::now());
+    fn set_pan_tilt_speed(&mut self, pan_direction: i8, tilt_direction: i8) -> Result<()> {
+        let direction = (pan_direction, tilt_direction);
+        if direction == self.pan_tilt_direction {
+            self.pan_tilt_deadline = (direction != (0, 0)).then(|| Instant::now() + PAN_TILT_LEASE);
+            return Ok(());
+        }
 
-        std::thread::sleep(NUDGE_DURATION);
         self.pace();
-        let stopped = self.transport.set_pan_tilt_speed_units(0, 0);
+        let (pan, tilt) = if pan_direction == 0 && tilt_direction == 0 {
+            (0, 0)
+        } else {
+            let controls = self.transport.pan_tilt_speed_controls()?;
+            (
+                speed_units(controls.pan, pan_direction)?,
+                speed_units(controls.tilt, tilt_direction)?,
+            )
+        };
+        if let Err(error) = self.transport.set_pan_tilt_speed_units(pan, tilt) {
+            let _ = self.transport.set_pan_tilt_speed_units(0, 0);
+            self.pan_tilt_direction = (0, 0);
+            self.pan_tilt_deadline = None;
+            return Err(error);
+        }
         self.last_io = Some(Instant::now());
-        stopped.context("failed to stop pan/tilt after a camera nudge")
+        self.pan_tilt_direction = direction;
+        self.pan_tilt_deadline = (direction != (0, 0)).then(|| Instant::now() + PAN_TILT_LEASE);
+        Ok(())
+    }
+
+    fn expire_pan_tilt_lease(&mut self) {
+        if self
+            .pan_tilt_deadline
+            .is_none_or(|deadline| Instant::now() < deadline)
+        {
+            return;
+        }
+        if let Err(error) = self.set_pan_tilt_speed(0, 0) {
+            tracing::error!(%error, "failed to stop pan/tilt after its movement lease expired");
+        }
     }
 
     fn wake(&mut self) -> Result<()> {
@@ -400,7 +438,7 @@ fn spawn_mock(config: &CameraConfig) -> CameraHandle {
                     Command::Tracking { .. } => Ok(None),
                     Command::BuiltInGesture { .. } => Ok(None),
                     Command::Zoom { .. } => Ok(None),
-                    Command::Nudge { .. } => Ok(None),
+                    Command::PanTiltSpeed { .. } => Ok(None),
                 };
                 let _ = request.response.send(result);
             }
@@ -685,17 +723,55 @@ mod tests {
     }
 
     #[test]
-    fn nudge_uses_a_bounded_speed_pulse_and_stops() {
+    fn pan_tilt_speed_starts_and_stops_without_pulsing() {
         let (_tx, rx) = sync_channel(1);
         let mut worker = Worker::new(RecordingTransport::default(), rx, Duration::ZERO);
 
         worker
-            .execute(Command::Nudge {
+            .execute(Command::PanTiltSpeed {
                 pan_direction: 1,
+                tilt_direction: 0,
+            })
+            .unwrap();
+        assert_eq!(worker.transport.pan_tilt_speed_units, [(40, 0)]);
+
+        worker
+            .execute(Command::PanTiltSpeed {
+                pan_direction: 0,
                 tilt_direction: 0,
             })
             .unwrap();
 
         assert_eq!(worker.transport.pan_tilt_speed_units, [(40, 0), (0, 0)]);
+    }
+
+    #[test]
+    fn pan_tilt_lease_renews_without_rewriting_and_expires_to_stop() {
+        let (_tx, rx) = sync_channel(1);
+        let mut worker = Worker::new(RecordingTransport::default(), rx, Duration::ZERO);
+
+        worker
+            .execute(Command::PanTiltSpeed {
+                pan_direction: -1,
+                tilt_direction: 0,
+            })
+            .unwrap();
+        let initial_deadline = worker.pan_tilt_deadline.unwrap();
+
+        worker
+            .execute(Command::PanTiltSpeed {
+                pan_direction: -1,
+                tilt_direction: 0,
+            })
+            .unwrap();
+        assert_eq!(worker.transport.pan_tilt_speed_units, [(-40, 0)]);
+        assert!(worker.pan_tilt_deadline.unwrap() >= initial_deadline);
+
+        worker.pan_tilt_deadline = Some(Instant::now());
+        worker.expire_pan_tilt_lease();
+
+        assert_eq!(worker.transport.pan_tilt_speed_units, [(-40, 0), (0, 0)]);
+        assert_eq!(worker.pan_tilt_direction, (0, 0));
+        assert_eq!(worker.pan_tilt_deadline, None);
     }
 }
