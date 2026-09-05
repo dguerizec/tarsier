@@ -186,7 +186,10 @@ clients and selects Green screen when called.
 The manual zoom slider applies x1-to-x4 changes continuously while coalescing
 obsolete intermediate positions. Embedded UI assets and the health response use
 `Cache-Control: no-store`; an open page detects a new
-daemon instance and reloads itself after a restart.
+daemon instance and reloads itself after a restart. When Tarsier runs under a
+service supervisor, the **Live** status is also a button: it opens a confirmation
+dialog before requesting a graceful daemon restart. Manual foreground runs keep
+the indicator read-only so a restart request cannot become an accidental stop.
 
 The **Video identity** selector switches the complete final stream among
 **Camera**, **Depth map**, **Stylized 3D**, and **LivePortrait**. Neural engines
@@ -303,7 +306,8 @@ The default server binds only to `127.0.0.1:8742`.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/api/v1/health` | Health, version, daemon start time, and uptime |
+| `GET` | `/api/v1/health` | Health, version, daemon start time, uptime, and restart availability |
+| `POST` | `/api/v1/daemon/restart` | Gracefully exit for restart by the active service supervisor |
 | `GET` | `/api/v1/state` | Complete runtime state |
 | `GET` | `/api/v1/config` | Effective configuration |
 | `GET` | `/api/v1/camera/state` | Camera availability and attitude |
@@ -537,7 +541,7 @@ The first vertical slice was validated on 2026-09-05 with an OBSBOT Tiny 2
 - after the repair restart, the real 720p30 pipeline remained healthy for more
   than six minutes on the camera's 480 Mbit/s fallback link, passing 11,000
   frames without another USB event or required restart;
-- all 93 daemon tests, 2 MCP tests, 24 Python tests, JavaScript syntax checks,
+- all 94 daemon tests, 2 MCP tests, 24 Python tests, JavaScript syntax checks,
   formatting, lint, configuration, protocol, and API checks passed.
 
 An extended run changed the camera result: after approximately six minutes of
@@ -594,6 +598,8 @@ run before unattended use.
 - pipeline telemetry reports effective FPS, frame count, last frame, errors,
   and restart count, but not queue pressure or dropped-frame attribution;
 - configuration changes require a restart and runtime state is not persisted;
+- UI restart is offered only when systemd supervision is detected and relies on
+  the unit's restart policy; it is deliberately unavailable for foreground runs;
 - the API has no authentication because it binds to loopback only; remote
   exposure is unsupported;
 - there is no system service, release packaging, multi-camera support, or

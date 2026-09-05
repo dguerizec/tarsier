@@ -13,8 +13,21 @@
         <p class="eyebrow">LOCAL CAMERA CONTROL</p>
         <h1>Tarsier</h1>
       </div>
-      <div id="connection" class="status status-off">Connecting</div>
+      <button id="connection" class="status status-off" type="button" aria-haspopup="dialog" disabled>Connecting</button>
     </header>
+
+    <dialog id="daemon-restart-dialog" aria-labelledby="daemon-restart-title">
+      <form id="daemon-restart-form">
+        <p class="eyebrow">DAEMON CONTROL</p>
+        <h2 id="daemon-restart-title">Restart Tarsier?</h2>
+        <p>The camera feed and controls will be unavailable briefly while the supervised daemon restarts.</p>
+        <p id="daemon-restart-error" class="error" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button id="daemon-restart-cancel" class="secondary" type="button">Cancel</button>
+          <button id="daemon-restart-confirm" type="submit">Restart daemon</button>
+        </div>
+      </form>
+    </dialog>
 
     <main>
       <section class="preview-panel">

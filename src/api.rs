@@ -15,7 +15,7 @@ use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::sync::{Mutex, watch};
+use tokio::sync::{Mutex, oneshot, watch};
 use tower_http::trace::TraceLayer;
 
 use crate::{
@@ -46,7 +46,30 @@ struct ApiState {
     pan_tilt_motion: Arc<Mutex<PanTiltMotion>>,
     face_tracking: Arc<Mutex<FaceTrackingController>>,
     video_output_control: Arc<Mutex<()>>,
+    daemon_restart: Option<DaemonRestart>,
     shutdown: watch::Receiver<bool>,
+}
+
+#[derive(Clone)]
+pub struct DaemonRestart {
+    sender: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+}
+
+impl DaemonRestart {
+    pub fn new(sender: oneshot::Sender<()>) -> Self {
+        Self {
+            sender: Arc::new(Mutex::new(Some(sender))),
+        }
+    }
+
+    async fn request(&self) -> Result<(), &'static str> {
+        let Some(sender) = self.sender.lock().await.take() else {
+            return Err("daemon restart is already in progress");
+        };
+        sender
+            .send(())
+            .map_err(|_| "daemon restart control is unavailable")
+    }
 }
 
 #[cfg(test)]
@@ -57,7 +80,7 @@ pub fn router(
     camera: Option<CameraHandle>,
     shutdown: watch::Receiver<bool>,
 ) -> Router {
-    router_with_pipeline(config, runtime, preview, camera, None, shutdown)
+    router_with_pipeline(config, runtime, preview, camera, None, None, shutdown)
 }
 
 pub fn router_with_pipeline(
@@ -66,6 +89,7 @@ pub fn router_with_pipeline(
     preview: PreviewHub,
     camera: Option<CameraHandle>,
     pipeline: Option<VideoPipelineControl>,
+    daemon_restart: Option<DaemonRestart>,
     shutdown: watch::Receiver<bool>,
 ) -> Router {
     let state = ApiState {
@@ -80,6 +104,7 @@ pub fn router_with_pipeline(
         pan_tilt_motion: Arc::new(Mutex::new(PanTiltMotion::default())),
         face_tracking: Arc::new(Mutex::new(FaceTrackingController::default())),
         video_output_control: Arc::new(Mutex::new(())),
+        daemon_restart,
         shutdown,
     };
     Router::new()
@@ -87,6 +112,7 @@ pub fn router_with_pipeline(
         .route("/assets/app.js", get(app_js))
         .route("/assets/styles.css", get(styles_css))
         .route("/api/v1/health", get(health))
+        .route("/api/v1/daemon/restart", post(restart_daemon))
         .route("/api/v1/state", get(current_state))
         .route("/api/v1/camera/state", get(camera_state))
         .route("/api/v1/camera/power", post(set_camera_power))
@@ -187,8 +213,23 @@ async fn health(State(state): State<ApiState>) -> impl IntoResponse {
             "version": snapshot.version,
             "started_at_ms": snapshot.started_at_ms,
             "uptime_ms": unix_ms().saturating_sub(snapshot.started_at_ms),
+            "restart_available": state.daemon_restart.is_some(),
         })),
     )
+}
+
+async fn restart_daemon(State(state): State<ApiState>) -> Response {
+    let Some(restart) = state.daemon_restart else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "daemon restart requires a supervised service"})),
+        )
+            .into_response();
+    };
+    match restart.request().await {
+        Ok(()) => StatusCode::ACCEPTED.into_response(),
+        Err(error) => (StatusCode::CONFLICT, Json(json!({"error": error}))).into_response(),
+    }
 }
 
 async fn current_state(State(state): State<ApiState>) -> Json<crate::model::RuntimeState> {
@@ -1824,6 +1865,8 @@ mod tests {
         assert!(include_str!("../web/app.js").contains("/api/v1/video/background"));
         assert!(include_str!("../web/index.html").contains("data-output-mode"));
         assert!(include_str!("../web/app.js").contains("/api/v1/video/identity"));
+        assert!(include_str!("../web/index.html").contains("id=\"daemon-restart-dialog\""));
+        assert!(include_str!("../web/app.js").contains("/api/v1/daemon/restart"));
     }
 
     #[tokio::test]
@@ -1849,6 +1892,7 @@ mod tests {
             PreviewHub::new(),
             camera,
             Some(pipeline),
+            None,
             shutdown_rx,
         );
 
@@ -1951,6 +1995,64 @@ mod tests {
         let payload: Value =
             serde_json::from_slice(&to_bytes(response.into_body(), 1024).await.unwrap()).unwrap();
         assert_eq!(payload["started_at_ms"], expected_started_at_ms);
+        assert_eq!(payload["restart_available"], false);
+    }
+
+    #[tokio::test]
+    async fn daemon_restart_requires_supervision_and_signals_the_owner() {
+        let mut config = Config::default();
+        config.perception.enabled = false;
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let unsupported = router(
+            config.clone(),
+            Runtime::new(),
+            PreviewHub::new(),
+            None,
+            shutdown_rx,
+        );
+        let response = unsupported
+            .oneshot(
+                Request::post("/api/v1/daemon/restart")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let (restart_tx, restart_rx) = oneshot::channel();
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let supported = router_with_pipeline(
+            config,
+            Runtime::new(),
+            PreviewHub::new(),
+            None,
+            None,
+            Some(DaemonRestart::new(restart_tx)),
+            shutdown_rx,
+        );
+        let health = supported
+            .clone()
+            .oneshot(Request::get("/api/v1/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let payload: Value =
+            serde_json::from_slice(&to_bytes(health.into_body(), 1024).await.unwrap()).unwrap();
+        assert_eq!(payload["restart_available"], true);
+
+        let response = supported
+            .oneshot(
+                Request::post("/api/v1/daemon/restart")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        tokio::time::timeout(Duration::from_secs(1), restart_rx)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test]

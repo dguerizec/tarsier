@@ -1,5 +1,10 @@
 const $ = (selector) => document.querySelector(selector);
 const connection = $("#connection");
+const daemonRestartDialog = $("#daemon-restart-dialog");
+const daemonRestartForm = $("#daemon-restart-form");
+const daemonRestartCancel = $("#daemon-restart-cancel");
+const daemonRestartConfirm = $("#daemon-restart-confirm");
+const daemonRestartError = $("#daemon-restart-error");
 const events = $("#events");
 const preview = $("#preview");
 const overlay = $("#landmark-overlay");
@@ -23,6 +28,8 @@ let pipelineWasRunning = null;
 let previewRetry = null;
 let daemonStartedAt = null;
 let reloadRequested = false;
+let daemonRestartAvailable = false;
+let daemonRestartPending = false;
 let cameraControlError = null;
 let cameraPowerPending = false;
 let cameraPowerError = null;
@@ -104,6 +111,13 @@ const magnification = (value) => `×${Number(value).toFixed(1)}`;
 const cameraIsPowered = (camera) => camera.powered_on !== false;
 const cameraControlsAvailable = (camera) => camera.available && cameraIsPowered(camera) && !cameraPowerPending;
 
+function syncDaemonRestartControl() {
+  connection.disabled = !socketConnected || !daemonRestartAvailable || daemonRestartPending;
+  connection.title = daemonRestartAvailable
+    ? "Restart the supervised Tarsier daemon"
+    : "Daemon restart is unavailable without service supervision";
+}
+
 function observeDaemon(startedAt) {
   if (!Number.isFinite(startedAt)) return;
   if (daemonStartedAt == null) {
@@ -121,6 +135,8 @@ async function checkDaemonInstance() {
     const response = await fetch("/api/v1/health", { cache: "no-store" });
     if (!response.ok) return;
     const health = await response.json();
+    daemonRestartAvailable = health.restart_available === true;
+    syncDaemonRestartControl();
     observeDaemon(health.started_at_ms);
   } catch {
     // A stopped daemon is expected during upgrades; the WebSocket owns the status display.
@@ -579,6 +595,7 @@ function connect() {
     pipelineWasRunning = false;
     connection.textContent = "Live";
     connection.className = "status status-on";
+    syncDaemonRestartControl();
     refreshPreview();
     pipelineWasRunning = true;
   });
@@ -594,9 +611,48 @@ function connect() {
     pipelineWasRunning = false;
     connection.textContent = "Reconnecting";
     connection.className = "status status-off";
+    syncDaemonRestartControl();
     setTimeout(connect, 1000);
   });
 }
+
+connection.addEventListener("click", () => {
+  if (connection.disabled || daemonRestartPending) return;
+  daemonRestartError.hidden = true;
+  daemonRestartError.textContent = "";
+  daemonRestartDialog.showModal();
+});
+
+daemonRestartCancel.addEventListener("click", () => daemonRestartDialog.close());
+
+daemonRestartForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (daemonRestartPending) return;
+  daemonRestartPending = true;
+  daemonRestartConfirm.disabled = true;
+  daemonRestartCancel.disabled = true;
+  daemonRestartError.hidden = true;
+  daemonRestartConfirm.textContent = "Restarting…";
+  syncDaemonRestartControl();
+  try {
+    const response = await fetch("/api/v1/daemon/restart", { method: "POST" });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.error || `Daemon restart failed (${response.status})`);
+    }
+    daemonRestartDialog.close();
+    connection.textContent = "Restarting";
+    connection.className = "status status-off";
+  } catch (error) {
+    daemonRestartPending = false;
+    daemonRestartConfirm.disabled = false;
+    daemonRestartCancel.disabled = false;
+    daemonRestartConfirm.textContent = "Restart daemon";
+    daemonRestartError.textContent = error instanceof Error ? error.message : String(error);
+    daemonRestartError.hidden = false;
+    syncDaemonRestartControl();
+  }
+});
 
 $("#demo-trigger").addEventListener("click", async () => {
   await fetch("/api/v1/scenarios/open-palm-demo/trigger", { method: "POST" });

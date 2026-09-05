@@ -18,9 +18,17 @@ h3 { margin: 0; font-size: .78rem; }
 h1 { font-size: clamp(2.2rem, 5vw, 4rem); line-height: .9; letter-spacing: -.06em; }
 h2 { font-size: 1rem; letter-spacing: .02em; }
 .eyebrow { color: var(--green); font-size: .7rem; letter-spacing: .18em; margin-bottom: .7rem; }
-.status { border: 1px solid currentColor; border-radius: 999px; padding: .4rem .75rem; font-size: .75rem; }
+.status { border: 1px solid currentColor; border-radius: 999px; padding: .4rem .75rem; background: transparent; font-size: .75rem; }
+.status:not(:disabled):hover { background: #b7ef7a18; }
+.status:disabled { cursor: default; }
 .status-on { color: var(--green); }
 .status-off { color: var(--amber); }
+dialog { width: min(28rem, calc(100vw - 2rem)); padding: 0; border: 1px solid var(--panel-edge); border-radius: 1rem; background: var(--panel); color: #f2f5ef; box-shadow: 0 1.5rem 5rem #000a; }
+dialog::backdrop { background: #030504c7; backdrop-filter: blur(3px); }
+dialog form { display: grid; gap: .85rem; padding: 1.25rem; }
+dialog h2 { font-size: 1.15rem; }
+dialog form > p:not(.eyebrow, .error) { color: var(--muted); font-size: .82rem; line-height: 1.55; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: .55rem; margin-top: .35rem; }
 main { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(17rem, .85fr); gap: 1rem; padding: 1rem clamp(1rem, 4vw, 4rem) 3rem; }
 .panel, .preview-panel { background: color-mix(in srgb, var(--panel) 94%, transparent); border: 1px solid var(--panel-edge); border-radius: 1rem; overflow: hidden; }
 .panel { padding: 1rem; }
