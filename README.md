@@ -238,13 +238,17 @@ only for the selected identity. If initialization or inference takes more than
 500 ms, it outputs black until a fresh matching frame arrives; it never falls
 back to the real camera.
 
-LivePortrait remains an experimental fallback. The supervised worker installs
-both optional dependency groups and verifies the additional local weights at
-startup, but imports PyTorch and loads the neural models only after LivePortrait
-is selected. Download the weights with `models --download --avatar` and
-configure the approved source illustration. Its first compiled inference may
-take roughly one minute on the tested RTX 3070 while PyTorch builds and caches
-GPU kernels.
+LivePortrait remains an experimental fallback. Because it animates one frontal
+source rather than a multi-view identity model, Tarsier attenuates and bounds
+head rotation to the source's reliable near-frontal range. The driving crop and
+transferred head pose are smoothed independently, while global scale and
+translation stay anchored to the source portrait so detector noise cannot make
+the avatar bounce. The supervised worker installs both optional dependency
+groups and verifies the additional local weights at startup, but imports
+PyTorch and loads the neural models only after LivePortrait is selected.
+Download the weights with `models --download --avatar` and configure the
+approved source illustration. Its first compiled inference may take roughly
+one minute on the tested RTX 3070 while PyTorch builds and caches GPU kernels.
 
 Hold the direction buttons below the preview or use the keyboard arrow keys to
 pan and tilt. Arrow keys keep their normal behavior while an input such as the

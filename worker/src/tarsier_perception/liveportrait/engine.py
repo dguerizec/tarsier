@@ -94,6 +94,65 @@ def _clean_state_dict(state_dict: dict[str, Any]) -> OrderedDict[str, Any]:
     return OrderedDict((key.removeprefix("module."), value) for key, value in state_dict.items())
 
 
+class MotionStabilizer:
+    """Low-pass head pose without delaying short-lived mouth expressions."""
+
+    _KEYS = ("pitch", "yaw", "roll")
+
+    def __init__(self, factor: float = 0.35) -> None:
+        if not 0.0 < factor <= 1.0:
+            raise ValueError("motion smoothing factor must be between zero and one")
+        self._factor = factor
+        self._state: dict[str, torch.Tensor] | None = None
+
+    def update(self, motion: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        stabilized = motion.copy()
+        if self._state is None:
+            self._state = {key: motion[key].clone() for key in self._KEYS}
+        else:
+            self._state = {
+                key: current + (motion[key] - current) * self._factor
+                for key, current in self._state.items()
+            }
+        stabilized.update(self._state)
+        return stabilized
+
+
+def limit_relative_pose(
+    motion: dict[str, torch.Tensor],
+    initial: dict[str, torch.Tensor],
+    *,
+    strength: float = 0.35,
+    pitch_limit: float = 8.0,
+    yaw_limit: float = 12.0,
+    roll_limit: float = 8.0,
+) -> dict[str, torch.Tensor]:
+    """Keep a single-source portrait inside the angles it can reproduce faithfully."""
+    limits = {"pitch": pitch_limit, "yaw": yaw_limit, "roll": roll_limit}
+    return {
+        key: initial[key] + ((motion[key] - initial[key]) * strength).clamp(-limit, limit)
+        for key, limit in limits.items()
+    }
+
+
+def transfer_motion(
+    source: dict[str, torch.Tensor],
+    source_rotation: torch.Tensor,
+    driving: dict[str, torch.Tensor],
+    initial: dict[str, torch.Tensor],
+    initial_rotation: torch.Tensor,
+) -> torch.Tensor:
+    pose = limit_relative_pose(driving, initial)
+    driving_rotation = rotation_matrix(pose["pitch"], pose["yaw"], pose["roll"])
+    rotation = (driving_rotation @ initial_rotation.permute(0, 2, 1)) @ source_rotation
+    expression = source["exp"] + (driving["exp"] - initial["exp"])
+    # The live crop already follows the driving face. Reapplying its noisy
+    # scale and translation makes the generated head bounce inside the
+    # otherwise fixed portrait, so keep those global components anchored
+    # to the source and transfer only bounded pose and expression.
+    return source["scale"] * (source["kp"] @ rotation + expression) + source["t"]
+
+
 class ComicAvatarEngine:
     """Minimal LivePortrait inference core for one persistent portrait source."""
 
@@ -156,6 +215,7 @@ class ComicAvatarEngine:
             self._source_features = self._appearance(source_tensor).float()
         self._driving_initial_info: dict[str, torch.Tensor] | None = None
         self._driving_initial_rotation: torch.Tensor | None = None
+        self._motion_stabilizer = MotionStabilizer()
 
     def _load_model(self, model: torch.nn.Module, path: Path) -> torch.nn.Module:
         model.load_state_dict(torch.load(path, map_location="cpu"))
@@ -195,24 +255,24 @@ class ComicAvatarEngine:
 
     def render(self, driving_bgr: np.ndarray) -> np.ndarray:
         driving_rgb = cv2.cvtColor(driving_bgr, cv2.COLOR_BGR2RGB)
-        driving_info = self._keypoint_info(self._prepare(driving_rgb))
-        driving_rotation = rotation_matrix(
-            driving_info["pitch"], driving_info["yaw"], driving_info["roll"]
+        driving_info = self._motion_stabilizer.update(
+            self._keypoint_info(self._prepare(driving_rgb))
         )
         if self._driving_initial_info is None:
             self._driving_initial_info = {key: value.clone() for key, value in driving_info.items()}
-            self._driving_initial_rotation = driving_rotation.clone()
+            self._driving_initial_rotation = rotation_matrix(
+                driving_info["pitch"], driving_info["yaw"], driving_info["roll"]
+            )
         assert self._driving_initial_rotation is not None
 
         initial = self._driving_initial_info
-        rotation = (
-            driving_rotation @ self._driving_initial_rotation.permute(0, 2, 1)
-        ) @ self._source_rotation
-        expression = self._source_info["exp"] + (driving_info["exp"] - initial["exp"])
-        scale = self._source_info["scale"] * (driving_info["scale"] / initial["scale"])
-        translation = self._source_info["t"] + (driving_info["t"] - initial["t"])
-        translation[..., 2].fill_(0)
-        driven = scale * (self._source_info["kp"] @ rotation + expression) + translation
+        driven = transfer_motion(
+            self._source_info,
+            self._source_rotation,
+            driving_info,
+            initial,
+            self._driving_initial_rotation,
+        )
 
         features = torch.cat([self._source_keypoints.reshape(1, -1), driven.reshape(1, -1)], dim=1)
         with torch.inference_mode():
@@ -247,6 +307,7 @@ class ComicAvatarEngine:
         self._source_keypoints = None
         self._driving_initial_info = None
         self._driving_initial_rotation = None
+        self._motion_stabilizer = None
         gc.collect()
         torch.cuda.empty_cache()
 

@@ -8,6 +8,8 @@ import pytest
 
 from tarsier_perception.avatar import (
     AvatarPublisher,
+    FaceCropGeometry,
+    TemporalFaceCrop,
     VideoIdentityClient,
     compose_avatar_frame,
     crop_face_square,
@@ -238,6 +240,28 @@ def test_face_crop_is_square_and_pads_at_frame_edges() -> None:
     cropped = crop_face_square(frame, landmarks, scale=3.0)
     assert cropped.shape[0] == cropped.shape[1]
     assert cropped.shape[2] == 3
+
+
+def test_face_crop_geometry_is_smoothed_without_hiding_deliberate_motion() -> None:
+    crop = TemporalFaceCrop(half_life_ms=100.0)
+    initial = crop.update(FaceCropGeometry(100.0, 80.0, 60.0), 1000)
+    jitter = crop.update(FaceCropGeometry(102.0, 78.0, 62.0), 1100)
+    moved = crop.update(FaceCropGeometry(140.0, 100.0, 80.0), 1200)
+
+    assert initial == FaceCropGeometry(100.0, 80.0, 60.0)
+    assert jitter == FaceCropGeometry(101.0, 79.0, 61.0)
+    assert jitter.center_x < moved.center_x < 140.0
+    assert jitter.center_y < moved.center_y < 100.0
+    assert jitter.size < moved.size < 80.0
+
+
+def test_face_crop_geometry_resets_after_a_tracking_gap() -> None:
+    crop = TemporalFaceCrop(half_life_ms=100.0, reset_after_ms=500)
+    crop.update(FaceCropGeometry(100.0, 80.0, 60.0), 1000)
+
+    reacquired = crop.update(FaceCropGeometry(200.0, 180.0, 120.0), 1500)
+
+    assert reacquired == FaceCropGeometry(200.0, 180.0, 120.0)
 
 
 def test_avatar_composition_returns_full_size_bgrx_frame() -> None:

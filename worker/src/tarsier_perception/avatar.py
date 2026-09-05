@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import queue
 import threading
 import time
@@ -20,17 +21,74 @@ import numpy as np
 LOGGER = logging.getLogger(__name__)
 
 
-def crop_face_square(frame_bgr: np.ndarray, landmarks: list[Any], scale: float = 3.0) -> np.ndarray:
+@dataclass(frozen=True)
+class FaceCropGeometry:
+    center_x: float
+    center_y: float
+    size: float
+
+
+def face_crop_geometry(
+    frame_bgr: np.ndarray,
+    landmarks: list[Any],
+    scale: float = 3.0,
+) -> FaceCropGeometry:
     if not landmarks:
         raise ValueError("face landmarks are required")
     height, width = frame_bgr.shape[:2]
     xs = np.array([point.x * width for point in landmarks], dtype=np.float32)
     ys = np.array([point.y * height for point in landmarks], dtype=np.float32)
-    center_x = float((xs.min() + xs.max()) / 2)
-    center_y = float((ys.min() + ys.max()) / 2)
-    size = max(2, int(np.ceil(max(float(np.ptp(xs)), float(np.ptp(ys))) * scale)))
-    left = int(round(center_x - size / 2))
-    top = int(round(center_y - size / 2))
+    return FaceCropGeometry(
+        center_x=float((xs.min() + xs.max()) / 2),
+        center_y=float((ys.min() + ys.max()) / 2),
+        size=max(2.0, max(float(np.ptp(xs)), float(np.ptp(ys))) * scale),
+    )
+
+
+class TemporalFaceCrop:
+    def __init__(self, half_life_ms: float = 350.0, reset_after_ms: int = 1000) -> None:
+        if half_life_ms <= 0:
+            raise ValueError("face crop half-life must be greater than zero")
+        self._half_life_ms = half_life_ms
+        self._reset_after_ms = reset_after_ms
+        self._geometry: FaceCropGeometry | None = None
+        self._timestamp_ms: int | None = None
+
+    def update(self, target: FaceCropGeometry, timestamp_ms: int) -> FaceCropGeometry:
+        if (
+            self._geometry is None
+            or self._timestamp_ms is None
+            or timestamp_ms <= self._timestamp_ms
+            or timestamp_ms - self._timestamp_ms >= self._reset_after_ms
+        ):
+            self._geometry = target
+        else:
+            elapsed_ms = timestamp_ms - self._timestamp_ms
+            factor = 1.0 - math.exp(-math.log(2.0) * elapsed_ms / self._half_life_ms)
+            current = self._geometry
+            self._geometry = FaceCropGeometry(
+                center_x=current.center_x + (target.center_x - current.center_x) * factor,
+                center_y=current.center_y + (target.center_y - current.center_y) * factor,
+                size=current.size + (target.size - current.size) * factor,
+            )
+        self._timestamp_ms = timestamp_ms
+        return self._geometry
+
+
+def crop_face_square(
+    frame_bgr: np.ndarray,
+    landmarks: list[Any],
+    scale: float = 3.0,
+    *,
+    geometry: FaceCropGeometry | None = None,
+) -> np.ndarray:
+    if not landmarks:
+        raise ValueError("face landmarks are required")
+    geometry = geometry or face_crop_geometry(frame_bgr, landmarks, scale)
+    height, width = frame_bgr.shape[:2]
+    size = max(2, int(round(geometry.size)))
+    left = int(round(geometry.center_x - size / 2))
+    top = int(round(geometry.center_y - size / 2))
     right = left + size
     bottom = top + size
     pad_left = max(0, -left)
@@ -95,6 +153,7 @@ class MediaPipeFaceCropper:
                 min_tracking_confidence=0.5,
             )
         )
+        self._temporal_crop = TemporalFaceCrop()
 
     def crop(self, frame_bgr: np.ndarray, timestamp_ms: int) -> np.ndarray | None:
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
@@ -102,7 +161,12 @@ class MediaPipeFaceCropper:
         result = self._landmarker.detect_for_video(image, timestamp_ms)
         if not result.face_landmarks:
             return None
-        return crop_face_square(frame_bgr, result.face_landmarks[0])
+        landmarks = result.face_landmarks[0]
+        geometry = self._temporal_crop.update(
+            face_crop_geometry(frame_bgr, landmarks),
+            timestamp_ms,
+        )
+        return crop_face_square(frame_bgr, landmarks, geometry=geometry)
 
     def close(self) -> None:
         self._landmarker.close()
