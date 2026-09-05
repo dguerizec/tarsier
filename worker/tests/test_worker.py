@@ -6,8 +6,12 @@ from pathlib import Path
 from tarsier_perception.models import describe_models
 from tarsier_perception.worker import (
     Landmark,
+    PoseConstraintStore,
+    advance_deadline,
     encode_segmentation_mask,
+    expand_pose_constraint,
     normalize_gesture,
+    rate_is_due,
     select_gesture,
     select_landmarks,
 )
@@ -99,8 +103,43 @@ def test_missing_segmentation_is_an_empty_mask() -> None:
     assert encode_segmentation_mask([], 3, 2).tolist() == [[0, 0, 0], [0, 0, 0]]
 
 
+def test_rate_gate_keeps_its_cadence_across_small_frame_jitter() -> None:
+    interval = 0.1
+    deadline = 10.0
+    assert rate_is_due(9.996, deadline, interval)
+    assert not rate_is_due(9.990, deadline, interval)
+    assert abs(advance_deadline(deadline, 10.001, interval) - 10.1) < 1e-9
+    assert abs(advance_deadline(deadline, 10.350, interval) - 10.4) < 1e-9
+
+
+def test_pose_constraint_expands_around_the_detected_person() -> None:
+    import numpy as np
+
+    pose_mask = np.zeros((100, 100), dtype=np.uint8)
+    pose_mask[50, 50] = 255
+    constraint = expand_pose_constraint(pose_mask)
+    assert constraint[50, 50] == 255
+    assert constraint[50, 50 + 32] == 255
+    assert constraint[50, 50 + 33] == 0
+
+
+def test_pose_constraint_fails_closed_until_a_pose_is_available() -> None:
+    import numpy as np
+
+    constraints = PoseConstraintStore()
+    person_mask = np.full((100, 100), 255, dtype=np.uint8)
+    assert np.count_nonzero(constraints.constrain(person_mask)) == 0
+
+    pose_mask = np.zeros((100, 100), dtype=np.uint8)
+    pose_mask[50, 50] = 255
+    constraints.update(pose_mask)
+    constrained = constraints.constrain(person_mask)
+    assert constrained[50, 50] == 255
+    assert constrained[0, 0] == 0
+
+
 def test_missing_models_are_reported_as_unverified(tmp_path: Path) -> None:
     descriptions = describe_models(tmp_path)
-    assert len(descriptions) == 3
+    assert len(descriptions) == 4
     assert all(not model["exists"] for model in descriptions)
     assert all(not model["verified"] for model in descriptions)

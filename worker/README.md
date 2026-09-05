@@ -1,10 +1,13 @@
 # Tarsier perception worker
 
 This project-local Python 3.12 worker reads the daemon's internal MJPEG preview,
-runs the official MediaPipe face and pose landmarkers plus the canned gesture
-recognizer, and publishes versioned observations together with an 8-bit person
-mask to the Rust daemon. The worker reads a raw internal branch; the public V4L2
-loopback remains available for the daemon's final, optionally processed output.
+runs the official MediaPipe face and pose landmarkers, canned gesture
+recognizer, and dedicated selfie segmenter. It publishes versioned observations
+at the configured perception rate and an 8-bit person mask at the independently
+configured mask rate. A widened pose silhouette constrains the fast mask so
+nearby furniture is not mistaken for part of the subject during motion. The
+worker reads a raw internal branch; the public V4L2 loopback remains available
+for the daemon's final, optionally processed output.
 
 The model files are cached outside the repository and checked against pinned
 SHA-256 digests. Set up the worker with:

@@ -161,6 +161,8 @@ fn worker_arguments(config: &PerceptionConfig, daemon_url: &str) -> Vec<String> 
         config.height.to_string(),
         "--fps".into(),
         config.fps.to_string(),
+        "--mask-fps".into(),
+        config.mask_fps.to_string(),
         "--minimum-confidence".into(),
         config.detection_confidence.to_string(),
     ];
@@ -209,6 +211,7 @@ mod tests {
                 .any(|pair| pair == ["--daemon-url", "http://127.0.0.1:8742"])
         );
         assert!(args.windows(2).any(|pair| pair == ["--fps", "10"]));
+        assert!(args.windows(2).any(|pair| pair == ["--mask-fps", "30"]));
         assert!(args.iter().any(|argument| argument == "--locked"));
     }
 

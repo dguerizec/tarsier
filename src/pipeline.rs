@@ -271,7 +271,7 @@ fn pipeline_description(config: &VideoConfig) -> String {
          camera_input. ! queue leaky=downstream max-size-buffers=2 ! videoscale ! videoconvert ! \
          video/x-raw,width={},height={} ! jpegenc quality={} ! \
          appsink name=perception_preview max-buffers=1 drop=true sync=false \
-         camera_input. ! queue leaky=downstream max-size-buffers=2 ! videoconvert ! \
+         camera_input. ! queue name=effect_alignment leaky=downstream max-size-buffers=3 min-threshold-buffers=2 ! videoconvert ! \
          video/x-raw,format=BGRx,width={},height={},framerate={}/1 ! \
          identity name=effect_processor ! tee name=stream \
          stream. ! queue leaky=downstream max-size-buffers=2 ! videoscale ! videoconvert ! \
@@ -549,6 +549,8 @@ mod tests {
         let description = pipeline_description(&config);
         assert!(description.contains("videotestsrc"));
         assert!(description.contains("appsink name=perception_preview"));
+        assert!(description.contains("name=effect_alignment"));
+        assert!(description.contains("min-threshold-buffers=2"));
         assert!(description.contains("identity name=effect_processor"));
         assert!(description.contains("appsink name=preview"));
         assert!(!description.contains("v4l2sink"));

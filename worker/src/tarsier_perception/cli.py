@@ -25,6 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--width", type=int, default=640)
     serve.add_argument("--height", type=int, default=360)
     serve.add_argument("--fps", type=float, default=10.0)
+    serve.add_argument("--mask-fps", type=float, default=30.0)
     serve.add_argument("--minimum-confidence", type=float, default=0.5)
     serve.add_argument("--model-dir", type=Path, default=default_model_dir())
 
@@ -52,6 +53,8 @@ def main() -> None:
         raise SystemExit("--minimum-confidence must be between 0 and 1")
     if args.fps <= 0:
         raise SystemExit("--fps must be greater than zero")
+    if args.mask_fps <= 0:
+        raise SystemExit("--mask-fps must be greater than zero")
     unavailable = [model for model in describe_models(args.model_dir) if not model["verified"]]
     if unavailable:
         raise SystemExit(
@@ -65,6 +68,7 @@ def main() -> None:
             width=args.width,
             height=args.height,
             fps=args.fps,
+            mask_fps=args.mask_fps,
             daemon_url=args.daemon_url,
             model_dir=args.model_dir,
             minimum_confidence=args.minimum_confidence,

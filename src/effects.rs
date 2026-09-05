@@ -8,7 +8,7 @@ use tokio::sync::watch;
 
 use crate::model::unix_ms;
 
-pub const MASK_MAX_AGE_MS: u64 = 750;
+pub const MASK_MAX_AGE_MS: u64 = 200;
 const MAX_MASK_PIXELS: usize = 1920 * 1080;
 
 #[derive(Clone, Debug)]
@@ -48,6 +48,7 @@ impl VideoMask {
 
     fn is_fresh(&self, now_ms: u64) -> bool {
         now_ms.saturating_sub(self.published_at_ms) <= MASK_MAX_AGE_MS
+            && now_ms.saturating_sub(self.captured_at_ms) <= MASK_MAX_AGE_MS
     }
 
     fn sample(&self, x: usize, y: usize, output_width: usize, output_height: usize) -> u8 {
@@ -162,8 +163,8 @@ impl Default for VideoEffects {
 }
 
 fn feather_alpha(probability: u8) -> u8 {
-    const BACKGROUND_LIMIT: u8 = 51;
-    const FOREGROUND_LIMIT: u8 = 204;
+    const BACKGROUND_LIMIT: u8 = 107;
+    const FOREGROUND_LIMIT: u8 = 148;
     match probability {
         ..=BACKGROUND_LIMIT => 0,
         FOREGROUND_LIMIT.. => 255,
@@ -189,7 +190,8 @@ mod tests {
     fn green_screen_keeps_foreground_and_replaces_background() {
         let effects = VideoEffects::new();
         effects.set_green_screen_enabled(true);
-        let mask = VideoMask::new(1, 100, 2, 1, vec![255, 0]).unwrap();
+        let captured_at_ms = unix_ms();
+        let mask = VideoMask::new(1, captured_at_ms, 2, 1, vec![255, 0]).unwrap();
         let published_at_ms = mask.published_at_ms;
         effects.publish_mask(mask);
         let mut frame = [10, 20, 30, 255, 40, 50, 60, 255];
@@ -201,7 +203,8 @@ mod tests {
     #[test]
     fn disabled_effect_passes_through_but_stale_mask_fails_closed() {
         let effects = VideoEffects::new();
-        let mask = VideoMask::new(1, 100, 1, 1, vec![0]).unwrap();
+        let captured_at_ms = unix_ms();
+        let mask = VideoMask::new(1, captured_at_ms, 1, 1, vec![0]).unwrap();
         let published_at_ms = mask.published_at_ms;
         effects.publish_mask(mask);
         let mut frame = [10, 20, 30, 255];

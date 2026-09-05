@@ -32,6 +32,12 @@ MODEL_ASSETS = (
         "pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
         "59929e1d1ee95287735ddd833b19cf4ac46d29bc7afddbbf6753c459690d574a",
     ),
+    ModelAsset(
+        "selfie_segmenter.tflite",
+        "https://storage.googleapis.com/mediapipe-models/image_segmenter/"
+        "selfie_segmenter/float16/1/selfie_segmenter.tflite",
+        "191ac9529ae506ee0beefa6b2c945a172dab9d07d1e802a290a4e4038226658b",
+    ),
 )
 
 

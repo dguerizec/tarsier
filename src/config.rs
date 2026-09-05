@@ -62,6 +62,9 @@ impl Config {
         if self.perception.width == 0 || self.perception.height == 0 || self.perception.fps == 0 {
             bail!("perception width, height, and fps must be greater than zero");
         }
+        if self.perception.mask_fps == 0 {
+            bail!("perception mask_fps must be greater than zero");
+        }
         if self.perception.restart_delay_ms == 0 {
             bail!("perception restart_delay_ms must be greater than zero");
         }
@@ -149,6 +152,7 @@ pub struct VideoConfig {
     pub preview_height: u32,
     pub preview_quality: u32,
     pub loopback_enabled: bool,
+    pub green_screen_enabled: bool,
     pub restart_delay_ms: u64,
 }
 
@@ -165,6 +169,7 @@ impl Default for VideoConfig {
             preview_height: 360,
             preview_quality: 75,
             loopback_enabled: true,
+            green_screen_enabled: false,
             restart_delay_ms: 1000,
         }
     }
@@ -226,6 +231,7 @@ pub struct PerceptionConfig {
     pub width: u32,
     pub height: u32,
     pub fps: u32,
+    pub mask_fps: u32,
     pub minimum_confidence: f32,
     pub detection_confidence: f32,
     pub dwell_ms: u64,
@@ -247,6 +253,7 @@ impl Default for PerceptionConfig {
             width: 640,
             height: 360,
             fps: 10,
+            mask_fps: 30,
             minimum_confidence: 0.60,
             detection_confidence: 0.5,
             dwell_ms: 800,
@@ -348,6 +355,9 @@ mod tests {
     fn rejects_zero_perception_rate() {
         let mut config = Config::default();
         config.perception.fps = 0;
+        assert!(config.validate().is_err());
+        config.perception.fps = 10;
+        config.perception.mask_fps = 0;
         assert!(config.validate().is_err());
     }
 

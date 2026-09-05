@@ -79,6 +79,14 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
     config.validate()?;
     let runtime = Runtime::new();
     let preview = PreviewHub::new();
+    preview
+        .effects()
+        .set_green_screen_enabled(config.video.green_screen_enabled);
+    runtime
+        .update(|state| {
+            state.video_effects.green_screen_enabled = config.video.green_screen_enabled;
+        })
+        .await;
     let _pipeline = VideoPipeline::start(config.video.clone(), runtime.clone(), preview.clone())
         .await
         .context("failed to start video pipeline")?;
