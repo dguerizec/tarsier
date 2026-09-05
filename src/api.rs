@@ -64,6 +64,7 @@ pub fn router(
         .route("/api/v1/state", get(current_state))
         .route("/api/v1/camera/state", get(camera_state))
         .route("/api/v1/camera/move", post(move_camera))
+        .route("/api/v1/camera/nudge/{direction}", post(nudge_camera))
         .route("/api/v1/camera/zoom", post(set_zoom))
         .route("/api/v1/camera/tracking", post(set_tracking))
         .route(
@@ -173,6 +174,35 @@ struct ZoomRequest {
     magnification: f32,
 }
 
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum PanTiltDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+impl PanTiltDirection {
+    fn vector(self) -> (i8, i8) {
+        match self {
+            Self::Left => (-1, 0),
+            Self::Right => (1, 0),
+            Self::Up => (0, 1),
+            Self::Down => (0, -1),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Left => "left",
+            Self::Right => "right",
+            Self::Up => "up",
+            Self::Down => "down",
+        }
+    }
+}
+
 async fn move_camera(
     State(state): State<ApiState>,
     Json(request): Json<MoveCameraRequest>,
@@ -190,6 +220,38 @@ async fn move_camera(
                 &state,
                 "camera.move",
                 json!({"yaw": request.yaw, "pitch": request.pitch, "roll": request.roll}),
+            )
+            .await;
+            StatusCode::ACCEPTED.into_response()
+        }
+        Err(error) => command_error(error),
+    }
+}
+
+async fn nudge_camera(
+    State(state): State<ApiState>,
+    axum::extract::Path(direction): axum::extract::Path<PanTiltDirection>,
+) -> Response {
+    let Some(camera) = state.camera.clone() else {
+        return camera_unavailable();
+    };
+    let (pan_direction, tilt_direction) = direction.vector();
+    match camera.nudge(pan_direction, tilt_direction).await {
+        Ok(()) => {
+            state
+                .runtime
+                .update(|runtime| {
+                    runtime.camera.yaw_degrees = None;
+                    runtime.camera.pitch_degrees = None;
+                    runtime.camera.roll_degrees = None;
+                    runtime.camera.attitude_source = CameraAttitudeSource::Unavailable;
+                    runtime.camera.sample_at_ms = None;
+                })
+                .await;
+            record_camera_command(
+                &state,
+                "camera.nudge",
+                json!({"direction": direction.as_str()}),
             )
             .await;
             StatusCode::ACCEPTED.into_response()
@@ -683,6 +745,14 @@ mod tests {
     use super::*;
     use crate::{camera, config::CameraAdapter};
 
+    #[test]
+    fn pan_tilt_directions_match_tiny_2_speed_signs() {
+        assert_eq!(PanTiltDirection::Left.vector(), (-1, 0));
+        assert_eq!(PanTiltDirection::Right.vector(), (1, 0));
+        assert_eq!(PanTiltDirection::Up.vector(), (0, 1));
+        assert_eq!(PanTiltDirection::Down.vector(), (0, -1));
+    }
+
     #[tokio::test]
     async fn embedded_ui_assets_are_not_cached() {
         let mut config = Config::default();
@@ -858,6 +928,45 @@ mod tests {
         let events = runtime.recent_events().await;
         assert_eq!(events[0].kind, "camera.zoom");
         assert!((events[0].data["magnification"].as_f64().unwrap() - 3.4).abs() < 1e-6);
+    }
+
+    #[tokio::test]
+    async fn pan_tilt_nudge_uses_the_camera_owner_and_clears_stale_attitude() {
+        let mut config = Config::default();
+        config.camera.adapter = CameraAdapter::Mock;
+        config.perception.enabled = false;
+        let runtime = Runtime::new();
+        let camera = camera::start(config.camera.clone(), runtime.clone())
+            .await
+            .unwrap();
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = router(
+            config,
+            runtime.clone(),
+            PreviewHub::new(),
+            camera,
+            shutdown_rx,
+        );
+
+        let response = app
+            .oneshot(
+                Request::post("/api/v1/camera/nudge/left")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let state = runtime.state().await;
+        assert_eq!(state.camera.yaw_degrees, None);
+        assert_eq!(
+            state.camera.attitude_source,
+            CameraAttitudeSource::Unavailable
+        );
+        let events = runtime.recent_events().await;
+        assert_eq!(events[0].kind, "camera.nudge");
+        assert_eq!(events[0].data["direction"], "left");
     }
 
     #[tokio::test]

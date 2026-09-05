@@ -9,6 +9,9 @@ use nix::{errno::Errno, libc};
 const UVC_SET_CUR: u8 = 0x01;
 const UVC_GET_CUR: u8 = 0x81;
 const V4L2_CID_ZOOM_ABSOLUTE: u32 = 0x009a_090d;
+const V4L2_CID_PAN_SPEED: u32 = 0x009a_0920;
+const V4L2_CID_TILT_SPEED: u32 = 0x009a_0921;
+const V4L2_CTRL_CLASS_CAMERA: u32 = 0x009a_0000;
 const V4L2_CTRL_FLAG_DISABLED: u32 = 0x0000_0001;
 
 #[repr(C)]
@@ -41,9 +44,34 @@ struct V4l2QueryControl {
     reserved: [u32; 2],
 }
 
+#[repr(C)]
+union V4l2ExtControlValue {
+    value: i32,
+    value64: i64,
+}
+
+#[repr(C, packed)]
+struct V4l2ExtControl {
+    id: u32,
+    size: u32,
+    reserved2: [u32; 1],
+    value: V4l2ExtControlValue,
+}
+
+#[repr(C)]
+struct V4l2ExtControls {
+    which: u32,
+    count: u32,
+    error_idx: u32,
+    request_fd: i32,
+    reserved: [u32; 1],
+    controls: *mut V4l2ExtControl,
+}
+
 nix::ioctl_readwrite!(v4l2_query_control, b'V', 36, V4l2QueryControl);
 nix::ioctl_readwrite!(v4l2_get_control, b'V', 27, V4l2Control);
 nix::ioctl_readwrite!(v4l2_set_control, b'V', 28, V4l2Control);
+nix::ioctl_readwrite!(v4l2_set_ext_controls, b'V', 72, V4l2ExtControls);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ZoomControl {
@@ -51,6 +79,12 @@ pub struct ZoomControl {
     pub maximum: i32,
     pub step: i32,
     pub value: i32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PanTiltSpeedControls {
+    pub pan: ZoomControl,
+    pub tilt: ZoomControl,
 }
 
 pub trait XuTransport: Send {
@@ -61,6 +95,12 @@ pub trait XuTransport: Send {
     }
     fn set_zoom_units(&mut self, _units: i32) -> Result<()> {
         bail!("absolute zoom is not supported by this camera transport")
+    }
+    fn pan_tilt_speed_controls(&mut self) -> Result<PanTiltSpeedControls> {
+        bail!("pan and tilt speed are not supported by this camera transport")
+    }
+    fn set_pan_tilt_speed_units(&mut self, _pan: i32, _tilt: i32) -> Result<()> {
+        bail!("pan and tilt speed are not supported by this camera transport")
     }
 }
 
@@ -121,9 +161,9 @@ impl LinuxUvcTransport {
         }
     }
 
-    fn raw_zoom_control(&self) -> std::result::Result<ZoomControl, Errno> {
+    fn raw_standard_control(&self, id: u32) -> std::result::Result<ZoomControl, Errno> {
         let mut query = V4l2QueryControl {
-            id: V4L2_CID_ZOOM_ABSOLUTE,
+            id,
             kind: 0,
             name: [0; 32],
             minimum: 0,
@@ -139,10 +179,7 @@ impl LinuxUvcTransport {
             return Err(Errno::ENOTTY);
         }
 
-        let mut control = V4l2Control {
-            id: V4L2_CID_ZOOM_ABSOLUTE,
-            value: 0,
-        };
+        let mut control = V4l2Control { id, value: 0 };
         // SAFETY: control is a correctly sized writable v4l2_control value.
         unsafe { v4l2_get_control(self.file.as_raw_fd(), &mut control) }?;
         Ok(ZoomControl {
@@ -150,6 +187,17 @@ impl LinuxUvcTransport {
             maximum: query.maximum,
             step: query.step,
             value: control.value,
+        })
+    }
+
+    fn raw_zoom_control(&self) -> std::result::Result<ZoomControl, Errno> {
+        self.raw_standard_control(V4L2_CID_ZOOM_ABSOLUTE)
+    }
+
+    fn raw_pan_tilt_speed_controls(&self) -> std::result::Result<PanTiltSpeedControls, Errno> {
+        Ok(PanTiltSpeedControls {
+            pan: self.raw_standard_control(V4L2_CID_PAN_SPEED)?,
+            tilt: self.raw_standard_control(V4L2_CID_TILT_SPEED)?,
         })
     }
 
@@ -190,6 +238,63 @@ impl LinuxUvcTransport {
             Err(error) => Err(error).context("V4L2 absolute zoom write failed"),
         }
     }
+
+    fn pan_tilt_speed_controls(&mut self) -> Result<PanTiltSpeedControls> {
+        match self.raw_pan_tilt_speed_controls() {
+            Ok(controls) => Ok(controls),
+            Err(error) if is_disconnected(error) => {
+                self.reopen().with_context(|| {
+                    format!("failed to reopen camera control device {}", self.path)
+                })?;
+                self.raw_pan_tilt_speed_controls()
+                    .context("V4L2 pan/tilt speed query failed after reopening")
+            }
+            Err(error) => Err(error).context("V4L2 pan/tilt speed query failed"),
+        }
+    }
+
+    fn raw_set_pan_tilt_speed_units(&self, pan: i32, tilt: i32) -> std::result::Result<(), Errno> {
+        let mut controls = [
+            V4l2ExtControl {
+                id: V4L2_CID_PAN_SPEED,
+                size: 0,
+                reserved2: [0; 1],
+                value: V4l2ExtControlValue { value: pan },
+            },
+            V4l2ExtControl {
+                id: V4L2_CID_TILT_SPEED,
+                size: 0,
+                reserved2: [0; 1],
+                value: V4l2ExtControlValue { value: tilt },
+            },
+        ];
+        let mut request = V4l2ExtControls {
+            which: V4L2_CTRL_CLASS_CAMERA,
+            count: controls.len() as u32,
+            error_idx: 0,
+            request_fd: 0,
+            reserved: [0; 1],
+            controls: controls.as_mut_ptr(),
+        };
+        // SAFETY: request and its control array match the V4L2 extended-control ABI
+        // and remain live and writable for the duration of the ioctl.
+        unsafe { v4l2_set_ext_controls(self.file.as_raw_fd(), &mut request) }?;
+        Ok(())
+    }
+
+    fn set_pan_tilt_speed_units(&mut self, pan: i32, tilt: i32) -> Result<()> {
+        match self.raw_set_pan_tilt_speed_units(pan, tilt) {
+            Ok(()) => Ok(()),
+            Err(error) if is_disconnected(error) => {
+                self.reopen().with_context(|| {
+                    format!("failed to reopen camera control device {}", self.path)
+                })?;
+                self.raw_set_pan_tilt_speed_units(pan, tilt)
+                    .context("V4L2 pan/tilt speed write failed after reopening")
+            }
+            Err(error) => Err(error).context("V4L2 pan/tilt speed write failed"),
+        }
+    }
 }
 
 fn open_device(path: &str) -> Result<File> {
@@ -221,6 +326,14 @@ impl XuTransport for LinuxUvcTransport {
     fn set_zoom_units(&mut self, units: i32) -> Result<()> {
         LinuxUvcTransport::set_zoom_units(self, units)
     }
+
+    fn pan_tilt_speed_controls(&mut self) -> Result<PanTiltSpeedControls> {
+        LinuxUvcTransport::pan_tilt_speed_controls(self)
+    }
+
+    fn set_pan_tilt_speed_units(&mut self, pan: i32, tilt: i32) -> Result<()> {
+        LinuxUvcTransport::set_pan_tilt_speed_units(self, pan, tilt)
+    }
 }
 
 #[cfg(test)]
@@ -240,5 +353,7 @@ mod tests {
     fn v4l2_control_structures_match_the_linux_abi() {
         assert_eq!(std::mem::size_of::<V4l2Control>(), 8);
         assert_eq!(std::mem::size_of::<V4l2QueryControl>(), 68);
+        assert_eq!(std::mem::size_of::<V4l2ExtControl>(), 20);
+        assert_eq!(std::mem::size_of::<V4l2ExtControls>(), 32);
     }
 }

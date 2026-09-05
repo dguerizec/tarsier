@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::Serialize;
 use tokio::sync::oneshot;
 
@@ -20,6 +20,8 @@ use protocol::{FRAME_SIZE, GIM_GET_STATE, TRACKING_SELECTOR, VENDOR_SELECTOR};
 
 const COMMAND_QUEUE_CAPACITY: usize = 32;
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(1);
+const NUDGE_DURATION: Duration = Duration::from_millis(120);
+const NUDGE_SPEED_FRACTION: f64 = 0.25;
 
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct GimbalAngles {
@@ -46,6 +48,10 @@ enum Command {
     },
     Zoom {
         magnification: f32,
+    },
+    Nudge {
+        pan_direction: i8,
+        tilt_direction: i8,
     },
 }
 
@@ -103,6 +109,21 @@ impl CameraHandle {
         self.request(Command::Zoom { magnification })
             .await
             .map(|_| ())
+    }
+
+    pub async fn nudge(&self, pan_direction: i8, tilt_direction: i8) -> Result<()> {
+        if !(-1..=1).contains(&pan_direction)
+            || !(-1..=1).contains(&tilt_direction)
+            || (pan_direction == 0) == (tilt_direction == 0)
+        {
+            bail!("camera nudge must select exactly one pan or tilt direction");
+        }
+        self.request(Command::Nudge {
+            pan_direction,
+            tilt_direction,
+        })
+        .await
+        .map(|_| ())
     }
 
     async fn query_state(&self) -> Result<GimbalAngles> {
@@ -265,7 +286,26 @@ impl<T: XuTransport> Worker<T> {
                 self.last_io = Some(Instant::now());
                 Ok(None)
             }
+            Command::Nudge {
+                pan_direction,
+                tilt_direction,
+            } => self.nudge(pan_direction, tilt_direction).map(|()| None),
         }
+    }
+
+    fn nudge(&mut self, pan_direction: i8, tilt_direction: i8) -> Result<()> {
+        self.pace();
+        let controls = self.transport.pan_tilt_speed_controls()?;
+        let pan = speed_units(controls.pan, pan_direction)?;
+        let tilt = speed_units(controls.tilt, tilt_direction)?;
+        self.transport.set_pan_tilt_speed_units(pan, tilt)?;
+        self.last_io = Some(Instant::now());
+
+        std::thread::sleep(NUDGE_DURATION);
+        self.pace();
+        let stopped = self.transport.set_pan_tilt_speed_units(0, 0);
+        self.last_io = Some(Instant::now());
+        stopped.context("failed to stop pan/tilt after a camera nudge")
     }
 
     fn wake(&mut self) -> Result<()> {
@@ -360,6 +400,7 @@ fn spawn_mock(config: &CameraConfig) -> CameraHandle {
                     Command::Tracking { .. } => Ok(None),
                     Command::BuiltInGesture { .. } => Ok(None),
                     Command::Zoom { .. } => Ok(None),
+                    Command::Nudge { .. } => Ok(None),
                 };
                 let _ = request.response.send(result);
             }
@@ -394,6 +435,35 @@ fn validate_zoom_control(control: ZoomControl) -> Result<()> {
         bail!("camera absolute zoom range is invalid");
     }
     Ok(())
+}
+
+fn speed_units(control: ZoomControl, direction: i8) -> Result<i32> {
+    if control.minimum >= 0
+        || control.maximum <= 0
+        || control.step <= 0
+        || !(-1..=1).contains(&direction)
+    {
+        bail!("camera pan/tilt speed range is invalid");
+    }
+    if direction == 0 {
+        return Ok(0);
+    }
+
+    let limit = if direction > 0 {
+        control.maximum
+    } else {
+        control.minimum
+    };
+    let requested = f64::from(limit) * NUDGE_SPEED_FRACTION;
+    let step = f64::from(control.step);
+    let snapped = (requested / step).round() * step;
+    let minimum_magnitude = control.step * i32::from(direction);
+    let units = if snapped == 0.0 {
+        minimum_magnitude
+    } else {
+        snapped as i32
+    };
+    Ok(units.clamp(control.minimum, control.maximum))
 }
 
 fn spawn_polling(handle: CameraHandle, interval_ms: u64, runtime: Runtime) {
@@ -452,6 +522,7 @@ mod tests {
     struct RecordingTransport {
         writes: Vec<(u8, [u8; FRAME_SIZE])>,
         zoom_units: Vec<i32>,
+        pan_tilt_speed_units: Vec<(i32, i32)>,
     }
 
     impl XuTransport for RecordingTransport {
@@ -475,6 +546,28 @@ mod tests {
 
         fn set_zoom_units(&mut self, units: i32) -> Result<()> {
             self.zoom_units.push(units);
+            Ok(())
+        }
+
+        fn pan_tilt_speed_controls(&mut self) -> Result<linux_uvc::PanTiltSpeedControls> {
+            Ok(linux_uvc::PanTiltSpeedControls {
+                pan: ZoomControl {
+                    minimum: -160,
+                    maximum: 160,
+                    step: 1,
+                    value: 0,
+                },
+                tilt: ZoomControl {
+                    minimum: -120,
+                    maximum: 120,
+                    step: 1,
+                    value: 0,
+                },
+            })
+        }
+
+        fn set_pan_tilt_speed_units(&mut self, pan: i32, tilt: i32) -> Result<()> {
+            self.pan_tilt_speed_units.push((pan, tilt));
             Ok(())
         }
     }
@@ -589,5 +682,20 @@ mod tests {
 
         assert!(worker.transport.writes.is_empty());
         assert_eq!(worker.transport.zoom_units, [50]);
+    }
+
+    #[test]
+    fn nudge_uses_a_bounded_speed_pulse_and_stops() {
+        let (_tx, rx) = sync_channel(1);
+        let mut worker = Worker::new(RecordingTransport::default(), rx, Duration::ZERO);
+
+        worker
+            .execute(Command::Nudge {
+                pan_direction: 1,
+                tilt_direction: 0,
+            })
+            .unwrap();
+
+        assert_eq!(worker.transport.pan_tilt_speed_units, [(40, 0), (0, 0)]);
     }
 }
