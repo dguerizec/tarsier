@@ -44,6 +44,11 @@ mischievous personality without tying its core to one camera vendor.
   face mesh disappears, and switches exclusively with the camera's built-in
   tracking; optional auto zoom calibrates the current face size, then adjusts
   the x1-to-x4 zoom conservatively to preserve that framing;
+- optional Tarsier hands tracking slowly frames up to two detected hands and
+  adjusts zoom only while both remain visible. If one hand disappears, it
+  immediately follows the remaining hand with pan/tilt while freezing zoom; a
+  rapidly moving remaining hand or loss of both hands stops camera motion
+  instead of chasing them out of frame;
 - a supervised Python 3.12 worker performs local MediaPipe face and body-pose
   landmarking and canned gesture recognition for up to two hands at a bounded
   observation rate, while a dedicated selfie segmenter publishes person masks
@@ -76,7 +81,7 @@ mischievous personality without tying its core to one camera vendor.
   cooldown stabilization before becoming semantic events;
 - a responsive local web UI shows the preview, telemetry, perception state,
   presets, scenarios, and recent events, with optional face, body, and two-hand
-  skeleton overlays, physical camera power, face tracking, and a direction pad
+  skeleton overlays, physical camera power, face or hands tracking, and a direction pad
   with page-level arrow-key control; manual movement disables whichever
   tracking mode owns the gimbal, and the UI reloads its embedded assets after a
   daemon upgrade and reconnects the MJPEG preview after either a pipeline or
@@ -213,7 +218,7 @@ before requesting a graceful daemon restart. Manual foreground runs keep the
 indicator read-only so a restart request cannot become an accidental stop.
 
 Tarsier atomically persists the selected video identity, background switch and
-effect, Face tracking preference, and dependent Auto zoom preference in
+effect, exclusive Face or Hands tracking preference, and dependent Auto zoom preference in
 `$XDG_STATE_HOME/tarsier/user-settings.json`, or
 `~/.local/state/tarsier/user-settings.json` when `XDG_STATE_HOME` is unset.
 `TARSIER_USER_SETTINGS_PATH` can override the exact file path. The saved video
@@ -281,6 +286,15 @@ steps, abandons it immediately when the observed size requires the opposite
 direction, and briefly waits for the image to settle before reassessing. It
 reports when the x1 or x4 bound prevents preserving the calibrated size.
 Disabling Face tracking also disables Auto zoom.
+
+The separate **Hands tracking** control is exclusive with Face tracking and the
+camera's built-in tracking. With two hands visible, it slowly centers their
+combined bounds and preserves their calibrated on-screen span with conservative,
+rate-limited zoom. As soon as only one hand remains, zoom freezes and pan/tilt
+follows that hand immediately. Fast hand motion freezes all camera movement so a
+deliberately withdrawn hand is not chased; losing both hands also stops the
+gimbal. Manual movement, recentering, and preset recall stop Hands tracking in
+the same way as the other tracking modes.
 
 ```sh
 cargo run -- status
@@ -367,6 +381,7 @@ The default server binds only to `127.0.0.1:8742`.
 | `POST` | `/api/v1/camera/hdr` | Enable or disable HDR/WDR |
 | `POST` | `/api/v1/camera/tracking` | Enable or disable built-in tracking |
 | `POST` | `/api/v1/camera/face-tracking` | Enable or disable Tarsier face tracking |
+| `POST` | `/api/v1/camera/hands-tracking` | Enable or disable slow two-hand framing with one-hand zoom freeze |
 | `GET`, `POST` | `/api/v1/video/identity` | Read or select `camera`, `depth-map`, `stylized-3d`, or `liveportrait` |
 | `POST` | `/api/v1/video/output-mode` | Compatibility selector for the underlying output mode |
 | `POST` | `/api/v1/video/background` | Enable one final-output background effect with `{"enabled": bool, "effect": string}`; accepted effects are `green-screen`, `blur`, and `pixel-party` |
@@ -646,6 +661,9 @@ run before unattended use.
 - Tarsier face-tracking direction, mutual exclusion, dead-zone hysteresis, and
   low-speed diagonal commands have automated coverage, but its physical
   framing thresholds still need live tuning across distances and lighting;
+- Hands tracking has deterministic coverage for two-hand framing, immediate
+  one-hand pan/tilt with frozen zoom, and rapid-motion hold, but its speed and
+  framing thresholds still need live tuning with the physical camera;
 - background-effect routing, privacy fallback, Green screen synthetic pans,
   live Blur output, and a short physical motion sequence have runtime or visual
   coverage; Pixel Party has focused bundled-scene coverage but still needs

@@ -3,6 +3,7 @@ mod camera;
 mod config;
 mod effects;
 mod face_tracking;
+mod hands_tracking;
 mod model;
 mod perception;
 mod pipeline;
@@ -112,36 +113,44 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
     let camera = camera::start(config.camera.clone(), runtime.clone())
         .await
         .context("failed to start camera adapter")?;
-    let face_tracking_enabled = if user_settings.face_tracking_enabled {
+    let local_tracking_enabled =
+        user_settings.face_tracking_enabled || user_settings.hands_tracking_enabled;
+    if local_tracking_enabled {
         let camera = camera
             .as_ref()
-            .context("cannot restore face tracking without a camera adapter")?;
+            .context("cannot restore local tracking without a camera adapter")?;
         camera
             .set_tracking(false)
             .await
-            .context("failed to disable built-in tracking while restoring face tracking")?;
+            .context("failed to disable built-in tracking while restoring local tracking")?;
         camera
             .set_face_tracking_speed(0, 0, 0.0)
             .await
-            .context("failed to initialize restored face tracking")?;
+            .context("failed to initialize restored local tracking")?;
         runtime
             .update(|state| {
                 state.camera.tracking = Some(false);
-                state.camera.face_tracking = model::FaceTrackingState {
-                    enabled: true,
-                    auto_zoom: model::AutoZoomState {
-                        enabled: user_settings.auto_zoom_enabled,
+                if user_settings.face_tracking_enabled {
+                    state.camera.face_tracking = model::FaceTrackingState {
+                        enabled: true,
+                        auto_zoom: model::AutoZoomState {
+                            enabled: user_settings.auto_zoom_enabled,
+                            zoom_magnification: camera.controlled_zoom_magnification(),
+                            ..model::AutoZoomState::default()
+                        },
+                        ..model::FaceTrackingState::default()
+                    };
+                } else {
+                    state.camera.hands_tracking = model::HandsTrackingState {
+                        enabled: true,
+                        zoom_frozen: true,
                         zoom_magnification: camera.controlled_zoom_magnification(),
-                        ..model::AutoZoomState::default()
-                    },
-                    ..model::FaceTrackingState::default()
-                };
+                        ..model::HandsTrackingState::default()
+                    };
+                }
             })
             .await;
-        true
-    } else {
-        false
-    };
+    }
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let (daemon_restart, restart_rx) = if std::env::var_os("INVOCATION_ID").is_some() {
         let (restart_tx, restart_rx) = tokio::sync::oneshot::channel();
@@ -158,8 +167,10 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
             pipeline: Some(pipeline_control),
             daemon_restart,
             user_settings: Some(settings_store),
-            face_tracking_enabled,
-            auto_zoom_enabled: face_tracking_enabled && user_settings.auto_zoom_enabled,
+            face_tracking_enabled: user_settings.face_tracking_enabled,
+            auto_zoom_enabled: user_settings.face_tracking_enabled
+                && user_settings.auto_zoom_enabled,
+            hands_tracking_enabled: user_settings.hands_tracking_enabled,
         },
         shutdown_rx,
     );

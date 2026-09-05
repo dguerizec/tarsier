@@ -117,6 +117,7 @@ pub struct CameraState {
     pub tracking_sample_at_ms: Option<u64>,
     pub tracking_error: Option<String>,
     pub face_tracking: FaceTrackingState,
+    pub hands_tracking: HandsTrackingState,
     pub zoom_magnification: Option<f32>,
     pub zoom_sample_at_ms: Option<u64>,
     pub zoom_error: Option<String>,
@@ -269,6 +270,26 @@ pub struct AutoZoomState {
     pub face_size: Option<f32>,
     pub at_limit: bool,
     pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct HandsTrackingState {
+    pub enabled: bool,
+    pub active: bool,
+    pub hands_visible: u8,
+    pub rapid_motion: bool,
+    pub zoom_frozen: bool,
+    pub target_x: Option<f32>,
+    pub target_y: Option<f32>,
+    #[serde(default)]
+    pub speed_fraction: f32,
+    pub calibrated: bool,
+    pub zoom_magnification: Option<f32>,
+    pub target_span: Option<f32>,
+    pub hand_span: Option<f32>,
+    pub at_limit: bool,
+    pub error: Option<String>,
+    pub zoom_error: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]

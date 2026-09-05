@@ -28,6 +28,8 @@ pub struct UserSettings {
     pub face_tracking_enabled: bool,
     #[serde(default)]
     pub auto_zoom_enabled: bool,
+    #[serde(default)]
+    pub hands_tracking_enabled: bool,
 }
 
 impl UserSettings {
@@ -39,6 +41,7 @@ impl UserSettings {
             background_effect: config.video.background_effect,
             face_tracking_enabled: false,
             auto_zoom_enabled: false,
+            hands_tracking_enabled: false,
         }
     }
 
@@ -67,6 +70,9 @@ impl UserSettings {
         }
         if self.auto_zoom_enabled && !self.face_tracking_enabled {
             bail!("auto zoom cannot be restored without face tracking");
+        }
+        if self.face_tracking_enabled && self.hands_tracking_enabled {
+            bail!("face tracking and hands tracking cannot be restored together");
         }
         Ok(self)
     }
@@ -134,6 +140,9 @@ impl UserSettingsStore {
     pub async fn set_face_tracking(&self, enabled: bool) -> Result<()> {
         self.replace(|settings| {
             settings.face_tracking_enabled = enabled;
+            if enabled {
+                settings.hands_tracking_enabled = false;
+            }
             if !enabled {
                 settings.auto_zoom_enabled = false;
             }
@@ -144,6 +153,17 @@ impl UserSettingsStore {
     pub async fn set_auto_zoom(&self, enabled: bool) -> Result<()> {
         self.replace(|settings| settings.auto_zoom_enabled = enabled)
             .await
+    }
+
+    pub async fn set_hands_tracking(&self, enabled: bool) -> Result<()> {
+        self.replace(|settings| {
+            settings.hands_tracking_enabled = enabled;
+            if enabled {
+                settings.face_tracking_enabled = false;
+                settings.auto_zoom_enabled = false;
+            }
+        })
+        .await
     }
 
     async fn replace(&self, update: impl FnOnce(&mut UserSettings)) -> Result<()> {
@@ -350,6 +370,33 @@ mod tests {
             .unwrap();
         assert!(!restored.face_tracking_enabled);
         assert!(!restored.auto_zoom_enabled);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn local_tracking_modes_are_persisted_exclusively() {
+        let path = test_path("exclusive-local-tracking");
+        let fallback = UserSettings::from_config(&Config::default());
+        let (store, _) = UserSettingsStore::load(path.clone(), fallback)
+            .await
+            .unwrap();
+        store.set_face_tracking(true).await.unwrap();
+        store.set_auto_zoom(true).await.unwrap();
+
+        store.set_hands_tracking(true).await.unwrap();
+        let (_, hands_restored) = UserSettingsStore::load(path.clone(), fallback)
+            .await
+            .unwrap();
+        assert!(hands_restored.hands_tracking_enabled);
+        assert!(!hands_restored.face_tracking_enabled);
+        assert!(!hands_restored.auto_zoom_enabled);
+
+        store.set_face_tracking(true).await.unwrap();
+        let (_, face_restored) = UserSettingsStore::load(path.clone(), fallback)
+            .await
+            .unwrap();
+        assert!(face_restored.face_tracking_enabled);
+        assert!(!face_restored.hands_tracking_enabled);
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 }

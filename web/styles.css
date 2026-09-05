@@ -49,8 +49,8 @@ main { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(17rem, .85
 .pan-tilt-copy strong { font-size: .8rem; }
 .pan-tilt-copy span { color: var(--muted); font-size: .7rem; }
 .pan-tilt-controls { display: flex; align-items: center; gap: .75rem; }
-.face-tracking-controls { display: grid; gap: .45rem; min-width: 7.5rem; }
-#face-tracking-toggle { min-width: 7.5rem; }
+.tracking-mode-controls { display: grid; gap: .45rem; min-width: 8.5rem; }
+#face-tracking-toggle, #hands-tracking-toggle { min-width: 8.5rem; }
 .tracking-auto-zoom-switch { justify-content: space-between; padding: 0 .2rem; color: #f2f5ef; }
 .tracking-auto-zoom-switch strong { font-size: .72rem; white-space: nowrap; }
 .direction-pad { display: grid; grid-template: repeat(3, 2rem) / repeat(3, 2rem); gap: .25rem; }

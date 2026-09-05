@@ -23,10 +23,11 @@ use crate::{
     config::{CameraPresetConfig, Config, ScenarioConfig},
     effects::{AvatarFrame, DepthFrame, MAX_AVATAR_FRAME_BYTES, MAX_DEPTH_FRAME_BYTES, VideoMask},
     face_tracking::{FaceTrackingController, MANUAL_ZOOM_SETTLE_MS},
+    hands_tracking::HandsTrackingController,
     model::{
         AutoZoomState, AvatarEngine, BackgroundEffect, BuiltInGesture, CameraAttitudeSource,
-        CameraImageControl, FaceTrackingState, FaceTrackingTarget, Landmark, PerceptionObservation,
-        ScenarioActivation, VideoIdentity, VideoOutputMode, unix_ms,
+        CameraImageControl, FaceTrackingState, FaceTrackingTarget, HandsTrackingState, Landmark,
+        PerceptionObservation, ScenarioActivation, VideoIdentity, VideoOutputMode, unix_ms,
     },
     pipeline::{PerceptionFrame, PreviewHub, VideoPipelineControl},
     runtime::Runtime,
@@ -46,6 +47,7 @@ struct ApiState {
     camera_power_control: Arc<Mutex<()>>,
     pan_tilt_motion: Arc<Mutex<PanTiltMotion>>,
     face_tracking: Arc<Mutex<FaceTrackingController>>,
+    hands_tracking: Arc<Mutex<HandsTrackingController>>,
     video_output_control: Arc<Mutex<()>>,
     daemon_restart: Option<DaemonRestart>,
     user_settings: Option<UserSettingsStore>,
@@ -81,6 +83,7 @@ pub struct ApiOptions {
     pub user_settings: Option<UserSettingsStore>,
     pub face_tracking_enabled: bool,
     pub auto_zoom_enabled: bool,
+    pub hands_tracking_enabled: bool,
 }
 
 #[cfg(test)]
@@ -112,6 +115,8 @@ pub fn router_with_controls(
     let mut face_tracking = FaceTrackingController::default();
     face_tracking.set_enabled(options.face_tracking_enabled);
     face_tracking.set_auto_zoom_enabled(options.auto_zoom_enabled, unix_ms());
+    let mut hands_tracking = HandsTrackingController::default();
+    hands_tracking.set_enabled(options.hands_tracking_enabled);
     let state = ApiState {
         stabilizer: Arc::new(Mutex::new(OpenPalmStabilizer::new(&config.perception))),
         face_presence: Arc::new(Mutex::new(FacePresenceStabilizer::new(&config.perception))),
@@ -123,6 +128,7 @@ pub fn router_with_controls(
         camera_power_control: Arc::new(Mutex::new(())),
         pan_tilt_motion: Arc::new(Mutex::new(PanTiltMotion::default())),
         face_tracking: Arc::new(Mutex::new(face_tracking)),
+        hands_tracking: Arc::new(Mutex::new(hands_tracking)),
         video_output_control: Arc::new(Mutex::new(())),
         daemon_restart: options.daemon_restart,
         user_settings: options.user_settings,
@@ -148,6 +154,7 @@ pub fn router_with_controls(
         .route("/api/v1/camera/hdr", post(set_hdr))
         .route("/api/v1/camera/tracking", post(set_tracking))
         .route("/api/v1/camera/face-tracking", post(set_face_tracking))
+        .route("/api/v1/camera/hands-tracking", post(set_hands_tracking))
         .route(
             "/api/v1/camera/built-in-gestures/{feature}",
             post(set_built_in_gesture),
@@ -329,14 +336,19 @@ async fn set_camera_power(
                 return command_error(error);
             }
             state.face_tracking.lock().await.set_enabled(false);
+            state.hands_tracking.lock().await.set_enabled(false);
             clear_pan_tilt_motion(&state).await;
             state
                 .runtime
                 .update(|runtime| {
                     runtime.camera.face_tracking = FaceTrackingState::default();
+                    runtime.camera.hands_tracking = HandsTrackingState::default();
                 })
                 .await;
             if let Err(error) = save_face_tracking_setting(&state, false).await {
+                return user_settings_error(error);
+            }
+            if let Err(error) = save_hands_tracking_setting(&state, false).await {
                 return user_settings_error(error);
             }
             camera.begin_power_transition();
@@ -376,6 +388,7 @@ async fn set_camera_power(
                 runtime.camera.powered_on = Some(false);
                 runtime.camera.power_error = None;
                 runtime.camera.face_tracking = FaceTrackingState::default();
+                runtime.camera.hands_tracking = HandsTrackingState::default();
                 runtime.camera.yaw_degrees = None;
                 runtime.camera.pitch_degrees = None;
                 runtime.camera.roll_degrees = None;
@@ -612,6 +625,13 @@ async fn set_face_tracking(
     set_face_tracking_inner(&state, request.enabled).await
 }
 
+async fn set_hands_tracking(
+    State(state): State<ApiState>,
+    Json(request): Json<TrackingRequest>,
+) -> Response {
+    set_hands_tracking_inner(&state, request.enabled).await
+}
+
 async fn set_hdr(State(state): State<ApiState>, Json(request): Json<HdrRequest>) -> Response {
     let Some(camera) = state.camera.clone() else {
         return camera_unavailable();
@@ -679,6 +699,11 @@ async fn set_zoom(State(state): State<ApiState>, Json(request): Json<ZoomRequest
                     .recalibrate_auto_zoom_after(now.saturating_add(MANUAL_ZOOM_SETTLE_MS));
                 face_tracking.auto_zoom_enabled()
             };
+            let hands_tracking_enabled = {
+                let mut hands_tracking = state.hands_tracking.lock().await;
+                hands_tracking.recalibrate_zoom_after(now.saturating_add(MANUAL_ZOOM_SETTLE_MS));
+                hands_tracking.enabled()
+            };
             state
                 .runtime
                 .update(|runtime| {
@@ -691,6 +716,15 @@ async fn set_zoom(State(state): State<ApiState>, Json(request): Json<ZoomRequest
                             zoom_magnification: Some(request.magnification),
                             ..AutoZoomState::default()
                         };
+                    }
+                    if hands_tracking_enabled {
+                        runtime.camera.hands_tracking.calibrated = false;
+                        runtime.camera.hands_tracking.zoom_magnification =
+                            Some(request.magnification);
+                        runtime.camera.hands_tracking.target_span = None;
+                        runtime.camera.hands_tracking.hand_span = None;
+                        runtime.camera.hands_tracking.at_limit = false;
+                        runtime.camera.hands_tracking.zoom_error = None;
                     }
                 })
                 .await;
@@ -874,32 +908,15 @@ async fn set_tracking_inner(state: &ApiState, enabled: bool) -> Response {
         return camera_unavailable();
     };
     if enabled {
-        let mut face_tracking = state.face_tracking.lock().await;
-        if face_tracking.enabled() {
-            let stop_error = camera.set_face_tracking_speed(0, 0, 0.0).await.err();
-            face_tracking.set_enabled(false);
-            clear_pan_tilt_motion(state).await;
-            state
-                .runtime
-                .update(|runtime| {
-                    runtime.camera.face_tracking = FaceTrackingState {
-                        error: stop_error.as_ref().map(ToString::to_string),
-                        ..FaceTrackingState::default()
-                    };
-                })
-                .await;
-            if let Err(error) = save_face_tracking_setting(state, false).await {
-                return user_settings_error(error);
-            }
-            record_camera_command(
-                state,
-                "camera.face_tracking",
-                json!({"enabled": false, "reason": "camera-tracking-enabled"}),
-            )
-            .await;
-            if let Some(error) = stop_error {
-                return command_error(error);
-            }
+        if let Err(error) =
+            disable_face_tracking_mode(state, &camera, "camera-tracking-enabled").await
+        {
+            return command_error(error);
+        }
+        if let Err(error) =
+            disable_hands_tracking_mode(state, &camera, "camera-tracking-enabled").await
+        {
+            return command_error(error);
         }
     }
     match camera.set_tracking(enabled).await {
@@ -923,8 +940,7 @@ async fn set_face_tracking_inner(state: &ApiState, enabled: bool) -> Response {
     let Some(camera) = state.camera.clone() else {
         return camera_unavailable();
     };
-    let mut face_tracking = state.face_tracking.lock().await;
-    if face_tracking.enabled() == enabled {
+    if state.face_tracking.lock().await.enabled() == enabled {
         if let Err(error) = save_face_tracking_setting(state, enabled).await {
             return user_settings_error(error);
         }
@@ -932,6 +948,11 @@ async fn set_face_tracking_inner(state: &ApiState, enabled: bool) -> Response {
     }
 
     if enabled {
+        if let Err(error) =
+            disable_hands_tracking_mode(state, &camera, "face-tracking-enabled").await
+        {
+            return command_error(error);
+        }
         let previous_camera_tracking = state.runtime.state().await.camera.tracking;
         if let Err(error) = camera.set_tracking(false).await {
             return command_error(error);
@@ -956,7 +977,7 @@ async fn set_face_tracking_inner(state: &ApiState, enabled: bool) -> Response {
             return command_error(error);
         }
         clear_pan_tilt_motion(state).await;
-        face_tracking.set_enabled(true);
+        state.face_tracking.lock().await.set_enabled(true);
         state
             .runtime
             .update(|runtime| {
@@ -971,7 +992,7 @@ async fn set_face_tracking_inner(state: &ApiState, enabled: bool) -> Response {
         }
     } else {
         let stop_error = camera.set_face_tracking_speed(0, 0, 0.0).await.err();
-        face_tracking.set_enabled(false);
+        state.face_tracking.lock().await.set_enabled(false);
         clear_pan_tilt_motion(state).await;
         state
             .runtime
@@ -995,42 +1016,170 @@ async fn set_face_tracking_inner(state: &ApiState, enabled: bool) -> Response {
     StatusCode::ACCEPTED.into_response()
 }
 
+async fn set_hands_tracking_inner(state: &ApiState, enabled: bool) -> Response {
+    let Some(camera) = state.camera.clone() else {
+        return camera_unavailable();
+    };
+    if state.hands_tracking.lock().await.enabled() == enabled {
+        if let Err(error) = save_hands_tracking_setting(state, enabled).await {
+            return user_settings_error(error);
+        }
+        return StatusCode::ACCEPTED.into_response();
+    }
+
+    if enabled {
+        if let Err(error) =
+            disable_face_tracking_mode(state, &camera, "hands-tracking-enabled").await
+        {
+            return command_error(error);
+        }
+        let previous_camera_tracking = state.runtime.state().await.camera.tracking;
+        if let Err(error) = camera.set_tracking(false).await {
+            return command_error(error);
+        }
+        state
+            .runtime
+            .update(|runtime| {
+                runtime.camera.tracking = Some(false);
+                runtime.camera.tracking_sample_at_ms = None;
+                runtime.camera.tracking_error = None;
+            })
+            .await;
+        if previous_camera_tracking != Some(false) {
+            record_camera_command(
+                state,
+                "camera.tracking",
+                json!({"enabled": false, "reason": "hands-tracking-enabled"}),
+            )
+            .await;
+        }
+        if let Err(error) = camera.set_face_tracking_speed(0, 0, 0.0).await {
+            return command_error(error);
+        }
+        clear_pan_tilt_motion(state).await;
+        state.hands_tracking.lock().await.set_enabled(true);
+        state
+            .runtime
+            .update(|runtime| {
+                runtime.camera.hands_tracking = HandsTrackingState {
+                    enabled: true,
+                    zoom_frozen: true,
+                    zoom_magnification: camera.controlled_zoom_magnification(),
+                    ..HandsTrackingState::default()
+                };
+            })
+            .await;
+        if let Err(error) = save_hands_tracking_setting(state, true).await {
+            return user_settings_error(error);
+        }
+    } else {
+        let stop_error = camera.set_face_tracking_speed(0, 0, 0.0).await.err();
+        state.hands_tracking.lock().await.set_enabled(false);
+        clear_pan_tilt_motion(state).await;
+        state
+            .runtime
+            .update(|runtime| {
+                runtime.camera.hands_tracking = HandsTrackingState {
+                    error: stop_error.as_ref().map(ToString::to_string),
+                    ..HandsTrackingState::default()
+                };
+            })
+            .await;
+        if let Err(error) = save_hands_tracking_setting(state, false).await {
+            return user_settings_error(error);
+        }
+        record_camera_command(state, "camera.hands_tracking", json!({"enabled": false})).await;
+        return match stop_error {
+            Some(error) => command_error(error),
+            None => StatusCode::ACCEPTED.into_response(),
+        };
+    }
+    record_camera_command(state, "camera.hands_tracking", json!({"enabled": enabled})).await;
+    StatusCode::ACCEPTED.into_response()
+}
+
 async fn clear_pan_tilt_motion(state: &ApiState) {
     let mut motion = state.pan_tilt_motion.lock().await;
     motion.direction = None;
     motion.expires_at = None;
 }
 
+async fn disable_face_tracking_mode(
+    state: &ApiState,
+    camera: &CameraHandle,
+    reason: &str,
+) -> anyhow::Result<bool> {
+    let mut controller = state.face_tracking.lock().await;
+    if !controller.enabled() {
+        return Ok(false);
+    }
+    controller.set_enabled(false);
+    drop(controller);
+    let stop_error = camera.set_face_tracking_speed(0, 0, 0.0).await.err();
+    clear_pan_tilt_motion(state).await;
+    state
+        .runtime
+        .update(|runtime| {
+            runtime.camera.face_tracking = FaceTrackingState {
+                error: stop_error.as_ref().map(ToString::to_string),
+                ..FaceTrackingState::default()
+            };
+        })
+        .await;
+    save_face_tracking_setting(state, false).await?;
+    record_camera_command(
+        state,
+        "camera.face_tracking",
+        json!({"enabled": false, "reason": reason}),
+    )
+    .await;
+    match stop_error {
+        Some(error) => Err(error),
+        None => Ok(true),
+    }
+}
+
+async fn disable_hands_tracking_mode(
+    state: &ApiState,
+    camera: &CameraHandle,
+    reason: &str,
+) -> anyhow::Result<bool> {
+    let mut controller = state.hands_tracking.lock().await;
+    if !controller.enabled() {
+        return Ok(false);
+    }
+    controller.set_enabled(false);
+    drop(controller);
+    let stop_error = camera.set_face_tracking_speed(0, 0, 0.0).await.err();
+    clear_pan_tilt_motion(state).await;
+    state
+        .runtime
+        .update(|runtime| {
+            runtime.camera.hands_tracking = HandsTrackingState {
+                error: stop_error.as_ref().map(ToString::to_string),
+                ..HandsTrackingState::default()
+            };
+        })
+        .await;
+    save_hands_tracking_setting(state, false).await?;
+    record_camera_command(
+        state,
+        "camera.hands_tracking",
+        json!({"enabled": false, "reason": reason}),
+    )
+    .await;
+    match stop_error {
+        Some(error) => Err(error),
+        None => Ok(true),
+    }
+}
+
 async fn disable_tracking_for_manual_control(
     state: &ApiState,
     camera: &CameraHandle,
 ) -> anyhow::Result<()> {
-    let face_tracking_disabled = {
-        let mut face_tracking = state.face_tracking.lock().await;
-        if face_tracking.enabled() {
-            camera.set_face_tracking_speed(0, 0, 0.0).await?;
-            face_tracking.set_enabled(false);
-            true
-        } else {
-            false
-        }
-    };
-    if face_tracking_disabled {
-        clear_pan_tilt_motion(state).await;
-        state
-            .runtime
-            .update(|runtime| {
-                runtime.camera.face_tracking = FaceTrackingState::default();
-            })
-            .await;
-        save_face_tracking_setting(state, false).await?;
-        record_camera_command(
-            state,
-            "camera.face_tracking",
-            json!({"enabled": false, "reason": "manual-gimbal-control"}),
-        )
-        .await;
-    }
+    disable_face_tracking_mode(state, camera, "manual-gimbal-control").await?;
+    disable_hands_tracking_mode(state, camera, "manual-gimbal-control").await?;
 
     if state.runtime.state().await.camera.tracking != Some(true) {
         return Ok(());
@@ -1064,6 +1213,13 @@ async fn save_face_tracking_setting(state: &ApiState, enabled: bool) -> anyhow::
 async fn save_auto_zoom_setting(state: &ApiState, enabled: bool) -> anyhow::Result<()> {
     if let Some(settings) = &state.user_settings {
         settings.set_auto_zoom(enabled).await?;
+    }
+    Ok(())
+}
+
+async fn save_hands_tracking_setting(state: &ApiState, enabled: bool) -> anyhow::Result<()> {
+    if let Some(settings) = &state.user_settings {
+        settings.set_hands_tracking(enabled).await?;
     }
     Ok(())
 }
@@ -1858,6 +2014,12 @@ async fn perception_observation(
         observation.captured_at_ms,
     )
     .await;
+    let tracking_hand_landmarks = if observation.hand_detected {
+        observation.hand_landmarks.as_slice()
+    } else {
+        &[]
+    };
+    drive_hands_tracking(&state, tracking_hand_landmarks, observation.captured_at_ms).await;
 
     let presence_change = state
         .face_presence
@@ -2067,6 +2229,127 @@ async fn drive_face_tracking(
     }
 }
 
+async fn drive_hands_tracking(state: &ApiState, hand_landmarks: &[Landmark], captured_at_ms: u64) {
+    let Some(camera) = state.camera.clone() else {
+        return;
+    };
+    let mut controller = state.hands_tracking.lock().await;
+    if !controller.enabled() {
+        return;
+    }
+
+    let camera_state = state.runtime.state().await.camera;
+    if camera_state.tracking == Some(true) {
+        let error = camera
+            .set_face_tracking_speed(0, 0, 0.0)
+            .await
+            .err()
+            .map(|error| error.to_string());
+        controller.set_enabled(false);
+        state
+            .runtime
+            .update(|runtime| {
+                runtime.camera.hands_tracking = HandsTrackingState {
+                    error,
+                    ..HandsTrackingState::default()
+                };
+            })
+            .await;
+        record_camera_command(
+            state,
+            "camera.hands_tracking",
+            json!({"enabled": false, "reason": "camera-tracking-detected"}),
+        )
+        .await;
+        return;
+    }
+
+    let decision = controller.observe(
+        hand_landmarks,
+        camera.controlled_zoom_magnification(),
+        captured_at_ms,
+    );
+    let desired_motion = decision.motion;
+    let should_command = desired_motion != controller.motion() || desired_motion.active();
+    let command_error = if should_command {
+        camera
+            .set_face_tracking_speed(
+                desired_motion.pan_direction,
+                desired_motion.tilt_direction,
+                desired_motion.speed_fraction,
+            )
+            .await
+            .err()
+            .map(|error| error.to_string())
+    } else {
+        None
+    };
+    if command_error.is_none() {
+        controller.record_motion(desired_motion);
+    }
+    let zoom_error = if let Some(magnification) = decision.requested_magnification {
+        camera
+            .set_zoom(magnification)
+            .await
+            .err()
+            .map(|error| error.to_string())
+    } else {
+        None
+    };
+    let motion = controller.motion();
+    drop(controller);
+    let controlled_zoom = camera.controlled_zoom_magnification();
+    let zoom_changed = decision.requested_magnification.is_some() && zoom_error.is_none();
+    let zoom_attempted = decision.requested_magnification.is_some();
+    state
+        .runtime
+        .update(|runtime| {
+            if let Some(magnification) = decision
+                .requested_magnification
+                .filter(|_| zoom_error.is_none())
+            {
+                runtime.camera.zoom_magnification = Some(magnification);
+                runtime.camera.zoom_sample_at_ms = None;
+                runtime.camera.zoom_error = None;
+                runtime.camera.last_command_at_ms = Some(unix_ms());
+            }
+            let previous_zoom_error = runtime.camera.hands_tracking.zoom_error.clone();
+            runtime.camera.hands_tracking = HandsTrackingState {
+                enabled: true,
+                active: motion.active(),
+                hands_visible: decision.hands_visible,
+                rapid_motion: decision.rapid_motion,
+                zoom_frozen: decision.zoom_frozen,
+                target_x: decision.target_x,
+                target_y: decision.target_y,
+                speed_fraction: motion.speed_fraction as f32,
+                calibrated: decision.calibrated,
+                zoom_magnification: controlled_zoom,
+                target_span: decision.target_span,
+                hand_span: decision.hand_span,
+                at_limit: decision.at_limit,
+                error: command_error,
+                zoom_error: if zoom_attempted {
+                    zoom_error.clone()
+                } else {
+                    previous_zoom_error
+                },
+            };
+        })
+        .await;
+    if zoom_changed {
+        state
+            .runtime
+            .emit(
+                "camera.hands_tracking.zoom_adjusted",
+                "hands-tracking",
+                None,
+                json!({"magnification": decision.requested_magnification}),
+            )
+            .await;
+    }
+}
+
 async fn activate_scenario(state: &ApiState, scenario: &ScenarioConfig, trigger_sequence: u64) {
     let activation = ScenarioActivation {
         scenario_id: scenario.id.clone(),
@@ -2187,6 +2470,8 @@ mod tests {
         }
         assert!(include_str!("../web/index.html").contains("id=\"face-tracking-toggle\""));
         assert!(include_str!("../web/app.js").contains("/api/v1/camera/face-tracking"));
+        assert!(include_str!("../web/index.html").contains("id=\"hands-tracking-toggle\""));
+        assert!(include_str!("../web/app.js").contains("/api/v1/camera/hands-tracking"));
         assert!(include_str!("../web/index.html").contains("id=\"camera-power-toggle\""));
         assert!(include_str!("../web/app.js").contains("/api/v1/camera/power"));
         assert!(include_str!("../web/index.html").contains("id=\"background-toggle\""));
@@ -3416,6 +3701,21 @@ mod tests {
         let response = app
             .clone()
             .oneshot(
+                Request::post("/api/v1/camera/hands-tracking")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"enabled":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let state = runtime.state().await;
+        assert!(!state.camera.face_tracking.enabled);
+        assert!(state.camera.hands_tracking.enabled);
+
+        let response = app
+            .clone()
+            .oneshot(
                 Request::post("/api/v1/camera/tracking")
                     .header("content-type", "application/json")
                     .body(Body::from(r#"{"enabled":true}"#))
@@ -3427,6 +3727,7 @@ mod tests {
         let state = runtime.state().await;
         assert_eq!(state.camera.tracking, Some(true));
         assert!(!state.camera.face_tracking.enabled);
+        assert!(!state.camera.hands_tracking.enabled);
 
         let response = app
             .clone()
@@ -3464,6 +3765,98 @@ mod tests {
         let state = runtime.state().await;
         assert!(!state.camera.face_tracking.enabled);
         assert_eq!(state.camera.tracking, Some(false));
+    }
+
+    #[tokio::test]
+    async fn hands_tracking_follows_one_or_two_slow_hands_and_holds_for_rapid_motion() {
+        let mut config = Config::default();
+        config.camera.adapter = CameraAdapter::Mock;
+        config.perception.enabled = false;
+        let runtime = Runtime::new();
+        let camera = camera::start(config.camera.clone(), runtime.clone())
+            .await
+            .unwrap();
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = router(
+            config,
+            runtime.clone(),
+            PreviewHub::new(),
+            camera,
+            shutdown_rx,
+        );
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/camera/hands-tracking")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"enabled":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+        let hand = |x: f32| {
+            (0..21)
+                .map(|_| json!({"x": x, "y": 0.5, "z": 0.0}))
+                .collect::<Vec<_>>()
+        };
+        let mut two_hands = hand(0.65);
+        two_hands.extend(hand(0.85));
+        for (frame_id, captured_at_ms, hand_landmarks) in [
+            (1, 1_000, two_hands),
+            (2, 1_200, hand(0.75)),
+            (3, 1_300, hand(0.95)),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post("/api/v1/perception/observations")
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            json!({
+                                "frame_id": frame_id,
+                                "captured_at_ms": captured_at_ms,
+                                "face_detected": false,
+                                "hand_detected": true,
+                                "hand_landmarks": hand_landmarks,
+                                "pose_detected": false,
+                                "gesture": null,
+                                "confidence": 0.0,
+                                "latency_ms": 10.0
+                            })
+                            .to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+            let tracking = runtime.state().await.camera.hands_tracking;
+            match frame_id {
+                1 => {
+                    assert_eq!(tracking.hands_visible, 2);
+                    assert!(!tracking.zoom_frozen);
+                    assert!(tracking.calibrated);
+                    assert!(tracking.active);
+                }
+                2 => {
+                    assert_eq!(tracking.hands_visible, 1);
+                    assert!(tracking.zoom_frozen);
+                    assert!(tracking.active);
+                    assert!(!tracking.rapid_motion);
+                }
+                3 => {
+                    assert_eq!(tracking.hands_visible, 1);
+                    assert!(tracking.zoom_frozen);
+                    assert!(!tracking.active);
+                    assert!(tracking.rapid_motion);
+                }
+                _ => unreachable!(),
+            }
+        }
     }
 
     #[tokio::test]
