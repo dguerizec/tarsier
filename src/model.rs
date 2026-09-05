@@ -136,6 +136,8 @@ pub struct FaceTrackingState {
     pub target_source: Option<FaceTrackingTarget>,
     pub target_x: Option<f32>,
     pub target_y: Option<f32>,
+    #[serde(default)]
+    pub speed_fraction: f32,
     pub error: Option<String>,
 }
 

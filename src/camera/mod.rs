@@ -26,7 +26,6 @@ const GESTURE_STATUS_MINIMUM_INTERVAL: Duration = Duration::from_secs(5);
 const TELEMETRY_MAXIMUM_BACKOFF: Duration = Duration::from_secs(60);
 const HDR_SWITCH_MINIMUM_INTERVAL: Duration = Duration::from_secs(3);
 const NUDGE_SPEED_FRACTION: f64 = 0.25;
-const FACE_TRACKING_SPEED_FRACTION: f64 = 0.10;
 pub const PAN_TILT_LEASE: Duration = Duration::from_millis(350);
 
 #[derive(Debug)]
@@ -237,14 +236,18 @@ impl CameraHandle {
         &self,
         pan_direction: i8,
         tilt_direction: i8,
+        speed_fraction: f64,
     ) -> Result<()> {
         if !(-1..=1).contains(&pan_direction) || !(-1..=1).contains(&tilt_direction) {
             bail!("face tracking movement directions must be between -1 and 1");
         }
+        if !speed_fraction.is_finite() || !(0.0..=1.0).contains(&speed_fraction) {
+            bail!("face tracking speed fraction must be between 0 and 1");
+        }
         self.request(Command::PanTiltSpeed {
             pan_direction,
             tilt_direction,
-            speed_fraction: FACE_TRACKING_SPEED_FRACTION,
+            speed_fraction,
         })
         .await
         .map(|_| ())
@@ -358,6 +361,7 @@ struct Worker<T> {
     minimum_interval: Duration,
     last_io: Option<Instant>,
     pan_tilt_direction: (i8, i8),
+    pan_tilt_speed_fraction: f64,
     pan_tilt_deadline: Option<Instant>,
     hdr_state: Option<bool>,
     last_hdr_switch: Option<Instant>,
@@ -373,6 +377,7 @@ impl<T: XuTransport> Worker<T> {
             minimum_interval,
             last_io: None,
             pan_tilt_direction: (0, 0),
+            pan_tilt_speed_fraction: 0.0,
             pan_tilt_deadline: None,
             hdr_state: None,
             last_hdr_switch: None,
@@ -462,7 +467,10 @@ impl<T: XuTransport> Worker<T> {
         speed_fraction: f64,
     ) -> Result<()> {
         let direction = (pan_direction, tilt_direction);
-        if direction == self.pan_tilt_direction {
+        if direction == self.pan_tilt_direction
+            && (direction == (0, 0)
+                || (speed_fraction - self.pan_tilt_speed_fraction).abs() < f64::EPSILON)
+        {
             self.pan_tilt_deadline = (direction != (0, 0)).then(|| Instant::now() + PAN_TILT_LEASE);
             return Ok(());
         }
@@ -480,11 +488,17 @@ impl<T: XuTransport> Worker<T> {
         if let Err(error) = self.transport.set_pan_tilt_speed_units(pan, tilt) {
             let _ = self.transport.set_pan_tilt_speed_units(0, 0);
             self.pan_tilt_direction = (0, 0);
+            self.pan_tilt_speed_fraction = 0.0;
             self.pan_tilt_deadline = None;
             return Err(error);
         }
         self.last_io = Some(Instant::now());
         self.pan_tilt_direction = direction;
+        self.pan_tilt_speed_fraction = if direction == (0, 0) {
+            0.0
+        } else {
+            speed_fraction
+        };
         self.pan_tilt_deadline = (direction != (0, 0)).then(|| Instant::now() + PAN_TILT_LEASE);
         Ok(())
     }
@@ -1113,7 +1127,7 @@ mod tests {
     }
 
     #[test]
-    fn face_tracking_uses_a_slower_diagonal_speed() {
+    fn face_tracking_applies_and_updates_a_proportional_diagonal_speed() {
         let (_tx, rx) = sync_channel(1);
         let mut worker = Worker::new(RecordingTransport::default(), rx, Duration::ZERO);
 
@@ -1121,11 +1135,20 @@ mod tests {
             .execute(Command::PanTiltSpeed {
                 pan_direction: 1,
                 tilt_direction: -1,
-                speed_fraction: FACE_TRACKING_SPEED_FRACTION,
+                speed_fraction: 0.025,
+            })
+            .unwrap();
+        worker
+            .execute(Command::PanTiltSpeed {
+                pan_direction: 1,
+                tilt_direction: -1,
+                speed_fraction: 0.05,
             })
             .unwrap();
 
-        assert_eq!(worker.transport.pan_tilt_speed_units, [(16, -12)]);
+        assert_eq!(worker.transport.pan_tilt_speed_units, [(4, -3), (8, -6)]);
+        assert_eq!(worker.pan_tilt_direction, (1, -1));
+        assert_eq!(worker.pan_tilt_speed_fraction, 0.05);
     }
 
     #[test]

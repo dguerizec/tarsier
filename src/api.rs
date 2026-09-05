@@ -560,7 +560,7 @@ async fn set_tracking_inner(state: &ApiState, enabled: bool) -> Response {
     if enabled {
         let mut face_tracking = state.face_tracking.lock().await;
         if face_tracking.enabled() {
-            let stop_error = camera.set_face_tracking_speed(0, 0).await.err();
+            let stop_error = camera.set_face_tracking_speed(0, 0, 0.0).await.err();
             face_tracking.set_enabled(false);
             clear_pan_tilt_motion(state).await;
             state
@@ -630,7 +630,7 @@ async fn set_face_tracking_inner(state: &ApiState, enabled: bool) -> Response {
             )
             .await;
         }
-        if let Err(error) = camera.set_face_tracking_speed(0, 0).await {
+        if let Err(error) = camera.set_face_tracking_speed(0, 0, 0.0).await {
             return command_error(error);
         }
         clear_pan_tilt_motion(state).await;
@@ -645,7 +645,7 @@ async fn set_face_tracking_inner(state: &ApiState, enabled: bool) -> Response {
             })
             .await;
     } else {
-        let stop_error = camera.set_face_tracking_speed(0, 0).await.err();
+        let stop_error = camera.set_face_tracking_speed(0, 0, 0.0).await.err();
         face_tracking.set_enabled(false);
         clear_pan_tilt_motion(state).await;
         state
@@ -1321,7 +1321,7 @@ async fn drive_face_tracking(
 
     if state.runtime.state().await.camera.tracking == Some(true) {
         let error = camera
-            .set_face_tracking_speed(0, 0)
+            .set_face_tracking_speed(0, 0, 0.0)
             .await
             .err()
             .map(|error| error.to_string());
@@ -1345,7 +1345,7 @@ async fn drive_face_tracking(
     }
 
     let target = controller
-        .face_target(face_landmarks)
+        .face_target(face_landmarks, pose_landmarks)
         .map(|target| (target, FaceTrackingTarget::Face))
         .or_else(|| {
             controller
@@ -1354,12 +1354,16 @@ async fn drive_face_tracking(
         });
     let desired_motion = target
         .as_ref()
-        .map(|(target, _)| (target.pan_direction, target.tilt_direction))
-        .unwrap_or((0, 0));
-    let should_command = desired_motion != controller.motion() || desired_motion != (0, 0);
+        .map(|(target, _)| target.motion)
+        .unwrap_or_default();
+    let should_command = desired_motion != controller.motion() || desired_motion.active();
     let command_error = if should_command {
         camera
-            .set_face_tracking_speed(desired_motion.0, desired_motion.1)
+            .set_face_tracking_speed(
+                desired_motion.pan_direction,
+                desired_motion.tilt_direction,
+                desired_motion.speed_fraction,
+            )
             .await
             .err()
             .map(|error| error.to_string())
@@ -1375,11 +1379,12 @@ async fn drive_face_tracking(
         .update(|runtime| {
             runtime.camera.face_tracking = FaceTrackingState {
                 enabled: true,
-                active: motion != (0, 0),
+                active: motion.active(),
                 target_visible: target.is_some(),
                 target_source: target.as_ref().map(|(_, source)| *source),
                 target_x: target.as_ref().map(|(target, _)| target.x),
                 target_y: target.as_ref().map(|(target, _)| target.y),
+                speed_fraction: motion.speed_fraction as f32,
                 error: command_error,
             };
         })
@@ -2163,6 +2168,11 @@ mod tests {
             assert_eq!(tracking.active, expected_active);
             assert_eq!(tracking.target_x, Some(x));
             assert_eq!(tracking.target_y, Some(y));
+            if expected_active {
+                assert!((tracking.speed_fraction - 0.012).abs() < f32::EPSILON);
+            } else {
+                assert_eq!(tracking.speed_fraction, 0.0);
+            }
         }
 
         let mut pose_landmarks = (0..33)
@@ -2199,6 +2209,7 @@ mod tests {
         assert!((tracking.target_x.unwrap() - 0.7).abs() < f32::EPSILON);
         assert!((tracking.target_y.unwrap() - 0.3).abs() < f32::EPSILON);
         assert!(tracking.active);
+        assert!((tracking.speed_fraction - 0.012).abs() < f32::EPSILON);
     }
 
     #[tokio::test]

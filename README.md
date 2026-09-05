@@ -35,9 +35,9 @@ mischievous personality without tying its core to one camera vendor.
 - bounded absolute gimbal moves, continuous held pan/tilt movement, x1-to-x4 zoom,
   HDR, recentering, tracking, named presets, and separate Tiny 2 built-in
   gesture controls are available over HTTP;
-- optional Tarsier face tracking follows the detected face with slower,
-  dead-zone-stabilized gimbal movement, falls back to visible shoulders when
-  the face mesh disappears, and switches exclusively with the camera's built-in
+- optional Tarsier face tracking follows the detected face with proportional,
+  ramped gimbal movement, falls back to calibrated visible shoulders when the
+  face mesh disappears, and switches exclusively with the camera's built-in
   tracking;
 - a supervised Python 3.12 worker performs local MediaPipe face and body-pose
   landmarking and canned gesture recognition for up to two hands at a bounded
@@ -206,12 +206,14 @@ zoom slider has focus. The page renews a short daemon-owned movement lease while
 a direction remains held and stops the motor on release. If the page or network
 disappears, the daemon expires the lease and stops the motor automatically.
 The **Face tracking** control below the preview uses the same movement lease at
-a slower speed. Enabling it first disables the camera's built-in tracking;
-enabling built-in tracking stops Tarsier face tracking. The detected face is
-the preferred target; when it is unavailable, visible pose shoulders estimate
-the head position so tracking can continue at a distance. Manual pan, tilt,
-recenter, and preset controls stop built-in camera tracking before moving. They
-remain unavailable while Tarsier face tracking is active.
+a proportional speed with acceleration and deceleration ramps. Enabling it
+first disables the camera's built-in tracking; enabling built-in tracking stops
+Tarsier face tracking. The detected face is the preferred target. While face
+and pose are both visible, their vertical offset is calibrated continuously;
+when the face disappears, stable shoulders therefore preserve the inferred
+head height instead of causing a tilt jump. Manual pan, tilt, recenter, and
+preset controls stop built-in camera tracking before moving. They remain
+unavailable while Tarsier face tracking is active.
 
 ```sh
 cargo run -- status
