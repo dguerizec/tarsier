@@ -843,6 +843,13 @@ async fn perception_observation(
         )
             .into_response();
     }
+    if !observation.pose_landmarks.is_empty() && observation.pose_landmarks.len() != 33 {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"error": "pose_landmarks must contain exactly 33 points"})),
+        )
+            .into_response();
+    }
 
     state
         .runtime
@@ -859,6 +866,12 @@ async fn perception_observation(
             runtime.perception.hand_detected = observation.hand_detected;
             runtime.perception.hand_landmarks = if observation.hand_detected {
                 observation.hand_landmarks.clone()
+            } else {
+                Vec::new()
+            };
+            runtime.perception.pose_detected = observation.pose_detected;
+            runtime.perception.pose_landmarks = if observation.pose_detected {
+                observation.pose_landmarks.clone()
             } else {
                 Vec::new()
             };
@@ -1543,7 +1556,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn perception_state_tracks_a_face_and_two_hands_then_clears_landmarks() {
+    async fn perception_state_tracks_face_pose_and_two_hands_then_clears_landmarks() {
         let mut config = Config::default();
         config.perception.enabled = false;
         let runtime = Runtime::new();
@@ -1562,6 +1575,9 @@ mod tests {
         let hand_landmarks = (0..42)
             .map(|index| json!({"x": index as f32 / 41.0, "y": 0.5, "z": -0.1}))
             .collect::<Vec<_>>();
+        let pose_landmarks = (0..33)
+            .map(|index| json!({"x": index as f32 / 32.0, "y": 0.6, "z": -0.3, "visibility": 0.9}))
+            .collect::<Vec<_>>();
         for (index, observation) in [
             json!({
                 "frame_id": 1,
@@ -1570,6 +1586,8 @@ mod tests {
                 "face_landmarks": face_landmarks,
                 "hand_detected": true,
                 "hand_landmarks": hand_landmarks,
+                "pose_detected": true,
+                "pose_landmarks": pose_landmarks,
                 "gesture": "open_palm",
                 "confidence": 0.72,
                 "latency_ms": 10.0
@@ -1579,6 +1597,7 @@ mod tests {
                 "captured_at_ms": 1100,
                 "face_detected": false,
                 "hand_detected": false,
+                "pose_detected": false,
                 "gesture": null,
                 "confidence": 0.0,
                 "latency_ms": 9.0
@@ -1602,6 +1621,8 @@ mod tests {
                 let perception = runtime.state().await.perception;
                 assert_eq!(perception.face_landmarks.len(), 478);
                 assert_eq!(perception.hand_landmarks.len(), 42);
+                assert_eq!(perception.pose_landmarks.len(), 33);
+                assert_eq!(perception.pose_landmarks[0].visibility, Some(0.9));
             }
         }
 
@@ -1610,6 +1631,8 @@ mod tests {
         assert!(state.perception.face_landmarks.is_empty());
         assert!(!state.perception.hand_detected);
         assert!(state.perception.hand_landmarks.is_empty());
+        assert!(!state.perception.pose_detected);
+        assert!(state.perception.pose_landmarks.is_empty());
         assert_eq!(state.perception.last_hand_at_ms, Some(1000));
         assert_eq!(state.perception.peak_gesture.as_deref(), Some("open_palm"));
         assert_eq!(state.perception.peak_gesture_confidence, Some(0.72));

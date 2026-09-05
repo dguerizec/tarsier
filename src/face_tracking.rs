@@ -105,7 +105,15 @@ mod tests {
     use super::*;
 
     fn face_at(x: f32, y: f32) -> Vec<Landmark> {
-        vec![Landmark { x, y, z: 0.0 }; FACE_LANDMARK_COUNT]
+        vec![
+            Landmark {
+                x,
+                y,
+                z: 0.0,
+                visibility: None,
+            };
+            FACE_LANDMARK_COUNT
+        ]
     }
 
     #[test]

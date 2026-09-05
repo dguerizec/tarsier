@@ -22,6 +22,7 @@ class Landmark:
     x: float
     y: float
     z: float
+    visibility: float | None = None
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,8 @@ class Observation:
     face_landmarks: list[Landmark]
     hand_detected: bool
     hand_landmarks: list[Landmark]
+    pose_detected: bool
+    pose_landmarks: list[Landmark]
     gesture: str | None
     confidence: float
     latency_ms: float
@@ -57,7 +60,14 @@ def select_gesture(gestures: list[list[Any]]) -> tuple[str | None, float]:
 
 def select_landmarks(groups: list[list[Any]], limit: int) -> list[Landmark]:
     return [
-        Landmark(x=float(point.x), y=float(point.y), z=float(point.z))
+        Landmark(
+            x=float(point.x),
+            y=float(point.y),
+            z=float(point.z),
+            visibility=(
+                float(point.visibility) if getattr(point, "visibility", None) is not None else None
+            ),
+        )
         for group in groups[:limit]
         for point in group
     ]
@@ -92,22 +102,37 @@ class MediaPipeDetector:
                 min_tracking_confidence=minimum_confidence,
             )
         )
+        self._pose = vision.PoseLandmarker.create_from_options(
+            vision.PoseLandmarkerOptions(
+                base_options=base_options(
+                    model_asset_path=str(model_dir / "pose_landmarker_lite.task")
+                ),
+                running_mode=vision.RunningMode.VIDEO,
+                num_poses=1,
+                min_pose_detection_confidence=minimum_confidence,
+                min_pose_presence_confidence=minimum_confidence,
+                min_tracking_confidence=minimum_confidence,
+            )
+        )
 
     def detect(
         self, frame_bgr: np.ndarray, timestamp_ms: int
-    ) -> tuple[list[Landmark], list[Landmark], str | None, float]:
+    ) -> tuple[list[Landmark], list[Landmark], list[Landmark], str | None, float]:
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
         face_result = self._face.detect_for_video(image, timestamp_ms)
         gesture_result = self._gesture.recognize_for_video(image, timestamp_ms)
+        pose_result = self._pose.detect_for_video(image, timestamp_ms)
         gesture, confidence = select_gesture(gesture_result.gestures)
         face_landmarks = select_landmarks(face_result.face_landmarks, 1)
         hand_landmarks = select_landmarks(gesture_result.hand_landmarks, 2)
-        return face_landmarks, hand_landmarks, gesture, confidence
+        pose_landmarks = select_landmarks(pose_result.pose_landmarks, 1)
+        return face_landmarks, hand_landmarks, pose_landmarks, gesture, confidence
 
     def close(self) -> None:
         self._gesture.close()
         self._face.close()
+        self._pose.close()
 
     def __enter__(self) -> MediaPipeDetector:
         return self
@@ -182,7 +207,7 @@ def run_worker(
             timestamp_ms = max(0, int((now - started_at) * 1000))
             captured_at_ms = time.time_ns() // 1_000_000
             inference_started = time.perf_counter()
-            face_landmarks, hand_landmarks, gesture, confidence = detector.detect(
+            face_landmarks, hand_landmarks, pose_landmarks, gesture, confidence = detector.detect(
                 frame, timestamp_ms
             )
             latency_ms = (time.perf_counter() - inference_started) * 1000.0
@@ -193,6 +218,8 @@ def run_worker(
                 face_landmarks=face_landmarks,
                 hand_detected=bool(hand_landmarks),
                 hand_landmarks=hand_landmarks,
+                pose_detected=bool(pose_landmarks),
+                pose_landmarks=pose_landmarks,
                 gesture=gesture,
                 confidence=confidence,
                 latency_ms=latency_ms,
@@ -216,6 +243,8 @@ def run_mock(daemon_url: str, fps: float, open_palm: bool) -> None:
                 face_landmarks=[],
                 hand_detected=open_palm,
                 hand_landmarks=[],
+                pose_detected=False,
+                pose_landmarks=[],
                 gesture="open_palm" if open_palm else None,
                 confidence=0.96 if open_palm else 0.0,
                 latency_ms=(time.perf_counter() - started) * 1000.0,

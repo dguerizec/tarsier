@@ -37,16 +37,17 @@ mischievous personality without tying its core to one camera vendor.
 - optional Tarsier face tracking follows the detected face with slower,
   dead-zone-stabilized gimbal movement and switches exclusively with the
   camera's built-in tracking;
-- a supervised Python 3.12 worker performs local MediaPipe face landmarking and
-  canned gesture recognition for up to two hands;
+- a supervised Python 3.12 worker performs local MediaPipe face and body-pose
+  landmarking plus canned gesture recognition for up to two hands;
 - face presence and open-palm observations pass through dwell, release, and
   cooldown stabilization before becoming semantic events;
 - a responsive local web UI shows the preview, telemetry, perception state,
-  presets, scenarios, and recent events, with optional face and two-hand
+  presets, scenarios, and recent events, with optional face, body, and two-hand
   skeleton overlays, face tracking, and a direction pad with page-level
-  arrow-key control; manual movement is disabled while either tracking mode
-  owns the gimbal, and the UI reloads its embedded assets after a daemon upgrade
-  and reconnects the MJPEG preview after either a pipeline or daemon restart;
+  arrow-key control; manual movement disables built-in camera tracking and is
+  blocked only while Tarsier face tracking owns the gimbal, and the UI reloads
+  its embedded assets after a daemon upgrade and reconnects the MJPEG preview
+  after either a pipeline or daemon restart;
 - snapshots are available as JPEG over HTTP and as image content over MCP.
 
 OBS, Stream Deck, scripts, and similar tools are possible API clients. OBS is
@@ -128,10 +129,10 @@ cargo run -- serve --config config/tarsier.example.toml
 
 Open <http://127.0.0.1:8742/> for the embedded preview and controls. In another
 terminal, inspect the daemon or consume its public virtual camera. The
-**Skeletons** button overlays the detected face mesh and both 21-point hand
-skeletons in the UI without modifying the public V4L2 feed. The manual zoom
-slider applies x1-to-x4 changes continuously while coalescing obsolete
-intermediate positions. Embedded UI assets and the health response use
+**Skeletons** button overlays the detected face mesh, a 33-point body pose, and
+both 21-point hand skeletons in the UI without modifying the public V4L2 feed.
+The manual zoom slider applies x1-to-x4 changes continuously while coalescing
+obsolete intermediate positions. Embedded UI assets and the health response use
 `Cache-Control: no-store`; an open page detects a new
 daemon instance and reloads itself after a restart.
 
@@ -440,5 +441,5 @@ run before unattended use.
 
 The next focused increments are extended telemetry and USB recovery soak
 testing plus broader gesture robustness testing. Background replacement,
-avatars, full-body pose, speech, robotics, ROS, cloud video processing, and a
-large gesture vocabulary remain outside the first version.
+avatars, speech, robotics, ROS, cloud video processing, and a large gesture
+vocabulary remain outside the first version.

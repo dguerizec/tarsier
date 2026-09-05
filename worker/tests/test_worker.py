@@ -25,6 +25,11 @@ class SourceLandmark:
     z: float
 
 
+@dataclass
+class SourcePoseLandmark(SourceLandmark):
+    visibility: float
+
+
 def test_normalizes_mediapipe_gesture_names() -> None:
     assert normalize_gesture("Open_Palm") == "open_palm"
     assert normalize_gesture("None") is None
@@ -69,8 +74,14 @@ def test_selects_landmarks_from_each_group_up_to_the_limit() -> None:
     assert select_landmarks([], 2) == []
 
 
+def test_preserves_pose_landmark_visibility() -> None:
+    assert select_landmarks([[SourcePoseLandmark(0.1, 0.2, -0.3, 0.85)]], 1) == [
+        Landmark(0.1, 0.2, -0.3, 0.85)
+    ]
+
+
 def test_missing_models_are_reported_as_unverified(tmp_path: Path) -> None:
     descriptions = describe_models(tmp_path)
-    assert len(descriptions) == 2
+    assert len(descriptions) == 3
     assert all(not model["exists"] for model in descriptions)
     assert all(not model["verified"] for model in descriptions)

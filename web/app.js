@@ -49,6 +49,15 @@ const handConnections = [
   [13, 17], [0, 17], [17, 18], [18, 19], [19, 20],
 ];
 
+const poseConnections = [
+  [11, 12],
+  [11, 13], [13, 15], [15, 17], [15, 19], [15, 21],
+  [12, 14], [14, 16], [16, 18], [16, 20], [16, 22],
+  [11, 23], [12, 24], [23, 24],
+  [23, 25], [25, 27], [27, 29], [29, 31],
+  [24, 26], [26, 28], [28, 30], [30, 32],
+];
+
 const faceContourConnections = [
   61, 146, 146, 91, 91, 181, 181, 84, 84, 17, 17, 314, 314, 405, 405, 321,
   321, 375, 375, 291, 61, 185, 185, 40, 40, 39, 39, 37, 37, 0, 0, 267,
@@ -106,6 +115,7 @@ async function checkDaemonInstance() {
 function drawSkeletons(
   faceLandmarks = state?.perception.face_landmarks || [],
   handLandmarks = state?.perception.hand_landmarks || [],
+  poseLandmarks = state?.perception.pose_landmarks || [],
 ) {
   const bounds = overlay.getBoundingClientRect();
   if (bounds.width === 0 || bounds.height === 0) return;
@@ -131,12 +141,38 @@ function drawSkeletons(
   const project = (landmarks) => landmarks.map((point) => ({
     x: offsetX + point.x * renderedWidth,
     y: offsetY + point.y * renderedHeight,
+    visibility: point.visibility,
   }));
 
   overlayContext.lineCap = "round";
   overlayContext.lineJoin = "round";
   overlayContext.shadowColor = "rgba(9, 13, 11, 0.9)";
   overlayContext.shadowBlur = 4;
+
+  if (poseLandmarks.length === 33) {
+    const points = project(poseLandmarks);
+    const visible = (point) => point.visibility == null || point.visibility >= 0.5;
+    overlayContext.lineWidth = 3.5;
+    overlayContext.strokeStyle = "rgba(216, 132, 255, 0.92)";
+    overlayContext.beginPath();
+    for (const [fromIndex, toIndex] of poseConnections) {
+      const from = points[fromIndex];
+      const to = points[toIndex];
+      if (!visible(from) || !visible(to)) continue;
+      overlayContext.moveTo(from.x, from.y);
+      overlayContext.lineTo(to.x, to.y);
+    }
+    overlayContext.stroke();
+
+    overlayContext.shadowBlur = 0;
+    overlayContext.fillStyle = "#f5d9ff";
+    for (const point of points.slice(11)) {
+      if (!visible(point)) continue;
+      overlayContext.beginPath();
+      overlayContext.arc(point.x, point.y, 3.5, 0, Math.PI * 2);
+      overlayContext.fill();
+    }
+  }
 
   if (faceLandmarks.length === 478) {
     const points = project(faceLandmarks);
@@ -396,6 +432,7 @@ function render(next) {
   drawSkeletons(
     socketConnected && pipeline.running ? perception.face_landmarks : [],
     socketConnected && pipeline.running ? perception.hand_landmarks : [],
+    socketConnected && pipeline.running ? perception.pose_landmarks : [],
   );
 }
 

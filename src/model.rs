@@ -130,6 +130,8 @@ pub struct PerceptionState {
     pub hand_detected: bool,
     pub hand_landmarks: Vec<Landmark>,
     pub last_hand_at_ms: Option<u64>,
+    pub pose_detected: bool,
+    pub pose_landmarks: Vec<Landmark>,
     pub gesture: Option<String>,
     pub confidence: Option<f32>,
     pub peak_gesture: Option<String>,
@@ -144,6 +146,8 @@ pub struct Landmark {
     pub x: f32,
     pub y: f32,
     pub z: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<f32>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -177,6 +181,10 @@ pub struct PerceptionObservation {
     pub hand_detected: bool,
     #[serde(default)]
     pub hand_landmarks: Vec<Landmark>,
+    #[serde(default)]
+    pub pose_detected: bool,
+    #[serde(default)]
+    pub pose_landmarks: Vec<Landmark>,
     pub gesture: Option<String>,
     #[serde(default)]
     pub confidence: f32,
