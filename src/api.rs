@@ -1646,7 +1646,19 @@ async fn perception_mask(
         Ok(mask) => mask,
         Err(error) => return unprocessable_entity(error.to_string()),
     };
+    let published_at_ms = mask.published_at_ms;
     state.preview.effects().publish_mask(mask);
+    state
+        .runtime
+        .update(|runtime| {
+            runtime.video_effects.mask_available = true;
+            runtime.video_effects.mask_frame_id = Some(frame_id);
+            runtime.video_effects.mask_width = Some(width);
+            runtime.video_effects.mask_height = Some(height);
+            runtime.video_effects.mask_captured_at_ms = Some(captured_at_ms);
+            runtime.video_effects.mask_published_at_ms = Some(published_at_ms);
+        })
+        .await;
     StatusCode::NO_CONTENT.into_response()
 }
 
@@ -1784,15 +1796,6 @@ async fn perception_observation(
             .into_response();
     }
 
-    let mask_state = state.preview.effects().latest_mask().map(|mask| {
-        (
-            mask.frame_id,
-            mask.width,
-            mask.height,
-            mask.captured_at_ms,
-            mask.published_at_ms,
-        )
-    });
     state
         .runtime
         .update(|runtime| {
@@ -1835,14 +1838,6 @@ async fn perception_observation(
             }
             runtime.perception.sample_at_ms = Some(observation.captured_at_ms);
             runtime.perception.latency_ms = observation.latency_ms;
-            if let Some(mask) = mask_state {
-                runtime.video_effects.mask_available = true;
-                runtime.video_effects.mask_frame_id = Some(mask.0);
-                runtime.video_effects.mask_width = Some(mask.1);
-                runtime.video_effects.mask_height = Some(mask.2);
-                runtime.video_effects.mask_captured_at_ms = Some(mask.3);
-                runtime.video_effects.mask_published_at_ms = Some(mask.4);
-            }
         })
         .await;
 
@@ -2966,7 +2961,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn perception_mask_is_published_with_frame_provenance() {
+    async fn perception_mask_immediately_updates_runtime_frame_provenance() {
         let mut config = Config::default();
         config.perception.enabled = false;
         let runtime = Runtime::new();
@@ -2994,27 +2989,6 @@ mod tests {
         assert_eq!(mask.frame_id, 42);
         assert_eq!(mask.captured_at_ms, 123456);
         assert_eq!((mask.width, mask.height), (2, 2));
-
-        let observation = json!({
-            "frame_id": 42,
-            "captured_at_ms": 123456,
-            "face_detected": false,
-            "hand_detected": false,
-            "pose_detected": false,
-            "gesture": null,
-            "confidence": 0.0,
-            "latency_ms": 10.0
-        });
-        let response = app
-            .oneshot(
-                Request::post("/api/v1/perception/observations")
-                    .header("content-type", "application/json")
-                    .body(Body::from(observation.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::NO_CONTENT);
         let effects = runtime.state().await.video_effects;
         assert!(effects.mask_available);
         assert_eq!(effects.mask_frame_id, Some(42));
@@ -3022,6 +2996,8 @@ mod tests {
             (effects.mask_width, effects.mask_height),
             (Some(2), Some(2))
         );
+        assert_eq!(effects.mask_captured_at_ms, Some(123456));
+        assert_eq!(effects.mask_published_at_ms, Some(mask.published_at_ms));
     }
 
     #[tokio::test]
