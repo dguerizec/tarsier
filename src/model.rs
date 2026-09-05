@@ -122,6 +122,7 @@ pub struct CameraState {
     pub hdr: Option<bool>,
     pub hdr_sample_at_ms: Option<u64>,
     pub hdr_error: Option<String>,
+    pub image_settings: CameraImageSettingsState,
     pub built_in_gestures: BuiltInGestureState,
     pub yaw_degrees: Option<f32>,
     pub pitch_degrees: Option<f32>,
@@ -137,6 +138,109 @@ pub struct CameraState {
     pub telemetry_error: Option<String>,
     pub last_command_at_ms: Option<u64>,
     pub error: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum CameraImageControl {
+    Brightness,
+    Contrast,
+    Saturation,
+    Hue,
+    Gain,
+    BacklightCompensation,
+    PowerLineFrequency,
+    WhiteBalanceAutomatic,
+    WhiteBalanceTemperature,
+    RedBalance,
+    BlueBalance,
+    Sharpness,
+    AutoExposure,
+    ExposureTimeAbsolute,
+    ExposureDynamicFramerate,
+    FocusAbsolute,
+    FocusAutomaticContinuous,
+    FacePriorityAutoExposure,
+}
+
+impl CameraImageControl {
+    pub const STANDARD: [Self; 17] = [
+        Self::Brightness,
+        Self::Contrast,
+        Self::Saturation,
+        Self::Hue,
+        Self::Gain,
+        Self::BacklightCompensation,
+        Self::PowerLineFrequency,
+        Self::WhiteBalanceAutomatic,
+        Self::WhiteBalanceTemperature,
+        Self::RedBalance,
+        Self::BlueBalance,
+        Self::Sharpness,
+        Self::AutoExposure,
+        Self::ExposureTimeAbsolute,
+        Self::ExposureDynamicFramerate,
+        Self::FocusAbsolute,
+        Self::FocusAutomaticContinuous,
+    ];
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum CameraImageControlKind {
+    Integer,
+    Boolean,
+    Menu,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct CameraImageControlOption {
+    pub value: i32,
+    pub label: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct CameraImageControlState {
+    pub control: CameraImageControl,
+    pub kind: CameraImageControlKind,
+    pub available: bool,
+    pub active: bool,
+    pub read_only: bool,
+    pub value: Option<i32>,
+    pub minimum: Option<i32>,
+    pub maximum: Option<i32>,
+    pub step: Option<i32>,
+    pub default_value: Option<i32>,
+    pub options: Vec<CameraImageControlOption>,
+    pub sample_at_ms: Option<u64>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct CameraImageSettingsState {
+    pub controls: Vec<CameraImageControlState>,
+    pub error: Option<String>,
+}
+
+impl CameraImageSettingsState {
+    pub fn upsert(&mut self, control: CameraImageControlState) {
+        if let Some(existing) = self
+            .controls
+            .iter_mut()
+            .find(|existing| existing.control == control.control)
+        {
+            *existing = control;
+        } else {
+            self.controls.push(control);
+        }
+    }
+
+    pub fn value(&self, control: CameraImageControl) -> Option<i32> {
+        self.controls
+            .iter()
+            .find(|state| state.control == control)
+            .and_then(|state| state.value)
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

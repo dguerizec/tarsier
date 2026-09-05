@@ -25,8 +25,8 @@ use crate::{
     face_tracking::{FaceTrackingController, MANUAL_ZOOM_SETTLE_MS},
     model::{
         AutoZoomState, AvatarEngine, BackgroundEffect, BuiltInGesture, CameraAttitudeSource,
-        FaceTrackingState, FaceTrackingTarget, Landmark, PerceptionObservation, ScenarioActivation,
-        VideoIdentity, VideoOutputMode, unix_ms,
+        CameraImageControl, FaceTrackingState, FaceTrackingTarget, Landmark, PerceptionObservation,
+        ScenarioActivation, VideoIdentity, VideoOutputMode, unix_ms,
     },
     pipeline::{PerceptionFrame, PreviewHub, VideoPipelineControl},
     runtime::Runtime,
@@ -140,6 +140,10 @@ pub fn router_with_controls(
         .route("/api/v1/camera/move", post(move_camera))
         .route("/api/v1/camera/nudge/{direction}", post(nudge_camera))
         .route("/api/v1/camera/zoom", post(set_zoom))
+        .route(
+            "/api/v1/camera/image-settings/{control}",
+            post(set_image_control),
+        )
         .route("/api/v1/camera/auto-zoom", post(set_auto_zoom))
         .route("/api/v1/camera/hdr", post(set_hdr))
         .route("/api/v1/camera/tracking", post(set_tracking))
@@ -422,6 +426,11 @@ struct AutoZoomRequest {
 }
 
 #[derive(Deserialize)]
+struct ImageControlRequest {
+    value: i32,
+}
+
+#[derive(Deserialize)]
 struct GreenScreenRequest {
     enabled: bool,
 }
@@ -692,6 +701,45 @@ async fn set_zoom(State(state): State<ApiState>, Json(request): Json<ZoomRequest
             )
             .await;
             StatusCode::ACCEPTED.into_response()
+        }
+        Err(error) => command_error(error),
+    }
+}
+
+async fn set_image_control(
+    State(state): State<ApiState>,
+    axum::extract::Path(control): axum::extract::Path<CameraImageControl>,
+    Json(request): Json<ImageControlRequest>,
+) -> Response {
+    let Some(camera) = state.camera.clone() else {
+        return camera_unavailable();
+    };
+    match camera.set_image_control(control, request.value).await {
+        Ok(controls) => {
+            let readback = controls
+                .iter()
+                .find(|state| state.control == control)
+                .and_then(|state| state.value);
+            state
+                .runtime
+                .update(|runtime| {
+                    for control in controls {
+                        runtime.camera.image_settings.upsert(control);
+                    }
+                    runtime.camera.image_settings.error = None;
+                })
+                .await;
+            record_camera_command(
+                &state,
+                "camera.image_setting",
+                json!({"control": control, "value": request.value, "readback": readback}),
+            )
+            .await;
+            (
+                StatusCode::ACCEPTED,
+                Json(json!({"control": control, "value": readback})),
+            )
+                .into_response()
         }
         Err(error) => command_error(error),
     }
@@ -3109,6 +3157,63 @@ mod tests {
         let events = runtime.recent_events().await;
         assert_eq!(events[0].kind, "camera.zoom");
         assert!((events[0].data["magnification"].as_f64().unwrap() - 3.4).abs() < 1e-6);
+    }
+
+    #[tokio::test]
+    async fn image_settings_require_their_manual_modes_and_keep_readback() {
+        let mut config = Config::default();
+        config.camera.adapter = CameraAdapter::Mock;
+        config.perception.enabled = false;
+        let runtime = Runtime::new();
+        let camera = camera::start(config.camera.clone(), runtime.clone())
+            .await
+            .unwrap();
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = router(
+            config,
+            runtime.clone(),
+            PreviewHub::new(),
+            camera,
+            shutdown_rx,
+        );
+
+        for (path, value, expected) in [
+            ("brightness", 61, StatusCode::ACCEPTED),
+            ("gain", 5, StatusCode::UNPROCESSABLE_ENTITY),
+            ("auto-exposure", 1, StatusCode::ACCEPTED),
+            ("gain", 5, StatusCode::ACCEPTED),
+            (
+                "face-priority-auto-exposure",
+                1,
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+            ("auto-exposure", 0, StatusCode::ACCEPTED),
+            ("face-priority-auto-exposure", 1, StatusCode::ACCEPTED),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post(format!("/api/v1/camera/image-settings/{path}"))
+                        .header("content-type", "application/json")
+                        .body(Body::from(json!({"value": value}).to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected, "unexpected result for {path}");
+        }
+
+        let settings = runtime.state().await.camera.image_settings;
+        assert_eq!(settings.value(CameraImageControl::Brightness), Some(61));
+        assert_eq!(settings.value(CameraImageControl::Gain), Some(5));
+        assert_eq!(settings.value(CameraImageControl::AutoExposure), Some(0));
+        assert_eq!(
+            settings.value(CameraImageControl::FacePriorityAutoExposure),
+            Some(1)
+        );
+        let events = runtime.recent_events().await;
+        assert_eq!(events.last().unwrap().kind, "camera.image_setting");
+        assert_eq!(events.last().unwrap().data["readback"], 1);
     }
 
     #[tokio::test]

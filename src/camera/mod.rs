@@ -15,10 +15,15 @@ use tokio::sync::{mpsc as tokio_mpsc, oneshot};
 
 use crate::{
     config::{CameraAdapter, CameraConfig},
-    model::{BuiltInGesture, CameraAttitudeSource, unix_ms},
+    model::{
+        BuiltInGesture, CameraAttitudeSource, CameraImageControl, CameraImageControlState, unix_ms,
+    },
     runtime::Runtime,
 };
-use linux_uvc::{LinuxUvcTransport, XuTransport, ZoomControl};
+use linux_uvc::{
+    LinuxUvcTransport, XuTransport, ZoomControl, image_control_kind, image_control_options,
+    unavailable_image_control, validate_image_control_value,
+};
 use protocol::{
     AI_GET_GIM_STATE, AI_GET_QUICK_STATUS, AiGestureStatus, AiGimbalState, CameraStatus,
     FRAME_SIZE, TRACKING_SELECTOR, VENDOR_SELECTOR,
@@ -28,6 +33,7 @@ const COMMAND_QUEUE_CAPACITY: usize = 32;
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(1);
 const GESTURE_STATUS_MINIMUM_INTERVAL: Duration = Duration::from_secs(5);
 const TELEMETRY_MAXIMUM_BACKOFF: Duration = Duration::from_secs(60);
+const IMAGE_SETTINGS_MINIMUM_INTERVAL: Duration = Duration::from_secs(5);
 const HDR_SWITCH_MINIMUM_INTERVAL: Duration = Duration::from_secs(3);
 const NUDGE_SPEED_FRACTION: f64 = 0.25;
 pub const PAN_TILT_LEASE: Duration = Duration::from_millis(350);
@@ -61,11 +67,21 @@ enum Command {
         tilt_direction: i8,
         speed_fraction: f64,
     },
+    ImageControl {
+        control: CameraImageControl,
+        value: i32,
+    },
+}
+
+#[derive(Debug)]
+enum CommandOutcome {
+    Applied,
+    ImageControls(Vec<CameraImageControlState>),
 }
 
 struct Request {
     command: Command,
-    response: oneshot::Sender<Result<(), String>>,
+    response: oneshot::Sender<Result<CommandOutcome, String>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,6 +89,7 @@ enum TelemetryKind {
     Gimbal,
     Gestures,
     Status,
+    ImageSettings,
 }
 
 #[derive(Debug)]
@@ -80,6 +97,7 @@ enum TelemetryUpdate {
     Gimbal(AiGimbalState),
     Gestures(AiGestureStatus),
     Status(CameraStatus),
+    ImageSettings(Vec<CameraImageControlState>),
     Failure {
         kind: TelemetryKind,
         error: String,
@@ -128,6 +146,7 @@ struct TelemetryPoller {
     gimbal: PollSchedule,
     gestures: PollSchedule,
     status: PollSchedule,
+    image_settings: PollSchedule,
 }
 
 impl TelemetryPoller {
@@ -139,11 +158,13 @@ impl TelemetryPoller {
         let gesture_interval = interval
             .saturating_mul(5)
             .max(GESTURE_STATUS_MINIMUM_INTERVAL);
+        let image_settings_interval = interval.max(IMAGE_SETTINGS_MINIMUM_INTERVAL);
         Self {
             tx,
             gimbal: PollSchedule::new(interval, now),
             gestures: PollSchedule::new(gesture_interval, now),
             status: PollSchedule::new(interval, now),
+            image_settings: PollSchedule::new(image_settings_interval, now),
         }
     }
 
@@ -154,6 +175,8 @@ impl TelemetryPoller {
             Some(TelemetryKind::Status)
         } else if self.gestures.due(now) {
             Some(TelemetryKind::Gestures)
+        } else if self.image_settings.due(now) {
+            Some(TelemetryKind::ImageSettings)
         } else {
             None
         }
@@ -164,6 +187,7 @@ impl TelemetryPoller {
             TelemetryKind::Gimbal => &mut self.gimbal,
             TelemetryKind::Gestures => &mut self.gestures,
             TelemetryKind::Status => &mut self.status,
+            TelemetryKind::ImageSettings => &mut self.image_settings,
         }
     }
 }
@@ -181,7 +205,7 @@ pub struct CameraHandle {
 impl CameraHandle {
     pub async fn set_powered_on(&self, enabled: bool) -> Result<()> {
         self.begin_power_transition();
-        let result = self.request(Command::Power { enabled }).await;
+        let result = self.request(Command::Power { enabled }).await.map(|_| ());
         self.end_power_transition();
         result
     }
@@ -227,7 +251,7 @@ impl CameraHandle {
     }
 
     pub async fn set_hdr(&self, enabled: bool) -> Result<()> {
-        self.request(Command::Hdr { enabled }).await
+        self.request(Command::Hdr { enabled }).await.map(|_| ())
     }
 
     pub async fn set_built_in_gesture(&self, feature: BuiltInGesture, enabled: bool) -> Result<()> {
@@ -249,6 +273,20 @@ impl CameraHandle {
     pub fn controlled_zoom_magnification(&self) -> Option<f32> {
         let magnification = f32::from_bits(self.controlled_zoom_bits.load(Ordering::Relaxed));
         magnification.is_finite().then_some(magnification)
+    }
+
+    pub async fn set_image_control(
+        &self,
+        control: CameraImageControl,
+        value: i32,
+    ) -> Result<Vec<CameraImageControlState>> {
+        match self
+            .request(Command::ImageControl { control, value })
+            .await?
+        {
+            CommandOutcome::ImageControls(controls) => Ok(controls),
+            CommandOutcome::Applied => bail!("camera returned no image-control readback"),
+        }
     }
 
     pub async fn set_pan_tilt_speed(&self, pan_direction: i8, tilt_direction: i8) -> Result<()> {
@@ -288,7 +326,7 @@ impl CameraHandle {
         .map(|_| ())
     }
 
-    async fn request(&self, command: Command) -> Result<()> {
+    async fn request(&self, command: Command) -> Result<CommandOutcome> {
         if !matches!(command, Command::Power { .. }) {
             if self.power_transition.load(Ordering::Relaxed) {
                 bail!("camera power is changing");
@@ -328,6 +366,7 @@ pub async fn start(config: CameraConfig, runtime: Runtime) -> Result<Option<Came
                     state.camera.zoom_magnification = Some(1.0);
                     state.camera.hdr = Some(false);
                     state.camera.hdr_sample_at_ms = Some(now);
+                    state.camera.image_settings.controls = mock_image_controls();
                     state.camera.attitude_source = CameraAttitudeSource::Simulated;
                     state.camera.sample_at_ms = Some(now);
                 })
@@ -336,6 +375,11 @@ pub async fn start(config: CameraConfig, runtime: Runtime) -> Result<Option<Came
         }
         CameraAdapter::ObsbotTiny2 => {
             let mut transport = LinuxUvcTransport::open(&config.control_device, config.xu_unit)?;
+            let mut initial_image_controls = transport.image_controls();
+            initial_image_controls.push(unavailable_image_control(
+                CameraImageControl::FacePriorityAutoExposure,
+                "awaiting selector-6 status readback",
+            ));
             let initial_zoom = match transport.zoom_control() {
                 Ok(control) => match magnification_from_zoom_units(control) {
                     Ok(magnification) => Some(magnification),
@@ -357,6 +401,7 @@ pub async fn start(config: CameraConfig, runtime: Runtime) -> Result<Option<Came
                     state.camera.powered_on = Some(true);
                     state.camera.zoom_magnification = initial_zoom;
                     state.camera.zoom_sample_at_ms = zoom_sample_at_ms;
+                    state.camera.image_settings.controls = initial_image_controls;
                     state.camera.error = None;
                 })
                 .await;
@@ -481,33 +526,43 @@ impl<T: XuTransport> Worker<T> {
         }
     }
 
-    fn execute(&mut self, command: Command) -> Result<()> {
+    fn execute(&mut self, command: Command) -> Result<CommandOutcome> {
         if !matches!(command, Command::Power { .. }) && !self.powered_on.load(Ordering::Relaxed) {
             bail!("camera is powered off");
         }
         match command {
-            Command::Power { enabled } => self.set_powered_on(enabled),
+            Command::Power { enabled } => {
+                self.set_powered_on(enabled)?;
+                Ok(CommandOutcome::Applied)
+            }
             Command::Move { yaw, pitch, roll } => {
                 self.wake()?;
                 let mut frame = protocol::move_frame(self.next_sequence(), yaw, pitch, roll);
-                self.set(VENDOR_SELECTOR, &mut frame)
+                self.set(VENDOR_SELECTOR, &mut frame)?;
+                Ok(CommandOutcome::Applied)
             }
             Command::Recenter => {
                 self.wake()?;
                 let mut frame = protocol::recenter_frame(self.next_sequence());
-                self.set(VENDOR_SELECTOR, &mut frame)
+                self.set(VENDOR_SELECTOR, &mut frame)?;
+                Ok(CommandOutcome::Applied)
             }
             Command::Tracking { enabled } => {
                 self.wake()?;
                 let mut payload = protocol::tracking_payload(enabled);
-                self.set(TRACKING_SELECTOR, &mut payload)
+                self.set(TRACKING_SELECTOR, &mut payload)?;
+                Ok(CommandOutcome::Applied)
             }
-            Command::Hdr { enabled } => self.set_hdr(enabled),
+            Command::Hdr { enabled } => {
+                self.set_hdr(enabled)?;
+                Ok(CommandOutcome::Applied)
+            }
             Command::BuiltInGesture { feature, enabled } => {
                 self.wake()?;
                 let mut frame =
                     protocol::built_in_gesture_frame(self.next_sequence(), feature, enabled);
-                self.set(VENDOR_SELECTOR, &mut frame)
+                self.set(VENDOR_SELECTOR, &mut frame)?;
+                Ok(CommandOutcome::Applied)
             }
             Command::Zoom { magnification } => {
                 self.pace();
@@ -515,14 +570,100 @@ impl<T: XuTransport> Worker<T> {
                 let units = zoom_units_from_magnification(magnification, control)?;
                 self.transport.set_zoom_units(units)?;
                 self.last_io = Some(Instant::now());
-                Ok(())
+                Ok(CommandOutcome::Applied)
             }
             Command::PanTiltSpeed {
                 pan_direction,
                 tilt_direction,
                 speed_fraction,
-            } => self.set_pan_tilt_speed(pan_direction, tilt_direction, speed_fraction),
+            } => {
+                self.set_pan_tilt_speed(pan_direction, tilt_direction, speed_fraction)?;
+                Ok(CommandOutcome::Applied)
+            }
+            Command::ImageControl { control, value } => Ok(CommandOutcome::ImageControls(
+                self.set_image_control(control, value)?,
+            )),
         }
+    }
+
+    fn set_image_control(
+        &mut self,
+        control: CameraImageControl,
+        value: i32,
+    ) -> Result<Vec<CameraImageControlState>> {
+        if control == CameraImageControl::FacePriorityAutoExposure {
+            let exposure = self
+                .transport
+                .image_control(CameraImageControl::AutoExposure);
+            let active = exposure.available && exposure.value != Some(1);
+            let before = face_priority_auto_exposure_control(Some(false), active);
+            validate_image_control_value(&before, value)?;
+            let mut payload = protocol::face_priority_auto_exposure_payload(value != 0);
+            self.set(TRACKING_SELECTOR, &mut payload)?;
+            let status = self.query_status()?;
+            let readback = status
+                .face_priority_auto_exposure
+                .ok_or_else(|| anyhow!("camera returned invalid face-priority AE readback"))?;
+            if readback != (value != 0) {
+                bail!(
+                    "camera face-priority AE readback mismatch: requested {}, got {}",
+                    value != 0,
+                    readback
+                );
+            }
+            return Ok(vec![
+                exposure,
+                face_priority_auto_exposure_control(Some(readback), active),
+            ]);
+        }
+
+        self.validate_image_control_mode(control)?;
+        self.pace();
+        let updated = self.transport.set_image_control(control, value)?;
+        self.last_io = Some(Instant::now());
+        let mut controls = vec![updated];
+        for dependency in image_control_dependencies(control) {
+            controls.push(self.transport.image_control(*dependency));
+        }
+        if control == CameraImageControl::AutoExposure {
+            let status = self.query_status()?;
+            controls.push(face_priority_auto_exposure_control(
+                status.face_priority_auto_exposure,
+                value != 1,
+            ));
+        }
+        Ok(controls)
+    }
+
+    fn validate_image_control_mode(&mut self, control: CameraImageControl) -> Result<()> {
+        let requirement = match control {
+            CameraImageControl::ExposureTimeAbsolute | CameraImageControl::Gain => Some((
+                CameraImageControl::AutoExposure,
+                1,
+                "manual exposure must be enabled first",
+            )),
+            CameraImageControl::WhiteBalanceTemperature
+            | CameraImageControl::RedBalance
+            | CameraImageControl::BlueBalance => Some((
+                CameraImageControl::WhiteBalanceAutomatic,
+                0,
+                "automatic white balance must be disabled first",
+            )),
+            CameraImageControl::FocusAbsolute => Some((
+                CameraImageControl::FocusAutomaticContinuous,
+                0,
+                "continuous autofocus must be disabled first",
+            )),
+            _ => None,
+        };
+        let Some((dependency, required_value, message)) = requirement else {
+            return Ok(());
+        };
+        let state = self.transport.image_control(dependency);
+        if !state.available || state.value != Some(required_value) {
+            bail!(message);
+        }
+        Ok(())
     }
 
     fn set_powered_on(&mut self, enabled: bool) -> Result<()> {
@@ -644,6 +785,12 @@ impl<T: XuTransport> Worker<T> {
             TelemetryKind::Gimbal => self.query_gimbal().map(TelemetryUpdate::Gimbal),
             TelemetryKind::Gestures => self.query_ai_status().map(TelemetryUpdate::Gestures),
             TelemetryKind::Status => self.query_status().map(TelemetryUpdate::Status),
+            TelemetryKind::ImageSettings => {
+                self.pace();
+                let controls = self.transport.image_controls();
+                self.last_io = Some(Instant::now());
+                Ok(TelemetryUpdate::ImageSettings(controls))
+            }
         };
         let completed_at = Instant::now();
         let poller = self.telemetry.as_mut().expect("telemetry poller exists");
@@ -739,6 +886,133 @@ impl<T: XuTransport> Worker<T> {
     }
 }
 
+fn image_control_dependencies(control: CameraImageControl) -> &'static [CameraImageControl] {
+    match control {
+        CameraImageControl::AutoExposure => &[
+            CameraImageControl::ExposureTimeAbsolute,
+            CameraImageControl::Gain,
+            CameraImageControl::ExposureDynamicFramerate,
+        ],
+        CameraImageControl::WhiteBalanceAutomatic => &[
+            CameraImageControl::WhiteBalanceTemperature,
+            CameraImageControl::RedBalance,
+            CameraImageControl::BlueBalance,
+        ],
+        CameraImageControl::FocusAutomaticContinuous => &[CameraImageControl::FocusAbsolute],
+        _ => &[],
+    }
+}
+
+fn face_priority_auto_exposure_control(
+    enabled: Option<bool>,
+    active: bool,
+) -> CameraImageControlState {
+    CameraImageControlState {
+        control: CameraImageControl::FacePriorityAutoExposure,
+        kind: image_control_kind(CameraImageControl::FacePriorityAutoExposure),
+        available: enabled.is_some(),
+        active,
+        read_only: false,
+        value: enabled.map(i32::from),
+        minimum: Some(0),
+        maximum: Some(1),
+        step: Some(1),
+        default_value: Some(0),
+        options: image_control_options(CameraImageControl::FacePriorityAutoExposure),
+        sample_at_ms: Some(unix_ms()),
+        error: enabled
+            .is_none()
+            .then(|| "camera returned invalid face-priority AE status".to_owned()),
+    }
+}
+
+fn mock_image_control(
+    control: CameraImageControl,
+    value: i32,
+    minimum: i32,
+    maximum: i32,
+    step: i32,
+    default_value: i32,
+) -> CameraImageControlState {
+    CameraImageControlState {
+        control,
+        kind: image_control_kind(control),
+        available: true,
+        active: true,
+        read_only: false,
+        value: Some(value),
+        minimum: Some(minimum),
+        maximum: Some(maximum),
+        step: Some(step),
+        default_value: Some(default_value),
+        options: image_control_options(control),
+        sample_at_ms: Some(unix_ms()),
+        error: None,
+    }
+}
+
+fn mock_image_controls() -> Vec<CameraImageControlState> {
+    let mut controls = vec![
+        mock_image_control(CameraImageControl::Brightness, 50, 0, 100, 1, 50),
+        mock_image_control(CameraImageControl::Contrast, 50, 0, 100, 1, 50),
+        mock_image_control(CameraImageControl::Saturation, 50, 0, 100, 1, 50),
+        mock_image_control(CameraImageControl::Hue, 50, 0, 100, 1, 50),
+        mock_image_control(CameraImageControl::Gain, 1, 1, 32, 1, 1),
+        mock_image_control(CameraImageControl::BacklightCompensation, 9, 0, 18, 1, 9),
+        mock_image_control(CameraImageControl::PowerLineFrequency, 0, 0, 2, 1, 0),
+        mock_image_control(CameraImageControl::WhiteBalanceAutomatic, 1, 0, 1, 1, 1),
+        mock_image_control(
+            CameraImageControl::WhiteBalanceTemperature,
+            5000,
+            2000,
+            10000,
+            100,
+            5000,
+        ),
+        mock_image_control(CameraImageControl::RedBalance, 1024, 0, 2048, 1, 1024),
+        mock_image_control(CameraImageControl::BlueBalance, 1024, 0, 2048, 1, 1024),
+        mock_image_control(CameraImageControl::Sharpness, 50, 0, 100, 1, 50),
+        mock_image_control(CameraImageControl::AutoExposure, 0, 0, 3, 1, 0),
+        mock_image_control(
+            CameraImageControl::ExposureTimeAbsolute,
+            330,
+            1,
+            2500,
+            1,
+            330,
+        ),
+        mock_image_control(CameraImageControl::ExposureDynamicFramerate, 0, 0, 1, 1, 0),
+        mock_image_control(CameraImageControl::FocusAbsolute, 25, 0, 100, 1, 25),
+        mock_image_control(CameraImageControl::FocusAutomaticContinuous, 1, 0, 1, 1, 1),
+        face_priority_auto_exposure_control(Some(false), true),
+    ];
+    update_mock_image_control_modes(&mut controls);
+    controls
+}
+
+fn update_mock_image_control_modes(controls: &mut [CameraImageControlState]) {
+    let value = |control| {
+        controls
+            .iter()
+            .find(|state| state.control == control)
+            .and_then(|state| state.value)
+    };
+    let exposure_manual = value(CameraImageControl::AutoExposure) == Some(1);
+    let white_balance_automatic = value(CameraImageControl::WhiteBalanceAutomatic) == Some(1);
+    let focus_automatic = value(CameraImageControl::FocusAutomaticContinuous) == Some(1);
+    for state in controls {
+        state.active = match state.control {
+            CameraImageControl::ExposureTimeAbsolute | CameraImageControl::Gain => exposure_manual,
+            CameraImageControl::FacePriorityAutoExposure => !exposure_manual,
+            CameraImageControl::WhiteBalanceTemperature
+            | CameraImageControl::RedBalance
+            | CameraImageControl::BlueBalance => !white_balance_automatic,
+            CameraImageControl::FocusAbsolute => !focus_automatic,
+            _ => true,
+        };
+    }
+}
+
 fn spawn_mock(config: &CameraConfig) -> CameraHandle {
     let (tx, rx) = sync_channel::<Request>(COMMAND_QUEUE_CAPACITY);
     let powered_on = Arc::new(AtomicBool::new(true));
@@ -746,11 +1020,12 @@ fn spawn_mock(config: &CameraConfig) -> CameraHandle {
     std::thread::Builder::new()
         .name("tarsier-mock-camera".into())
         .spawn(move || {
+            let mut image_controls = mock_image_controls();
             while let Ok(request) = rx.recv() {
                 let result = match request.command {
                     Command::Power { enabled } => {
                         worker_powered_on.store(enabled, Ordering::Relaxed);
-                        Ok(())
+                        Ok(CommandOutcome::Applied)
                     }
                     Command::Move { .. }
                     | Command::Recenter
@@ -758,9 +1033,27 @@ fn spawn_mock(config: &CameraConfig) -> CameraHandle {
                     | Command::Hdr { .. }
                     | Command::BuiltInGesture { .. }
                     | Command::Zoom { .. }
-                    | Command::PanTiltSpeed { .. } => Ok(()),
+                    | Command::PanTiltSpeed { .. } => Ok(CommandOutcome::Applied),
+                    Command::ImageControl { control, value } => {
+                        let result = image_controls
+                            .iter_mut()
+                            .find(|state| state.control == control)
+                            .ok_or_else(|| anyhow!("mock camera image control is unavailable"))
+                            .and_then(|state| {
+                                validate_image_control_value(state, value)?;
+                                state.value = Some(value);
+                                state.sample_at_ms = Some(unix_ms());
+                                Ok(())
+                            });
+                        result.map(|()| {
+                            update_mock_image_control_modes(&mut image_controls);
+                            CommandOutcome::ImageControls(image_controls.clone())
+                        })
+                    }
                 };
-                let _ = request.response.send(result);
+                let _ = request
+                    .response
+                    .send(result.map_err(|error| error.to_string()));
             }
         })
         .expect("failed to spawn mock camera thread");
@@ -893,6 +1186,42 @@ fn spawn_telemetry_updates(
                                 state.camera.hdr = Some(hdr);
                                 state.camera.hdr_sample_at_ms = Some(unix_ms());
                             }
+                            if let Some(enabled) = status.face_priority_auto_exposure {
+                                let active = matches!(
+                                    state
+                                        .camera
+                                        .image_settings
+                                        .value(CameraImageControl::AutoExposure),
+                                    Some(value) if value != 1
+                                );
+                                state.camera.image_settings.upsert(
+                                    face_priority_auto_exposure_control(Some(enabled), active),
+                                );
+                            }
+                        })
+                        .await;
+                }
+                TelemetryUpdate::ImageSettings(controls) => {
+                    runtime
+                        .update(|state| {
+                            let face_priority = state
+                                .camera
+                                .image_settings
+                                .value(CameraImageControl::FacePriorityAutoExposure)
+                                .map(|value| value != 0);
+                            state.camera.image_settings.controls = controls;
+                            let active = matches!(
+                                state
+                                    .camera
+                                    .image_settings
+                                    .value(CameraImageControl::AutoExposure),
+                                Some(value) if value != 1
+                            );
+                            state
+                                .camera
+                                .image_settings
+                                .upsert(face_priority_auto_exposure_control(face_priority, active));
+                            state.camera.image_settings.error = None;
                         })
                         .await;
                 }
@@ -917,6 +1246,9 @@ fn spawn_telemetry_updates(
                                 state.camera.tracking_error = Some(error.clone());
                                 state.camera.zoom_error = Some(error.clone());
                                 state.camera.hdr_error = Some(error);
+                            }
+                            TelemetryKind::ImageSettings => {
+                                state.camera.image_settings.error = Some(error)
                             }
                         })
                         .await;
@@ -948,10 +1280,34 @@ mod tests {
         writes: Vec<(u8, [u8; FRAME_SIZE])>,
         zoom_units: Vec<i32>,
         pan_tilt_speed_units: Vec<(i32, i32)>,
+        image_control_values: Vec<(CameraImageControl, i32)>,
+        face_priority_auto_exposure: bool,
+    }
+
+    impl RecordingTransport {
+        fn recorded_image_controls(&self) -> Vec<CameraImageControlState> {
+            let mut controls = mock_image_controls();
+            for (control, value) in &self.image_control_values {
+                if let Some(state) = controls.iter_mut().find(|state| state.control == *control) {
+                    state.value = Some(*value);
+                }
+            }
+            if let Some(state) = controls
+                .iter_mut()
+                .find(|state| state.control == CameraImageControl::FacePriorityAutoExposure)
+            {
+                state.value = Some(i32::from(self.face_priority_auto_exposure));
+            }
+            update_mock_image_control_modes(&mut controls);
+            controls
+        }
     }
 
     impl XuTransport for RecordingTransport {
         fn set(&mut self, selector: u8, data: &mut [u8]) -> Result<()> {
+            if selector == TRACKING_SELECTOR && data[..2] == [0x03, 0x01] {
+                self.face_priority_auto_exposure = data[2] != 0;
+            }
             self.writes.push((selector, data.try_into().unwrap()));
             Ok(())
         }
@@ -960,6 +1316,7 @@ mod tests {
             assert_eq!(selector, TRACKING_SELECTOR);
             data[0x04] = 23;
             data[0x06] = 1;
+            data[0x07] = u8::from(self.face_priority_auto_exposure);
             data[0x18] = 2;
             data[0x1c] = 0;
             Ok(())
@@ -999,6 +1356,28 @@ mod tests {
         fn set_pan_tilt_speed_units(&mut self, pan: i32, tilt: i32) -> Result<()> {
             self.pan_tilt_speed_units.push((pan, tilt));
             Ok(())
+        }
+
+        fn image_controls(&mut self) -> Vec<CameraImageControlState> {
+            self.recorded_image_controls()
+        }
+
+        fn image_control(&mut self, control: CameraImageControl) -> CameraImageControlState {
+            self.recorded_image_controls()
+                .into_iter()
+                .find(|state| state.control == control)
+                .unwrap()
+        }
+
+        fn set_image_control(
+            &mut self,
+            control: CameraImageControl,
+            value: i32,
+        ) -> Result<CameraImageControlState> {
+            let state = self.image_control(control);
+            validate_image_control_value(&state, value)?;
+            self.image_control_values.push((control, value));
+            Ok(self.image_control(control))
         }
     }
 
@@ -1116,6 +1495,7 @@ mod tests {
         assert_eq!(status.tracking, Some(true));
         assert_eq!(status.zoom_percent, Some(23));
         assert_eq!(status.hdr, Some(true));
+        assert_eq!(status.face_priority_auto_exposure, Some(false));
         assert_eq!(
             magnification_from_zoom_percent(status.zoom_percent.unwrap()),
             1.69
@@ -1139,6 +1519,53 @@ mod tests {
         worker.last_hdr_switch = Some(Instant::now() - HDR_SWITCH_MINIMUM_INTERVAL);
         worker.set_hdr(false).unwrap();
         assert_eq!(&worker.transport.writes[1].1[..3], &[0x01, 0x01, 0x00]);
+    }
+
+    #[test]
+    fn image_control_writes_are_serialized_and_return_dependent_readback() {
+        let (_tx, rx) = sync_channel(1);
+        let mut worker = Worker::new(RecordingTransport::default(), rx, Duration::ZERO);
+
+        let controls = worker
+            .set_image_control(CameraImageControl::AutoExposure, 1)
+            .unwrap();
+        assert_eq!(
+            worker.transport.image_control_values,
+            [(CameraImageControl::AutoExposure, 1)]
+        );
+        assert_eq!(
+            controls
+                .iter()
+                .find(|state| state.control == CameraImageControl::ExposureTimeAbsolute)
+                .map(|state| state.active),
+            Some(true)
+        );
+        assert_eq!(
+            controls
+                .iter()
+                .find(|state| state.control == CameraImageControl::FacePriorityAutoExposure)
+                .map(|state| state.active),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn face_priority_auto_exposure_uses_selector_six_and_checks_readback() {
+        let (_tx, rx) = sync_channel(1);
+        let mut worker = Worker::new(RecordingTransport::default(), rx, Duration::ZERO);
+
+        let controls = worker
+            .set_image_control(CameraImageControl::FacePriorityAutoExposure, 1)
+            .unwrap();
+        assert_eq!(worker.transport.writes[0].0, TRACKING_SELECTOR);
+        assert_eq!(&worker.transport.writes[0].1[..3], &[0x03, 0x01, 0x01]);
+        assert_eq!(
+            controls
+                .iter()
+                .find(|state| state.control == CameraImageControl::FacePriorityAutoExposure)
+                .and_then(|state| state.value),
+            Some(1)
+        );
     }
 
     #[test]

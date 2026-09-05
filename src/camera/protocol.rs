@@ -69,6 +69,7 @@ pub struct CameraStatus {
     pub tracking: Option<bool>,
     pub zoom_percent: Option<u8>,
     pub hdr: Option<bool>,
+    pub face_priority_auto_exposure: Option<bool>,
 }
 
 pub fn build_frame(
@@ -217,6 +218,14 @@ pub fn hdr_payload(enabled: bool) -> [u8; FRAME_SIZE] {
     payload
 }
 
+pub fn face_priority_auto_exposure_payload(enabled: bool) -> [u8; FRAME_SIZE] {
+    let mut payload = [0_u8; FRAME_SIZE];
+    payload[0] = 0x03;
+    payload[1] = 0x01;
+    payload[2] = u8::from(enabled);
+    payload
+}
+
 pub fn decode_ai_gimbal_state(payload: &[u8]) -> Result<AiGimbalState, FrameError> {
     if payload.len() < 18 {
         return Err(FrameError::TooShort(payload.len()));
@@ -255,6 +264,7 @@ pub fn decode_ai_gesture_status(payload: &[u8]) -> Result<AiGestureStatus, Frame
 pub fn decode_camera_status(block: &[u8]) -> Result<CameraStatus, FrameError> {
     const ZOOM_PERCENT_OFFSET: usize = 0x04;
     const HDR_OFFSET: usize = 0x06;
+    const FACE_PRIORITY_AUTO_EXPOSURE_OFFSET: usize = 0x07;
     const AI_MODE_OFFSET: usize = 0x18;
     const AI_SUB_MODE_OFFSET: usize = 0x1c;
     if block.len() <= AI_SUB_MODE_OFFSET {
@@ -277,6 +287,7 @@ pub fn decode_camera_status(block: &[u8]) -> Result<CameraStatus, FrameError> {
         tracking,
         zoom_percent: (zoom_percent <= 100).then_some(zoom_percent as u8),
         hdr: flag(HDR_OFFSET),
+        face_priority_auto_exposure: flag(FACE_PRIORITY_AUTO_EXPOSURE_OFFSET),
     })
 }
 
@@ -428,53 +439,71 @@ mod tests {
     }
 
     #[test]
+    fn encodes_face_priority_auto_exposure_as_selector_six_payload() {
+        assert_eq!(
+            &face_priority_auto_exposure_payload(false)[..3],
+            &[0x03, 0x01, 0x00]
+        );
+        assert_eq!(
+            &face_priority_auto_exposure_payload(true)[..3],
+            &[0x03, 0x01, 0x01]
+        );
+    }
+
+    #[test]
     fn decodes_tracking_zoom_and_hdr_from_selector_six_status() {
-        let status = |mode, sub_mode, zoom_percent: u16, hdr| {
+        let status = |mode, sub_mode, zoom_percent: u16, hdr, face_ae| {
             let mut block = [0_u8; FRAME_SIZE];
             block[0x04..0x06].copy_from_slice(&zoom_percent.to_le_bytes());
             block[0x06] = hdr;
+            block[0x07] = face_ae;
             block[0x18] = mode;
             block[0x1c] = sub_mode;
             block
         };
         assert_eq!(
-            decode_camera_status(&status(0, 0, 0_u16, 0)).unwrap(),
+            decode_camera_status(&status(0, 0, 0_u16, 0, 0)).unwrap(),
             CameraStatus {
                 tracking: Some(false),
                 zoom_percent: Some(0),
                 hdr: Some(false),
+                face_priority_auto_exposure: Some(false),
             }
         );
         assert_eq!(
-            decode_camera_status(&status(2, 0, 50_u16, 1)).unwrap(),
+            decode_camera_status(&status(2, 0, 50_u16, 1, 1)).unwrap(),
             CameraStatus {
                 tracking: Some(true),
                 zoom_percent: Some(50),
                 hdr: Some(true),
+                face_priority_auto_exposure: Some(true),
             }
         );
         assert_eq!(
-            decode_camera_status(&status(2, 4, 100_u16, 0)).unwrap(),
+            decode_camera_status(&status(2, 4, 100_u16, 0, 0)).unwrap(),
             CameraStatus {
                 tracking: Some(true),
                 zoom_percent: Some(100),
                 hdr: Some(false),
+                face_priority_auto_exposure: Some(false),
             }
         );
         assert_eq!(
-            decode_camera_status(&status(6, 0, 101_u16, 2)).unwrap(),
+            decode_camera_status(&status(6, 0, 101_u16, 2, 2)).unwrap(),
             CameraStatus {
                 tracking: None,
                 zoom_percent: None,
                 hdr: None,
+                face_priority_auto_exposure: None,
             }
         );
         assert_eq!(
-            decode_camera_status(&status(2, 9, 25_u16, 1)).unwrap(),
+            decode_camera_status(&status(2, 9, 25_u16, 1, 1)).unwrap(),
             CameraStatus {
                 tracking: None,
                 zoom_percent: Some(25),
                 hdr: Some(true),
+                face_priority_auto_exposure: Some(true),
             }
         );
     }

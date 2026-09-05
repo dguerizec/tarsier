@@ -6,13 +6,37 @@ use std::{
 use anyhow::{Context, Result, bail};
 use nix::{errno::Errno, libc};
 
+use crate::model::{
+    CameraImageControl, CameraImageControlKind, CameraImageControlOption, CameraImageControlState,
+    unix_ms,
+};
+
 const UVC_SET_CUR: u8 = 0x01;
 const UVC_GET_CUR: u8 = 0x81;
 const V4L2_CID_ZOOM_ABSOLUTE: u32 = 0x009a_090d;
 const V4L2_CID_PAN_SPEED: u32 = 0x009a_0920;
 const V4L2_CID_TILT_SPEED: u32 = 0x009a_0921;
+const V4L2_CID_BRIGHTNESS: u32 = 0x0098_0900;
+const V4L2_CID_CONTRAST: u32 = 0x0098_0901;
+const V4L2_CID_SATURATION: u32 = 0x0098_0902;
+const V4L2_CID_HUE: u32 = 0x0098_0903;
+const V4L2_CID_AUTO_WHITE_BALANCE: u32 = 0x0098_090c;
+const V4L2_CID_RED_BALANCE: u32 = 0x0098_090e;
+const V4L2_CID_BLUE_BALANCE: u32 = 0x0098_090f;
+const V4L2_CID_GAIN: u32 = 0x0098_0913;
+const V4L2_CID_POWER_LINE_FREQUENCY: u32 = 0x0098_0918;
+const V4L2_CID_WHITE_BALANCE_TEMPERATURE: u32 = 0x0098_091a;
+const V4L2_CID_SHARPNESS: u32 = 0x0098_091b;
+const V4L2_CID_BACKLIGHT_COMPENSATION: u32 = 0x0098_091c;
+const V4L2_CID_EXPOSURE_AUTO: u32 = 0x009a_0901;
+const V4L2_CID_EXPOSURE_ABSOLUTE: u32 = 0x009a_0902;
+const V4L2_CID_EXPOSURE_AUTO_PRIORITY: u32 = 0x009a_0903;
+const V4L2_CID_FOCUS_ABSOLUTE: u32 = 0x009a_090a;
+const V4L2_CID_FOCUS_AUTO: u32 = 0x009a_090c;
 const V4L2_CTRL_CLASS_CAMERA: u32 = 0x009a_0000;
 const V4L2_CTRL_FLAG_DISABLED: u32 = 0x0000_0001;
+const V4L2_CTRL_FLAG_READ_ONLY: u32 = 0x0000_0004;
+const V4L2_CTRL_FLAG_INACTIVE: u32 = 0x0000_0010;
 
 #[repr(C)]
 struct UvcXuControlQuery {
@@ -102,6 +126,22 @@ pub trait XuTransport: Send {
     fn set_pan_tilt_speed_units(&mut self, _pan: i32, _tilt: i32) -> Result<()> {
         bail!("pan and tilt speed are not supported by this camera transport")
     }
+    fn image_controls(&mut self) -> Vec<CameraImageControlState> {
+        CameraImageControl::STANDARD
+            .into_iter()
+            .map(|control| self.image_control(control))
+            .collect()
+    }
+    fn image_control(&mut self, control: CameraImageControl) -> CameraImageControlState {
+        unavailable_image_control(control, "image controls are not supported")
+    }
+    fn set_image_control(
+        &mut self,
+        _control: CameraImageControl,
+        _value: i32,
+    ) -> Result<CameraImageControlState> {
+        bail!("image controls are not supported by this camera transport")
+    }
 }
 
 pub struct LinuxUvcTransport {
@@ -190,6 +230,78 @@ impl LinuxUvcTransport {
         })
     }
 
+    fn raw_image_control(
+        &self,
+        control: CameraImageControl,
+    ) -> std::result::Result<CameraImageControlState, Errno> {
+        let id = image_control_id(control).ok_or(Errno::ENOTTY)?;
+        let mut query = V4l2QueryControl {
+            id,
+            kind: 0,
+            name: [0; 32],
+            minimum: 0,
+            maximum: 0,
+            step: 0,
+            default_value: 0,
+            flags: 0,
+            reserved: [0; 2],
+        };
+        // SAFETY: query is a correctly sized writable v4l2_queryctrl value.
+        unsafe { v4l2_query_control(self.file.as_raw_fd(), &mut query) }?;
+        if query.flags & V4L2_CTRL_FLAG_DISABLED != 0 {
+            return Err(Errno::ENOTTY);
+        }
+        let mut current = V4l2Control { id, value: 0 };
+        // SAFETY: current is a correctly sized writable v4l2_control value.
+        unsafe { v4l2_get_control(self.file.as_raw_fd(), &mut current) }?;
+        Ok(CameraImageControlState {
+            control,
+            kind: image_control_kind(control),
+            available: true,
+            active: query.flags & V4L2_CTRL_FLAG_INACTIVE == 0,
+            read_only: query.flags & V4L2_CTRL_FLAG_READ_ONLY != 0,
+            value: Some(current.value),
+            minimum: Some(query.minimum),
+            maximum: Some(query.maximum),
+            step: Some(query.step),
+            default_value: Some(query.default_value),
+            options: image_control_options(control)
+                .into_iter()
+                .filter(|option| (query.minimum..=query.maximum).contains(&option.value))
+                .collect(),
+            sample_at_ms: Some(unix_ms()),
+            error: None,
+        })
+    }
+
+    fn image_control(&mut self, control: CameraImageControl) -> CameraImageControlState {
+        match self.raw_image_control(control) {
+            Ok(state) => state,
+            Err(error) if is_disconnected(error) => match self.reopen() {
+                Ok(()) => self.raw_image_control(control).unwrap_or_else(|error| {
+                    unavailable_image_control(
+                        control,
+                        format!("V4L2 control query failed after reopening: {error}"),
+                    )
+                }),
+                Err(error) => unavailable_image_control(
+                    control,
+                    format!("failed to reopen camera control device: {error}"),
+                ),
+            },
+            Err(error) => {
+                unavailable_image_control(control, format!("V4L2 control query failed: {error}"))
+            }
+        }
+    }
+
+    fn image_controls(&mut self) -> Vec<CameraImageControlState> {
+        CameraImageControl::STANDARD
+            .into_iter()
+            .map(|control| self.image_control(control))
+            .collect()
+    }
+
     fn raw_zoom_control(&self) -> std::result::Result<ZoomControl, Errno> {
         self.raw_standard_control(V4L2_CID_ZOOM_ABSOLUTE)
     }
@@ -223,6 +335,48 @@ impl LinuxUvcTransport {
         // SAFETY: control is a correctly sized writable v4l2_control value.
         unsafe { v4l2_set_control(self.file.as_raw_fd(), &mut control) }?;
         Ok(())
+    }
+
+    fn raw_set_image_control(
+        &self,
+        control: CameraImageControl,
+        value: i32,
+    ) -> std::result::Result<(), Errno> {
+        let mut value = V4l2Control {
+            id: image_control_id(control).ok_or(Errno::ENOTTY)?,
+            value,
+        };
+        // SAFETY: value is a correctly sized writable v4l2_control value.
+        unsafe { v4l2_set_control(self.file.as_raw_fd(), &mut value) }?;
+        Ok(())
+    }
+
+    fn set_image_control(
+        &mut self,
+        control: CameraImageControl,
+        value: i32,
+    ) -> Result<CameraImageControlState> {
+        let before = self.image_control(control);
+        validate_image_control_value(&before, value)?;
+        match self.raw_set_image_control(control, value) {
+            Ok(()) => {}
+            Err(error) if is_disconnected(error) => {
+                self.reopen().with_context(|| {
+                    format!("failed to reopen camera control device {}", self.path)
+                })?;
+                self.raw_set_image_control(control, value)
+                    .context("V4L2 image-control write failed after reopening")?;
+            }
+            Err(error) => return Err(error).context("V4L2 image-control write failed"),
+        }
+        let after = self.image_control(control);
+        if after.value != Some(value) {
+            bail!(
+                "camera image-control readback mismatch: requested {value}, got {:?}",
+                after.value
+            );
+        }
+        Ok(after)
     }
 
     fn set_zoom_units(&mut self, units: i32) -> Result<()> {
@@ -334,6 +488,126 @@ impl XuTransport for LinuxUvcTransport {
     fn set_pan_tilt_speed_units(&mut self, pan: i32, tilt: i32) -> Result<()> {
         LinuxUvcTransport::set_pan_tilt_speed_units(self, pan, tilt)
     }
+
+    fn image_controls(&mut self) -> Vec<CameraImageControlState> {
+        LinuxUvcTransport::image_controls(self)
+    }
+
+    fn image_control(&mut self, control: CameraImageControl) -> CameraImageControlState {
+        LinuxUvcTransport::image_control(self, control)
+    }
+
+    fn set_image_control(
+        &mut self,
+        control: CameraImageControl,
+        value: i32,
+    ) -> Result<CameraImageControlState> {
+        LinuxUvcTransport::set_image_control(self, control, value)
+    }
+}
+
+fn image_control_id(control: CameraImageControl) -> Option<u32> {
+    Some(match control {
+        CameraImageControl::Brightness => V4L2_CID_BRIGHTNESS,
+        CameraImageControl::Contrast => V4L2_CID_CONTRAST,
+        CameraImageControl::Saturation => V4L2_CID_SATURATION,
+        CameraImageControl::Hue => V4L2_CID_HUE,
+        CameraImageControl::Gain => V4L2_CID_GAIN,
+        CameraImageControl::BacklightCompensation => V4L2_CID_BACKLIGHT_COMPENSATION,
+        CameraImageControl::PowerLineFrequency => V4L2_CID_POWER_LINE_FREQUENCY,
+        CameraImageControl::WhiteBalanceAutomatic => V4L2_CID_AUTO_WHITE_BALANCE,
+        CameraImageControl::WhiteBalanceTemperature => V4L2_CID_WHITE_BALANCE_TEMPERATURE,
+        CameraImageControl::RedBalance => V4L2_CID_RED_BALANCE,
+        CameraImageControl::BlueBalance => V4L2_CID_BLUE_BALANCE,
+        CameraImageControl::Sharpness => V4L2_CID_SHARPNESS,
+        CameraImageControl::AutoExposure => V4L2_CID_EXPOSURE_AUTO,
+        CameraImageControl::ExposureTimeAbsolute => V4L2_CID_EXPOSURE_ABSOLUTE,
+        CameraImageControl::ExposureDynamicFramerate => V4L2_CID_EXPOSURE_AUTO_PRIORITY,
+        CameraImageControl::FocusAbsolute => V4L2_CID_FOCUS_ABSOLUTE,
+        CameraImageControl::FocusAutomaticContinuous => V4L2_CID_FOCUS_AUTO,
+        CameraImageControl::FacePriorityAutoExposure => return None,
+    })
+}
+
+pub(crate) fn image_control_kind(control: CameraImageControl) -> CameraImageControlKind {
+    match control {
+        CameraImageControl::PowerLineFrequency | CameraImageControl::AutoExposure => {
+            CameraImageControlKind::Menu
+        }
+        CameraImageControl::WhiteBalanceAutomatic
+        | CameraImageControl::ExposureDynamicFramerate
+        | CameraImageControl::FocusAutomaticContinuous
+        | CameraImageControl::FacePriorityAutoExposure => CameraImageControlKind::Boolean,
+        _ => CameraImageControlKind::Integer,
+    }
+}
+
+pub(crate) fn image_control_options(control: CameraImageControl) -> Vec<CameraImageControlOption> {
+    let options: &[(i32, &str)] = match control {
+        CameraImageControl::PowerLineFrequency => {
+            &[(0, "Disabled"), (1, "50 Hz"), (2, "60 Hz"), (3, "Auto")]
+        }
+        CameraImageControl::AutoExposure => &[(0, "Auto"), (1, "Manual"), (3, "Aperture priority")],
+        _ => &[],
+    };
+    options
+        .iter()
+        .map(|(value, label)| CameraImageControlOption {
+            value: *value,
+            label: (*label).to_owned(),
+        })
+        .collect()
+}
+
+pub(crate) fn unavailable_image_control(
+    control: CameraImageControl,
+    error: impl Into<String>,
+) -> CameraImageControlState {
+    CameraImageControlState {
+        control,
+        kind: image_control_kind(control),
+        available: false,
+        active: false,
+        read_only: false,
+        value: None,
+        minimum: None,
+        maximum: None,
+        step: None,
+        default_value: None,
+        options: image_control_options(control),
+        sample_at_ms: Some(unix_ms()),
+        error: Some(error.into()),
+    }
+}
+
+pub(crate) fn validate_image_control_value(
+    state: &CameraImageControlState,
+    value: i32,
+) -> Result<()> {
+    if !state.available {
+        bail!("camera image control is unavailable");
+    }
+    if !state.active {
+        bail!("camera image control is inactive in the current mode");
+    }
+    if state.read_only {
+        bail!("camera image control is read-only");
+    }
+    let (Some(minimum), Some(maximum), Some(step)) = (state.minimum, state.maximum, state.step)
+    else {
+        bail!("camera image-control range is unavailable");
+    };
+    if value < minimum || value > maximum || step <= 0 || (value - minimum) % step != 0 {
+        bail!(
+            "camera image-control value must be between {minimum} and {maximum} in steps of {step}"
+        );
+    }
+    if state.kind == CameraImageControlKind::Menu
+        && !state.options.iter().any(|option| option.value == value)
+    {
+        bail!("camera image-control menu value is unsupported");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -355,5 +629,36 @@ mod tests {
         assert_eq!(std::mem::size_of::<V4l2QueryControl>(), 68);
         assert_eq!(std::mem::size_of::<V4l2ExtControl>(), 20);
         assert_eq!(std::mem::size_of::<V4l2ExtControls>(), 32);
+    }
+
+    #[test]
+    fn every_standard_image_control_has_a_v4l2_identifier() {
+        for control in CameraImageControl::STANDARD {
+            assert!(image_control_id(control).is_some(), "missing {control:?}");
+        }
+        assert!(image_control_id(CameraImageControl::FacePriorityAutoExposure).is_none());
+    }
+
+    #[test]
+    fn image_control_validation_rejects_inactive_and_sparse_menu_values() {
+        let mut state = CameraImageControlState {
+            control: CameraImageControl::AutoExposure,
+            kind: CameraImageControlKind::Menu,
+            available: true,
+            active: true,
+            read_only: false,
+            value: Some(0),
+            minimum: Some(0),
+            maximum: Some(3),
+            step: Some(1),
+            default_value: Some(0),
+            options: image_control_options(CameraImageControl::AutoExposure),
+            sample_at_ms: Some(0),
+            error: None,
+        };
+        assert!(validate_image_control_value(&state, 1).is_ok());
+        assert!(validate_image_control_value(&state, 2).is_err());
+        state.active = false;
+        assert!(validate_image_control_value(&state, 1).is_err());
     }
 }
