@@ -143,7 +143,8 @@ disappears, the daemon expires the lease and stops the motor automatically.
 The **Face tracking** control below the preview uses the same movement lease at
 a slower speed. Enabling it first disables the camera's built-in tracking;
 enabling built-in tracking stops Tarsier face tracking. Manual pan, tilt,
-recenter, and preset controls remain unavailable while either mode is active.
+recenter, and preset controls stop built-in camera tracking before moving. They
+remain unavailable while Tarsier face tracking is active.
 
 ```sh
 cargo run -- status
