@@ -8,6 +8,7 @@ mod perception;
 mod pipeline;
 mod runtime;
 mod scenario;
+mod settings;
 
 use std::path::PathBuf;
 
@@ -77,22 +78,31 @@ async fn main() -> Result<()> {
 async fn serve(path: Option<PathBuf>) -> Result<()> {
     let config = Config::load(path.as_deref())?;
     config.validate()?;
+    let settings_path = settings::default_path()?;
+    let (settings_store, user_settings) = settings::UserSettingsStore::load(
+        settings_path,
+        settings::UserSettings::from_config(&config),
+    )
+    .await?;
     let runtime = Runtime::new();
     let preview = PreviewHub::new();
-    preview.effects().set_output_mode(config.video.output_mode);
+    let output_mode = user_settings.output_mode();
+    let avatar_engine = user_settings
+        .avatar_engine()
+        .or(config.avatar.enabled.then_some(config.avatar.engine));
+    preview.effects().set_output_mode(output_mode);
     preview.effects().set_background(
-        config.video.background_enabled,
-        config.video.background_effect,
+        user_settings.background_enabled,
+        user_settings.background_effect,
     );
     runtime
         .update(|state| {
-            state.video_effects.output_mode = config.video.output_mode;
-            state.video_effects.avatar_engine =
-                config.avatar.enabled.then_some(config.avatar.engine);
-            state.video_effects.background_enabled = config.video.background_enabled;
-            state.video_effects.background_effect = config.video.background_effect;
-            state.video_effects.green_screen_enabled = config.video.background_enabled
-                && config.video.background_effect == crate::model::BackgroundEffect::GreenScreen;
+            state.video_effects.output_mode = output_mode;
+            state.video_effects.avatar_engine = avatar_engine;
+            state.video_effects.background_enabled = user_settings.background_enabled;
+            state.video_effects.background_effect = user_settings.background_effect;
+            state.video_effects.green_screen_enabled = user_settings.background_enabled
+                && user_settings.background_effect == crate::model::BackgroundEffect::GreenScreen;
         })
         .await;
     let pipeline = VideoPipeline::start(config.video.clone(), runtime.clone(), preview.clone())
@@ -102,6 +112,31 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
     let camera = camera::start(config.camera.clone(), runtime.clone())
         .await
         .context("failed to start camera adapter")?;
+    let face_tracking_enabled = if user_settings.face_tracking_enabled {
+        let camera = camera
+            .as_ref()
+            .context("cannot restore face tracking without a camera adapter")?;
+        camera
+            .set_tracking(false)
+            .await
+            .context("failed to disable built-in tracking while restoring face tracking")?;
+        camera
+            .set_face_tracking_speed(0, 0, 0.0)
+            .await
+            .context("failed to initialize restored face tracking")?;
+        runtime
+            .update(|state| {
+                state.camera.tracking = Some(false);
+                state.camera.face_tracking = model::FaceTrackingState {
+                    enabled: true,
+                    ..model::FaceTrackingState::default()
+                };
+            })
+            .await;
+        true
+    } else {
+        false
+    };
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let (daemon_restart, restart_rx) = if std::env::var_os("INVOCATION_ID").is_some() {
         let (restart_tx, restart_rx) = tokio::sync::oneshot::channel();
@@ -109,13 +144,17 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
     } else {
         (None, None)
     };
-    let app = api::router_with_pipeline(
+    let app = api::router_with_controls(
         config.clone(),
         runtime.clone(),
         preview,
         camera,
-        Some(pipeline_control),
-        daemon_restart,
+        api::ApiOptions {
+            pipeline: Some(pipeline_control),
+            daemon_restart,
+            user_settings: Some(settings_store),
+            face_tracking_enabled,
+        },
         shutdown_rx,
     );
     let listener = tokio::net::TcpListener::bind(config.server.bind)

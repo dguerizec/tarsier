@@ -31,6 +31,7 @@ use crate::{
     pipeline::{PreviewHub, VideoPipelineControl},
     runtime::Runtime,
     scenario::{FacePresenceStabilizer, OpenPalmStabilizer, PresenceChange},
+    settings::UserSettingsStore,
 };
 
 #[derive(Clone)]
@@ -47,6 +48,7 @@ struct ApiState {
     face_tracking: Arc<Mutex<FaceTrackingController>>,
     video_output_control: Arc<Mutex<()>>,
     daemon_restart: Option<DaemonRestart>,
+    user_settings: Option<UserSettingsStore>,
     shutdown: watch::Receiver<bool>,
 }
 
@@ -72,6 +74,14 @@ impl DaemonRestart {
     }
 }
 
+#[derive(Default)]
+pub struct ApiOptions {
+    pub pipeline: Option<VideoPipelineControl>,
+    pub daemon_restart: Option<DaemonRestart>,
+    pub user_settings: Option<UserSettingsStore>,
+    pub face_tracking_enabled: bool,
+}
+
 #[cfg(test)]
 pub fn router(
     config: Config,
@@ -80,18 +90,26 @@ pub fn router(
     camera: Option<CameraHandle>,
     shutdown: watch::Receiver<bool>,
 ) -> Router {
-    router_with_pipeline(config, runtime, preview, camera, None, None, shutdown)
+    router_with_controls(
+        config,
+        runtime,
+        preview,
+        camera,
+        ApiOptions::default(),
+        shutdown,
+    )
 }
 
-pub fn router_with_pipeline(
+pub fn router_with_controls(
     config: Config,
     runtime: Runtime,
     preview: PreviewHub,
     camera: Option<CameraHandle>,
-    pipeline: Option<VideoPipelineControl>,
-    daemon_restart: Option<DaemonRestart>,
+    options: ApiOptions,
     shutdown: watch::Receiver<bool>,
 ) -> Router {
+    let mut face_tracking = FaceTrackingController::default();
+    face_tracking.set_enabled(options.face_tracking_enabled);
     let state = ApiState {
         stabilizer: Arc::new(Mutex::new(OpenPalmStabilizer::new(&config.perception))),
         face_presence: Arc::new(Mutex::new(FacePresenceStabilizer::new(&config.perception))),
@@ -99,12 +117,13 @@ pub fn router_with_pipeline(
         runtime,
         preview,
         camera,
-        pipeline,
+        pipeline: options.pipeline,
         camera_power_control: Arc::new(Mutex::new(())),
         pan_tilt_motion: Arc::new(Mutex::new(PanTiltMotion::default())),
-        face_tracking: Arc::new(Mutex::new(FaceTrackingController::default())),
+        face_tracking: Arc::new(Mutex::new(face_tracking)),
         video_output_control: Arc::new(Mutex::new(())),
-        daemon_restart,
+        daemon_restart: options.daemon_restart,
+        user_settings: options.user_settings,
         shutdown,
     };
     Router::new()
@@ -310,6 +329,9 @@ async fn set_camera_power(
                     runtime.camera.face_tracking = FaceTrackingState::default();
                 })
                 .await;
+            if let Err(error) = save_face_tracking_setting(&state, false).await {
+                return user_settings_error(error);
+            }
             camera.begin_power_transition();
         }
         if let Err(error) = pipeline.set_enabled(false).await {
@@ -745,6 +767,9 @@ async fn set_tracking_inner(state: &ApiState, enabled: bool) -> Response {
                     };
                 })
                 .await;
+            if let Err(error) = save_face_tracking_setting(state, false).await {
+                return user_settings_error(error);
+            }
             record_camera_command(
                 state,
                 "camera.face_tracking",
@@ -779,6 +804,9 @@ async fn set_face_tracking_inner(state: &ApiState, enabled: bool) -> Response {
     };
     let mut face_tracking = state.face_tracking.lock().await;
     if face_tracking.enabled() == enabled {
+        if let Err(error) = save_face_tracking_setting(state, enabled).await {
+            return user_settings_error(error);
+        }
         return StatusCode::ACCEPTED.into_response();
     }
 
@@ -817,6 +845,9 @@ async fn set_face_tracking_inner(state: &ApiState, enabled: bool) -> Response {
                 };
             })
             .await;
+        if let Err(error) = save_face_tracking_setting(state, true).await {
+            return user_settings_error(error);
+        }
     } else {
         let stop_error = camera.set_face_tracking_speed(0, 0, 0.0).await.err();
         face_tracking.set_enabled(false);
@@ -830,6 +861,9 @@ async fn set_face_tracking_inner(state: &ApiState, enabled: bool) -> Response {
                 };
             })
             .await;
+        if let Err(error) = save_face_tracking_setting(state, false).await {
+            return user_settings_error(error);
+        }
         record_camera_command(state, "camera.face_tracking", json!({"enabled": false})).await;
         return match stop_error {
             Some(error) => command_error(error),
@@ -868,6 +902,7 @@ async fn disable_tracking_for_manual_control(
                 runtime.camera.face_tracking = FaceTrackingState::default();
             })
             .await;
+        save_face_tracking_setting(state, false).await?;
         record_camera_command(
             state,
             "camera.face_tracking",
@@ -895,6 +930,13 @@ async fn disable_tracking_for_manual_control(
         json!({"enabled": false, "reason": "manual-gimbal-control"}),
     )
     .await;
+    Ok(())
+}
+
+async fn save_face_tracking_setting(state: &ApiState, enabled: bool) -> anyhow::Result<()> {
+    if let Some(settings) = &state.user_settings {
+        settings.set_face_tracking(enabled).await?;
+    }
     Ok(())
 }
 
@@ -1027,6 +1069,12 @@ async fn set_green_screen(
     State(state): State<ApiState>,
     Json(request): Json<GreenScreenRequest>,
 ) -> Response {
+    let _guard = state.video_output_control.lock().await;
+    if let Some(response) =
+        persist_background(&state, request.enabled, BackgroundEffect::GreenScreen).await
+    {
+        return response;
+    }
     state
         .preview
         .effects()
@@ -1055,6 +1103,10 @@ async fn set_background(
     State(state): State<ApiState>,
     Json(request): Json<BackgroundRequest>,
 ) -> Response {
+    let _guard = state.video_output_control.lock().await;
+    if let Some(response) = persist_background(&state, request.enabled, request.effect).await {
+        return response;
+    }
     state
         .preview
         .effects()
@@ -1118,6 +1170,9 @@ async fn set_identity(
         ),
         VideoIdentity::DepthMap => (VideoOutputMode::DepthMap, None),
     };
+    if let Some(response) = persist_video_identity(&state, request.identity).await {
+        return response;
+    }
     state.preview.effects().clear_avatar();
     state.preview.effects().clear_depth();
     state.preview.effects().set_output_mode(mode);
@@ -1149,6 +1204,11 @@ async fn set_output_mode(
     Json(request): Json<OutputModeRequest>,
 ) -> Response {
     let _guard = state.video_output_control.lock().await;
+    let current = state.runtime.state().await.video_effects;
+    let identity = video_identity(request.mode, current.avatar_engine);
+    if let Some(response) = persist_video_identity(&state, identity).await {
+        return response;
+    }
     state.preview.effects().clear_avatar();
     state.preview.effects().clear_depth();
     state.preview.effects().set_output_mode(request.mode);
@@ -1170,6 +1230,41 @@ async fn set_output_mode(
         )
         .await;
     StatusCode::ACCEPTED.into_response()
+}
+
+async fn persist_video_identity(state: &ApiState, identity: VideoIdentity) -> Option<Response> {
+    let Some(settings) = &state.user_settings else {
+        return None;
+    };
+    settings
+        .set_video_identity(identity)
+        .await
+        .err()
+        .map(user_settings_error)
+}
+
+async fn persist_background(
+    state: &ApiState,
+    enabled: bool,
+    effect: BackgroundEffect,
+) -> Option<Response> {
+    let Some(settings) = &state.user_settings else {
+        return None;
+    };
+    settings
+        .set_background(enabled, effect)
+        .await
+        .err()
+        .map(user_settings_error)
+}
+
+fn user_settings_error(error: anyhow::Error) -> Response {
+    tracing::error!(%error, "failed to persist user settings");
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({"error": format!("failed to persist user settings: {error}")})),
+    )
+        .into_response()
 }
 
 async fn avatar_frame(State(state): State<ApiState>, headers: HeaderMap, body: Bytes) -> Response {
@@ -1830,7 +1925,7 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
-    use crate::{camera, config::CameraAdapter};
+    use crate::{camera, config::CameraAdapter, settings::UserSettings};
 
     #[test]
     fn pan_tilt_directions_match_tiny_2_speed_signs() {
@@ -1886,13 +1981,15 @@ mod tests {
             .unwrap();
         let pipeline = VideoPipelineControl::mock(runtime.clone());
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
-        let app = router_with_pipeline(
+        let app = router_with_controls(
             config,
             runtime.clone(),
             PreviewHub::new(),
             camera,
-            Some(pipeline),
-            None,
+            ApiOptions {
+                pipeline: Some(pipeline),
+                ..ApiOptions::default()
+            },
             shutdown_rx,
         );
 
@@ -2022,13 +2119,15 @@ mod tests {
 
         let (restart_tx, restart_rx) = oneshot::channel();
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
-        let supported = router_with_pipeline(
+        let supported = router_with_controls(
             config,
             Runtime::new(),
             PreviewHub::new(),
             None,
-            None,
-            Some(DaemonRestart::new(restart_tx)),
+            ApiOptions {
+                daemon_restart: Some(DaemonRestart::new(restart_tx)),
+                ..ApiOptions::default()
+            },
             shutdown_rx,
         );
         let health = supported
@@ -2242,6 +2341,69 @@ mod tests {
         let events = runtime.recent_events().await;
         assert_eq!(events[0].kind, "video.output.mode");
         assert_eq!(events[0].data["mode"], "comic-avatar");
+    }
+
+    #[tokio::test]
+    async fn presentation_and_face_tracking_settings_are_persisted() {
+        let mut config = Config::default();
+        config.camera.adapter = CameraAdapter::Mock;
+        config.avatar.enabled = true;
+        config.perception.enabled = false;
+        let path = std::env::temp_dir().join(format!(
+            "tarsier-api-settings-{}-{}/user-settings.json",
+            std::process::id(),
+            unix_ms()
+        ));
+        let fallback = UserSettings::from_config(&config);
+        let (settings, _) = UserSettingsStore::load(path.clone(), fallback)
+            .await
+            .unwrap();
+        let runtime = Runtime::new();
+        let camera = camera::start(config.camera.clone(), runtime.clone())
+            .await
+            .unwrap();
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = router_with_controls(
+            config,
+            runtime,
+            PreviewHub::new(),
+            camera,
+            ApiOptions {
+                user_settings: Some(settings),
+                ..ApiOptions::default()
+            },
+            shutdown_rx,
+        );
+
+        for (path, body) in [
+            ("/api/v1/video/identity", json!({"identity": "stylized-3d"})),
+            (
+                "/api/v1/video/background",
+                json!({"enabled": true, "effect": "blur"}),
+            ),
+            ("/api/v1/camera/face-tracking", json!({"enabled": true})),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post(path)
+                        .header("content-type", "application/json")
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::ACCEPTED);
+        }
+
+        let (_, restored) = UserSettingsStore::load(path.clone(), fallback)
+            .await
+            .unwrap();
+        assert_eq!(restored.video_identity, VideoIdentity::Stylized3d);
+        assert!(restored.background_enabled);
+        assert_eq!(restored.background_effect, BackgroundEffect::Blur);
+        assert!(restored.face_tracking_enabled);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[tokio::test]

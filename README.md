@@ -191,6 +191,16 @@ service supervisor, the **Live** status is also a button: it opens a confirmatio
 dialog before requesting a graceful daemon restart. Manual foreground runs keep
 the indicator read-only so a restart request cannot become an accidental stop.
 
+Tarsier atomically persists the selected video identity, background switch and
+effect, and Face tracking preference in
+`$XDG_STATE_HOME/tarsier/user-settings.json`, or
+`~/.local/state/tarsier/user-settings.json` when `XDG_STATE_HOME` is unset.
+`TARSIER_USER_SETTINGS_PATH` can override the exact file path. The saved video
+identity is loaded before the pipeline starts: restoring an avatar or depth
+output therefore emits the existing black privacy fallback until its first
+fresh generated frame, never an intermediate real-camera frame. A malformed or
+unsupported settings file prevents startup instead of falling back to Camera.
+
 The **Video identity** selector switches the complete final stream among
 **Camera**, **Depth map**, **Stylized 3D**, and **LivePortrait**. Neural engines
 load on demand and release their GPU resources when another identity is
@@ -541,7 +551,7 @@ The first vertical slice was validated on 2026-09-05 with an OBSBOT Tiny 2
 - after the repair restart, the real 720p30 pipeline remained healthy for more
   than six minutes on the camera's 480 Mbit/s fallback link, passing 11,000
   frames without another USB event or required restart;
-- all 94 daemon tests, 2 MCP tests, 24 Python tests, JavaScript syntax checks,
+- all 97 daemon tests, 2 MCP tests, 24 Python tests, JavaScript syntax checks,
   formatting, lint, configuration, protocol, and API checks passed.
 
 An extended run changed the camera result: after approximately six minutes of
@@ -597,7 +607,8 @@ run before unattended use.
   use still need validation;
 - pipeline telemetry reports effective FPS, frame count, last frame, errors,
   and restart count, but not queue pressure or dropped-frame attribution;
-- configuration changes require a restart and runtime state is not persisted;
+- configuration changes still require a restart; presentation preferences are
+  persisted, while transient telemetry and other hardware controls are not;
 - UI restart is offered only when systemd supervision is detected and relies on
   the unit's restart policy; it is deliberately unavailable for foreground runs;
 - the API has no authentication because it binds to loopback only; remote
