@@ -34,15 +34,19 @@ mischievous personality without tying its core to one camera vendor.
 - bounded absolute gimbal moves, continuous held pan/tilt movement, x1-to-x4 zoom,
   HDR, recentering, tracking, named presets, and separate Tiny 2 built-in
   gesture controls are available over HTTP;
+- optional Tarsier face tracking follows the detected face with slower,
+  dead-zone-stabilized gimbal movement and switches exclusively with the
+  camera's built-in tracking;
 - a supervised Python 3.12 worker performs local MediaPipe face landmarking and
   canned gesture recognition for up to two hands;
 - face presence and open-palm observations pass through dwell, release, and
   cooldown stabilization before becoming semantic events;
 - a responsive local web UI shows the preview, telemetry, perception state,
   presets, scenarios, and recent events, with optional face and two-hand
-  skeleton overlays and a direction pad with page-level arrow-key control; it
-  reloads its embedded assets after a daemon upgrade and reconnects the MJPEG
-  preview after either a pipeline or daemon restart;
+  skeleton overlays, face tracking, and a direction pad with page-level
+  arrow-key control; manual movement is disabled while either tracking mode
+  owns the gimbal, and the UI reloads its embedded assets after a daemon upgrade
+  and reconnects the MJPEG preview after either a pipeline or daemon restart;
 - snapshots are available as JPEG over HTTP and as image content over MCP.
 
 OBS, Stream Deck, scripts, and similar tools are possible API clients. OBS is
@@ -136,6 +140,10 @@ pan and tilt. Arrow keys keep their normal behavior while an input such as the
 zoom slider has focus. The page renews a short daemon-owned movement lease while
 a direction remains held and stops the motor on release. If the page or network
 disappears, the daemon expires the lease and stops the motor automatically.
+The **Face tracking** control below the preview uses the same movement lease at
+a slower speed. Enabling it first disables the camera's built-in tracking;
+enabling built-in tracking stops Tarsier face tracking. Manual pan, tilt,
+recenter, and preset controls remain unavailable while either mode is active.
 
 ```sh
 cargo run -- status
@@ -211,6 +219,7 @@ The default server binds only to `127.0.0.1:8742`.
 | `POST` | `/api/v1/camera/zoom` | Set x1-to-x4 lens magnification |
 | `POST` | `/api/v1/camera/hdr` | Enable or disable HDR/WDR |
 | `POST` | `/api/v1/camera/tracking` | Enable or disable built-in tracking |
+| `POST` | `/api/v1/camera/face-tracking` | Enable or disable Tarsier face tracking |
 | `POST` | `/api/v1/camera/built-in-gestures/{feature}` | Enable or disable `target-selection`, `zoom`, or `dynamic-zoom` gestures |
 | `POST` | `/api/v1/camera/actions/recenter` | Recenter the gimbal |
 | `GET` | `/api/v1/camera/presets` | List configured presets |
@@ -402,6 +411,9 @@ run before unattended use.
   still required;
 - face-mesh and simultaneous two-hand overlays have not yet been visually
   revalidated against the physical camera;
+- Tarsier face-tracking direction, mutual exclusion, dead-zone hysteresis, and
+  low-speed diagonal commands have automated coverage, but its physical
+  framing thresholds still need live tuning across distances and lighting;
 - pipeline telemetry reports effective FPS, frame count, last frame, errors,
   and restart count, but not queue pressure or dropped-frame attribution;
 - configuration changes require a restart and runtime state is not persisted;

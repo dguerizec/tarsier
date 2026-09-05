@@ -1,6 +1,7 @@
 mod api;
 mod camera;
 mod config;
+mod face_tracking;
 mod model;
 mod perception;
 mod pipeline;

@@ -44,6 +44,7 @@ pub struct CameraState {
     pub tracking: Option<bool>,
     pub tracking_sample_at_ms: Option<u64>,
     pub tracking_error: Option<String>,
+    pub face_tracking: FaceTrackingState,
     pub zoom_magnification: Option<f32>,
     pub zoom_sample_at_ms: Option<u64>,
     pub zoom_error: Option<String>,
@@ -64,6 +65,16 @@ pub struct CameraState {
     pub sample_at_ms: Option<u64>,
     pub telemetry_error: Option<String>,
     pub last_command_at_ms: Option<u64>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct FaceTrackingState {
+    pub enabled: bool,
+    pub active: bool,
+    pub target_visible: bool,
+    pub target_x: Option<f32>,
+    pub target_y: Option<f32>,
     pub error: Option<String>,
 }
 

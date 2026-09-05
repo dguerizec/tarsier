@@ -38,6 +38,8 @@ main { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(17rem, .85
 .pan-tilt-copy { display: grid; gap: .25rem; }
 .pan-tilt-copy strong { font-size: .8rem; }
 .pan-tilt-copy span { color: var(--muted); font-size: .7rem; }
+.pan-tilt-controls { display: flex; align-items: center; gap: .75rem; }
+#face-tracking-toggle { min-width: 7.5rem; }
 .direction-pad { display: grid; grid-template: repeat(3, 2rem) / repeat(3, 2rem); gap: .25rem; }
 .direction-pad button { display: grid; place-items: center; min-width: 0; padding: 0; border-radius: .5rem; font-size: 1rem; touch-action: none; user-select: none; }
 .direction-pad button[aria-pressed="true"] { background: var(--green); color: #0a0d0a; }
@@ -98,5 +100,11 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   .metrics { grid-template-columns: repeat(2, 1fr); }
   .preview-tools > span { display: none; }
   .pan-tilt-bar { min-height: 6.5rem; }
+  .pan-tilt-controls { gap: .5rem; }
   .feature-control { grid-template-columns: minmax(6.5rem, 1fr) 4rem auto; }
+}
+
+@media (max-width: 520px) {
+  .pan-tilt-bar { align-items: stretch; flex-direction: column; }
+  .pan-tilt-controls { justify-content: space-between; }
 }

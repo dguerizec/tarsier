@@ -35,12 +35,15 @@
             <strong>Pan / tilt</strong>
             <span id="pan-tilt-status">Hold a button or use the arrow keys</span>
           </div>
-          <div class="direction-pad" role="group" aria-label="Pan and tilt camera">
-            <button class="secondary direction-up" type="button" data-pan-tilt="up" aria-label="Tilt up" title="Tilt up · Arrow Up">↑</button>
-            <button class="secondary direction-left" type="button" data-pan-tilt="left" aria-label="Pan left" title="Pan left · Arrow Left">←</button>
-            <button class="secondary direction-center" type="button" data-action="recenter" aria-label="Recenter camera" title="Recenter camera">●</button>
-            <button class="secondary direction-right" type="button" data-pan-tilt="right" aria-label="Pan right" title="Pan right · Arrow Right">→</button>
-            <button class="secondary direction-down" type="button" data-pan-tilt="down" aria-label="Tilt down" title="Tilt down · Arrow Down">↓</button>
+          <div class="pan-tilt-controls">
+            <button id="face-tracking-toggle" class="secondary compact" type="button" aria-pressed="false">Face tracking</button>
+            <div class="direction-pad" role="group" aria-label="Pan and tilt camera">
+              <button class="secondary direction-up" type="button" data-pan-tilt="up" aria-label="Tilt up" title="Tilt up · Arrow Up">↑</button>
+              <button class="secondary direction-left" type="button" data-pan-tilt="left" aria-label="Pan left" title="Pan left · Arrow Left">←</button>
+              <button class="secondary direction-center" type="button" data-action="recenter" aria-label="Recenter camera" title="Recenter camera">●</button>
+              <button class="secondary direction-right" type="button" data-pan-tilt="right" aria-label="Pan right" title="Pan right · Arrow Right">→</button>
+              <button class="secondary direction-down" type="button" data-pan-tilt="down" aria-label="Tilt down" title="Tilt down · Arrow Down">↓</button>
+            </div>
           </div>
         </div>
       </section>
@@ -51,7 +54,7 @@
           <article><span>Motor yaw</span><strong id="yaw">—</strong></article>
           <article><span>Motor pitch</span><strong id="pitch">—</strong></article>
           <article><span>Motor roll</span><strong id="roll">—</strong></article>
-          <article><span>Tracking</span><strong id="tracking">—</strong></article>
+          <article><span>Camera tracking</span><strong id="tracking">—</strong></article>
         </div>
         <div class="telemetry-details">
           <span>Euler <strong id="camera-euler">—</strong></span>
@@ -68,7 +71,7 @@
           </div>
           <div class="feature-controls">
             <div class="feature-control">
-              <span>Tracking</span>
+              <span>Camera tracking</span>
               <strong id="tracking-feature-state">Unknown</strong>
               <div class="segmented-control" role="group" aria-label="Camera tracking">
                 <button class="secondary compact" type="button" data-camera-feature="tracking" data-camera-enabled="true">On</button>

@@ -26,6 +26,7 @@ const GESTURE_STATUS_MINIMUM_INTERVAL: Duration = Duration::from_secs(5);
 const TELEMETRY_MAXIMUM_BACKOFF: Duration = Duration::from_secs(60);
 const HDR_SWITCH_MINIMUM_INTERVAL: Duration = Duration::from_secs(3);
 const NUDGE_SPEED_FRACTION: f64 = 0.25;
+const FACE_TRACKING_SPEED_FRACTION: f64 = 0.10;
 pub const PAN_TILT_LEASE: Duration = Duration::from_millis(350);
 
 #[derive(Debug)]
@@ -52,6 +53,7 @@ enum Command {
     PanTiltSpeed {
         pan_direction: i8,
         tilt_direction: i8,
+        speed_fraction: f64,
     },
 }
 
@@ -225,6 +227,24 @@ impl CameraHandle {
         self.request(Command::PanTiltSpeed {
             pan_direction,
             tilt_direction,
+            speed_fraction: NUDGE_SPEED_FRACTION,
+        })
+        .await
+        .map(|_| ())
+    }
+
+    pub async fn set_face_tracking_speed(
+        &self,
+        pan_direction: i8,
+        tilt_direction: i8,
+    ) -> Result<()> {
+        if !(-1..=1).contains(&pan_direction) || !(-1..=1).contains(&tilt_direction) {
+            bail!("face tracking movement directions must be between -1 and 1");
+        }
+        self.request(Command::PanTiltSpeed {
+            pan_direction,
+            tilt_direction,
+            speed_fraction: FACE_TRACKING_SPEED_FRACTION,
         })
         .await
         .map(|_| ())
@@ -256,6 +276,8 @@ pub async fn start(config: CameraConfig, runtime: Runtime) -> Result<Option<Came
                     state.camera.yaw_degrees = Some(0.0);
                     state.camera.pitch_degrees = Some(0.0);
                     state.camera.roll_degrees = Some(0.0);
+                    state.camera.tracking = Some(false);
+                    state.camera.tracking_sample_at_ms = Some(now);
                     state.camera.zoom_magnification = Some(1.0);
                     state.camera.hdr = Some(false);
                     state.camera.hdr_sample_at_ms = Some(now);
@@ -428,11 +450,17 @@ impl<T: XuTransport> Worker<T> {
             Command::PanTiltSpeed {
                 pan_direction,
                 tilt_direction,
-            } => self.set_pan_tilt_speed(pan_direction, tilt_direction),
+                speed_fraction,
+            } => self.set_pan_tilt_speed(pan_direction, tilt_direction, speed_fraction),
         }
     }
 
-    fn set_pan_tilt_speed(&mut self, pan_direction: i8, tilt_direction: i8) -> Result<()> {
+    fn set_pan_tilt_speed(
+        &mut self,
+        pan_direction: i8,
+        tilt_direction: i8,
+        speed_fraction: f64,
+    ) -> Result<()> {
         let direction = (pan_direction, tilt_direction);
         if direction == self.pan_tilt_direction {
             self.pan_tilt_deadline = (direction != (0, 0)).then(|| Instant::now() + PAN_TILT_LEASE);
@@ -445,8 +473,8 @@ impl<T: XuTransport> Worker<T> {
         } else {
             let controls = self.transport.pan_tilt_speed_controls()?;
             (
-                speed_units(controls.pan, pan_direction)?,
-                speed_units(controls.tilt, tilt_direction)?,
+                speed_units(controls.pan, pan_direction, speed_fraction)?,
+                speed_units(controls.tilt, tilt_direction, speed_fraction)?,
             )
         };
         if let Err(error) = self.transport.set_pan_tilt_speed_units(pan, tilt) {
@@ -488,7 +516,7 @@ impl<T: XuTransport> Worker<T> {
         {
             return;
         }
-        if let Err(error) = self.set_pan_tilt_speed(0, 0) {
+        if let Err(error) = self.set_pan_tilt_speed(0, 0, NUDGE_SPEED_FRACTION) {
             tracing::error!(%error, "failed to stop pan/tilt after its movement lease expired");
         }
     }
@@ -663,7 +691,7 @@ fn validate_zoom_control(control: ZoomControl) -> Result<()> {
     Ok(())
 }
 
-fn speed_units(control: ZoomControl, direction: i8) -> Result<i32> {
+fn speed_units(control: ZoomControl, direction: i8, speed_fraction: f64) -> Result<i32> {
     if control.minimum >= 0
         || control.maximum <= 0
         || control.step <= 0
@@ -680,7 +708,10 @@ fn speed_units(control: ZoomControl, direction: i8) -> Result<i32> {
     } else {
         control.minimum
     };
-    let requested = f64::from(limit) * NUDGE_SPEED_FRACTION;
+    if !speed_fraction.is_finite() || !(0.0..=1.0).contains(&speed_fraction) {
+        bail!("camera pan/tilt speed fraction must be between 0 and 1");
+    }
+    let requested = f64::from(limit) * speed_fraction;
     let step = f64::from(control.step);
     let snapped = (requested / step).round() * step;
     let minimum_magnitude = control.step * i32::from(direction);
@@ -1065,6 +1096,7 @@ mod tests {
             .execute(Command::PanTiltSpeed {
                 pan_direction: 1,
                 tilt_direction: 0,
+                speed_fraction: NUDGE_SPEED_FRACTION,
             })
             .unwrap();
         assert_eq!(worker.transport.pan_tilt_speed_units, [(40, 0)]);
@@ -1073,10 +1105,27 @@ mod tests {
             .execute(Command::PanTiltSpeed {
                 pan_direction: 0,
                 tilt_direction: 0,
+                speed_fraction: NUDGE_SPEED_FRACTION,
             })
             .unwrap();
 
         assert_eq!(worker.transport.pan_tilt_speed_units, [(40, 0), (0, 0)]);
+    }
+
+    #[test]
+    fn face_tracking_uses_a_slower_diagonal_speed() {
+        let (_tx, rx) = sync_channel(1);
+        let mut worker = Worker::new(RecordingTransport::default(), rx, Duration::ZERO);
+
+        worker
+            .execute(Command::PanTiltSpeed {
+                pan_direction: 1,
+                tilt_direction: -1,
+                speed_fraction: FACE_TRACKING_SPEED_FRACTION,
+            })
+            .unwrap();
+
+        assert_eq!(worker.transport.pan_tilt_speed_units, [(16, -12)]);
     }
 
     #[test]
@@ -1088,6 +1137,7 @@ mod tests {
             .execute(Command::PanTiltSpeed {
                 pan_direction: -1,
                 tilt_direction: 0,
+                speed_fraction: NUDGE_SPEED_FRACTION,
             })
             .unwrap();
         let initial_deadline = worker.pan_tilt_deadline.unwrap();
@@ -1096,6 +1146,7 @@ mod tests {
             .execute(Command::PanTiltSpeed {
                 pan_direction: -1,
                 tilt_direction: 0,
+                speed_fraction: NUDGE_SPEED_FRACTION,
             })
             .unwrap();
         assert_eq!(worker.transport.pan_tilt_speed_units, [(-40, 0)]);

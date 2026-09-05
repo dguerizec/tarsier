@@ -116,6 +116,10 @@ async fn mark_worker_offline(runtime: &Runtime, message: String) {
         .update(|state| {
             state.perception.worker_connected = false;
             state.perception.error = Some(message.clone());
+            state.camera.face_tracking.active = false;
+            state.camera.face_tracking.target_visible = false;
+            state.camera.face_tracking.target_x = None;
+            state.camera.face_tracking.target_y = None;
         })
         .await;
     runtime
