@@ -462,6 +462,7 @@ def run_worker(
     previous_observations_published = 0
     previous_avatars_published = 0
     previous_depths_published = 0
+    previous_refined_masks_published = 0
     with ExitStack() as stack:
         segmenter = stack.enter_context(MediaPipeSegmenter(model_dir, pose_constraints))
         observation_processor = stack.enter_context(
@@ -489,7 +490,14 @@ def run_worker(
             else None
         )
         depth_processor = (
-            stack.enter_context(DepthProcessor(daemon_url, model_dir, depth_input_height))
+            stack.enter_context(
+                DepthProcessor(
+                    daemon_url,
+                    model_dir,
+                    depth_input_height,
+                    publisher.publish_mask,
+                )
+            )
             if depth_enabled
             else None
         )
@@ -519,14 +527,16 @@ def run_worker(
                 observation_processor.submit(
                     DetectionFrame(frame_id, captured_at_ms, timestamp_ms, frame)
                 )
+            person_mask = None
             if mask_due:
                 next_mask_at = advance_deadline(next_mask_at, now, mask_interval)
-                mask = segmenter.segment(frame, timestamp_ms)
-                try:
-                    publisher.publish_mask(frame_id, captured_at_ms, mask)
-                    masks_published += 1
-                except RuntimeError as error:
-                    LOGGER.warning("%s", error)
+                person_mask = segmenter.segment(frame, timestamp_ms)
+                if depth_processor is None or not depth_processor.mask_refinement_active:
+                    try:
+                        publisher.publish_mask(frame_id, captured_at_ms, person_mask)
+                        masks_published += 1
+                    except RuntimeError as error:
+                        LOGGER.warning("%s", error)
             if avatar_due and avatar_processor is not None:
                 next_avatar_at = advance_deadline(next_avatar_at, now, avatar_interval)
                 avatar_processor.submit(
@@ -534,7 +544,9 @@ def run_worker(
                 )
             if depth_due and depth_processor is not None:
                 next_depth_at = advance_deadline(next_depth_at, now, depth_interval)
-                depth_processor.submit(DepthInputFrame(frame_id, captured_at_ms, frame))
+                depth_processor.submit(
+                    DepthInputFrame(frame_id, captured_at_ms, frame, person_mask)
+                )
             metrics_elapsed = now - metrics_started_at
             if metrics_elapsed >= 10.0:
                 observations_published = observation_processor.published_count
@@ -544,10 +556,18 @@ def run_worker(
                 depths_published = (
                     depth_processor.published_count if depth_processor is not None else 0
                 )
+                refined_masks_published = (
+                    depth_processor.refined_mask_count if depth_processor is not None else 0
+                )
                 LOGGER.info(
                     "worker cadence: masks %.1f FPS, observations %.1f FPS, avatars %.1f FPS, "
                     "depth %.1f FPS",
-                    masks_published / metrics_elapsed,
+                    (
+                        masks_published
+                        + refined_masks_published
+                        - previous_refined_masks_published
+                    )
+                    / metrics_elapsed,
                     (observations_published - previous_observations_published) / metrics_elapsed,
                     (avatars_published - previous_avatars_published) / metrics_elapsed,
                     (depths_published - previous_depths_published) / metrics_elapsed,
@@ -557,6 +577,7 @@ def run_worker(
                 previous_observations_published = observations_published
                 previous_avatars_published = avatars_published
                 previous_depths_published = depths_published
+                previous_refined_masks_published = refined_masks_published
 
 
 def run_mock(daemon_url: str, fps: float, open_palm: bool) -> None:

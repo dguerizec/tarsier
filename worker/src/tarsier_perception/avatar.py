@@ -196,6 +196,7 @@ class VideoIdentityClient:
         self._refresh_seconds = refresh_seconds
         self._timeout_seconds = timeout_seconds
         self._identity = "camera"
+        self._background_enabled = False
         self._next_refresh = 0.0
 
     def selected_identity(self) -> str:
@@ -207,6 +208,14 @@ class VideoIdentityClient:
     def selected_avatar_engine(self) -> str | None:
         identity = self.selected_identity()
         return identity if identity in {"stylized-3d", "liveportrait"} else None
+
+    def depth_usage(self) -> str | None:
+        identity = self.selected_identity()
+        if identity == "depth-map":
+            return "visualization"
+        if identity == "camera" and self._background_enabled:
+            return "mask-refinement"
+        return None
 
     def invalidate(self) -> None:
         self._next_refresh = 0.0
@@ -221,8 +230,10 @@ class VideoIdentityClient:
             if identity not in {"camera", "stylized-3d", "liveportrait", "depth-map"}:
                 raise ValueError(f"invalid video identity: {identity!r}")
             self._identity = identity
+            self._background_enabled = payload.get("background_enabled") is True
         except (OSError, ValueError, urllib.error.URLError) as error:
             self._identity = "camera"
+            self._background_enabled = False
             self._next_refresh = now + max(1.0, self._refresh_seconds)
             LOGGER.warning("failed to read selected video identity: %s", error)
 

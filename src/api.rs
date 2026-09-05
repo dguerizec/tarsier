@@ -437,6 +437,7 @@ struct IdentityRequest {
 #[derive(Serialize)]
 struct IdentityResponse {
     identity: VideoIdentity,
+    background_enabled: bool,
 }
 
 #[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -1136,6 +1137,7 @@ async fn current_identity(State(state): State<ApiState>) -> Json<IdentityRespons
     let effects = state.runtime.state().await.video_effects;
     Json(IdentityResponse {
         identity: video_identity(effects.output_mode, effects.avatar_engine),
+        background_enabled: effects.background_enabled,
     })
 }
 
@@ -1393,10 +1395,13 @@ async fn depth_frame(State(state): State<ApiState>, headers: HeaderMap, body: By
         Err(error) => return unprocessable_entity(error.to_string()),
     };
     let _guard = state.video_output_control.lock().await;
-    if state.runtime.state().await.video_effects.output_mode != VideoOutputMode::DepthMap {
+    let effects = state.runtime.state().await.video_effects;
+    let accepts_depth = effects.output_mode == VideoOutputMode::DepthMap
+        || (effects.output_mode == VideoOutputMode::Camera && effects.background_enabled);
+    if !accepts_depth {
         return (
             StatusCode::CONFLICT,
-            Json(json!({"error": "depth frame does not match the selected video identity"})),
+            Json(json!({"error": "depth frame is not required by the selected video output"})),
         )
             .into_response();
     }
@@ -2631,6 +2636,72 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn camera_background_accepts_depth_for_mask_refinement() {
+        let mut config = Config::default();
+        config.perception.enabled = false;
+        config.depth.enabled = true;
+        let runtime = Runtime::new();
+        let preview = PreviewHub::new();
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = router(config, runtime.clone(), preview, None, shutdown_rx);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/video/background")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"enabled":true,"effect":"green-screen"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/video/identity")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let payload: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 1024).await.unwrap()).unwrap();
+        assert_eq!(payload["identity"], "camera");
+        assert_eq!(payload["background_enabled"], true);
+
+        let captured_at_ms = unix_ms();
+        let values = [0.25_f32, 1.5, 2.75, 4.0];
+        let bytes = values
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect::<Vec<_>>();
+        let response = app
+            .oneshot(
+                Request::post("/api/v1/depth/frame")
+                    .header("content-type", "application/octet-stream")
+                    .header("x-tarsier-frame-id", "43")
+                    .header("x-tarsier-captured-at-ms", captured_at_ms.to_string())
+                    .header("x-tarsier-depth-width", "2")
+                    .header("x-tarsier-depth-height", "2")
+                    .header("x-tarsier-depth-far", "0.25")
+                    .header("x-tarsier-depth-near", "4.0")
+                    .header(
+                        "x-tarsier-depth-representation",
+                        "relative-inverse-depth-f32le",
+                    )
+                    .body(Body::from(bytes))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert!(runtime.state().await.video_effects.depth_available);
     }
 
     #[tokio::test]

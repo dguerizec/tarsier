@@ -15,6 +15,7 @@ from tarsier_perception.avatar import (
 from tarsier_perception.depth import (
     DEPTH_REPRESENTATION,
     DepthEstimate,
+    DepthMaskRefiner,
     DepthPublisher,
     TemporalDepthScale,
     depth_input_width,
@@ -238,7 +239,13 @@ def test_avatar_identity_client_reads_the_selected_engine(monkeypatch) -> None: 
 def test_video_identity_client_keeps_depth_distinct_and_can_refresh_immediately(
     monkeypatch,  # noqa: ANN001
 ) -> None:
-    responses = iter((b'{"identity":"depth-map"}', b'{"identity":"camera"}'))
+    responses = iter(
+        (
+            b'{"identity":"depth-map","background_enabled":false}',
+            b'{"identity":"camera","background_enabled":true}',
+            b'{"identity":"camera","background_enabled":false}',
+        )
+    )
 
     def respond(*_: object, **__: object) -> HttpResponse:
         return HttpResponse(next(responses))
@@ -249,8 +256,11 @@ def test_video_identity_client_keeps_depth_distinct_and_can_refresh_immediately(
 
     assert identity.selected_identity() == "depth-map"
     assert identity.selected_avatar_engine() is None
+    assert identity.depth_usage() == "visualization"
     identity.invalidate()
-    assert identity.selected_identity() == "camera"
+    assert identity.depth_usage() == "mask-refinement"
+    identity.invalidate()
+    assert identity.depth_usage() is None
 
 
 def test_avatar_publisher_tags_frames_with_the_rendering_engine(monkeypatch) -> None:  # noqa: ANN001
@@ -282,6 +292,24 @@ def test_depth_scale_stabilizes_bounds_across_frames() -> None:
 
     assert first_far < second_far < first_far + 100
     assert first_near < second_near < first_near + 100
+
+
+def test_depth_mask_refiner_suppresses_background_leaks_and_keeps_person_edges() -> None:
+    import numpy as np
+
+    depth = np.full((16, 16), 0.2, dtype=np.float32)
+    depth[:, :8] = 0.8
+    mask = np.zeros((16, 16), dtype=np.uint8)
+    mask[:, :7] = 255
+    mask[:, 7:9] = 128
+    estimate = DepthEstimate(1, 1, depth, 0.0, 1.0)
+
+    refined = DepthMaskRefiner(smoothing=1.0).refine(mask, estimate)
+
+    assert refined[:, 7].mean() > 128
+    assert refined[:, 8].mean() < 128
+    assert np.all(refined[:, :7] == 255)
+    assert np.all(refined[:, 9:] == 0)
 
 
 def test_depth_input_width_preserves_aspect_ratio_and_model_patch_size() -> None:

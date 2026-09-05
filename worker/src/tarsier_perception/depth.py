@@ -7,6 +7,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -124,6 +125,80 @@ class DepthEstimator:
         self.close()
 
 
+class DepthMaskRefiner:
+    def __init__(
+        self,
+        strength: float = 0.75,
+        smoothing: float = 0.2,
+        histogram_bins: int = 64,
+    ) -> None:
+        if strength < 0.0:
+            raise ValueError("depth mask strength must not be negative")
+        if not 0.0 < smoothing <= 1.0:
+            raise ValueError("depth mask smoothing must be between zero and one")
+        if histogram_bins < 8:
+            raise ValueError("depth mask histogram must contain at least eight bins")
+        self._strength = strength
+        self._smoothing = smoothing
+        self._histogram_bins = histogram_bins
+        self._foreground_histogram: np.ndarray | None = None
+        self._background_histogram: np.ndarray | None = None
+
+    def refine(self, mask: np.ndarray, estimate: DepthEstimate) -> np.ndarray:
+        if mask.ndim != 2 or mask.dtype != np.uint8:
+            raise ValueError("depth-guided mask must be a two-dimensional uint8 array")
+        if estimate.values.shape != mask.shape:
+            raise ValueError("depth field and segmentation mask dimensions must match")
+        depth_range = estimate.near - estimate.far
+        if not np.isfinite(depth_range) or depth_range <= 0.0:
+            raise ValueError("depth visualization bounds must contain a finite positive range")
+
+        alpha = mask.astype(np.float32) / 255.0
+        depth = np.clip((estimate.values - estimate.far) / depth_range, 0.0, 1.0)
+        indices = np.minimum(
+            (depth * self._histogram_bins).astype(np.int32),
+            self._histogram_bins - 1,
+        )
+        foreground = np.bincount(
+            indices.ravel(),
+            weights=np.power(alpha, 3.0).ravel(),
+            minlength=self._histogram_bins,
+        ).astype(np.float32)
+        background = np.bincount(
+            indices.ravel(),
+            weights=np.power(1.0 - alpha, 3.0).ravel(),
+            minlength=self._histogram_bins,
+        ).astype(np.float32)
+        foreground = cv2.GaussianBlur(foreground[:, None], (1, 9), 0).ravel() + 1.0
+        background = cv2.GaussianBlur(background[:, None], (1, 9), 0).ravel() + 1.0
+        self._foreground_histogram = self._smooth_histogram(
+            self._foreground_histogram, foreground
+        )
+        self._background_histogram = self._smooth_histogram(
+            self._background_histogram, background
+        )
+
+        likelihood = self._foreground_histogram / (
+            self._foreground_histogram + self._background_histogram
+        )
+        depth_probability = np.clip(likelihood[indices], 0.02, 0.98)
+        safe_alpha = np.clip(alpha, 0.02, 0.98)
+        semantic_logit = np.log(safe_alpha / (1.0 - safe_alpha))
+        depth_logit = np.log(depth_probability / (1.0 - depth_probability))
+        refined = 1.0 / (1.0 + np.exp(-(semantic_logit + self._strength * depth_logit)))
+        refined[alpha <= 0.02] = alpha[alpha <= 0.02]
+        refined[alpha >= 0.98] = alpha[alpha >= 0.98]
+        return np.rint(refined * 255.0).astype(np.uint8)
+
+    def _smooth_histogram(
+        self, previous: np.ndarray | None, current: np.ndarray
+    ) -> np.ndarray:
+        if previous is None:
+            return current
+        keep = 1.0 - self._smoothing
+        return previous * keep + current * self._smoothing
+
+
 class DepthPublisher:
     def __init__(self, daemon_url: str, timeout_seconds: float = 2.0) -> None:
         self._url = f"{daemon_url.rstrip('/')}/api/v1/depth/frame"
@@ -162,16 +237,26 @@ class DepthInputFrame:
     frame_id: int
     captured_at_ms: int
     frame_bgr: np.ndarray
+    person_mask: np.ndarray | None = None
 
 
 class DepthProcessor:
-    def __init__(self, daemon_url: str, model_dir: Path, input_height: int) -> None:
+    def __init__(
+        self,
+        daemon_url: str,
+        model_dir: Path,
+        input_height: int,
+        publish_mask: Callable[[int, int, np.ndarray], None],
+    ) -> None:
         self._daemon_url = daemon_url
         self._model_dir = model_dir
         self._input_height = input_height
+        self._publish_mask = publish_mask
         self._frames: queue.Queue[DepthInputFrame | None] = queue.Queue(maxsize=1)
         self._lock = threading.Lock()
         self._published_count = 0
+        self._refined_mask_count = 0
+        self._mask_refinement_active = False
         self._error: BaseException | None = None
         self._thread = threading.Thread(target=self._run, name="tarsier-depth", daemon=True)
 
@@ -179,6 +264,16 @@ class DepthProcessor:
     def published_count(self) -> int:
         with self._lock:
             return self._published_count
+
+    @property
+    def mask_refinement_active(self) -> bool:
+        with self._lock:
+            return self._mask_refinement_active
+
+    @property
+    def refined_mask_count(self) -> int:
+        with self._lock:
+            return self._refined_mask_count
 
     def submit(self, frame: DepthInputFrame) -> None:
         self.raise_if_failed()
@@ -212,14 +307,24 @@ class DepthProcessor:
             identity = VideoIdentityClient(self._daemon_url)
             publisher = DepthPublisher(self._daemon_url)
             estimator: DepthEstimator | None = None
+            refiner: DepthMaskRefiner | None = None
+            active_usage: str | None = None
             retry_at = 0.0
             while (frame := self._frames.get()) is not None:
-                if identity.selected_identity() != "depth-map":
+                usage = identity.depth_usage()
+                with self._lock:
+                    self._mask_refinement_active = usage == "mask-refinement"
+                if usage is None:
                     if estimator is not None:
                         estimator.close()
                         estimator = None
                         LOGGER.info("depth model released")
+                    refiner = None
+                    active_usage = None
                     continue
+                if usage != active_usage:
+                    refiner = DepthMaskRefiner()
+                    active_usage = usage
                 if estimator is None:
                     if time.monotonic() < retry_at:
                         continue
@@ -230,7 +335,17 @@ class DepthProcessor:
                         LOGGER.exception("failed to initialize depth model")
                         continue
                 try:
-                    publisher.publish(estimator.estimate(frame))
+                    estimate = estimator.estimate(frame)
+                    publisher.publish(estimate)
+                    if usage == "mask-refinement" and frame.person_mask is not None:
+                        assert refiner is not None
+                        self._publish_mask(
+                            frame.frame_id,
+                            frame.captured_at_ms,
+                            refiner.refine(frame.person_mask, estimate),
+                        )
+                        with self._lock:
+                            self._refined_mask_count += 1
                     with self._lock:
                         self._published_count += 1
                 except RuntimeError as error:
@@ -238,6 +353,8 @@ class DepthProcessor:
                     identity.invalidate()
             if estimator is not None:
                 estimator.close()
+            with self._lock:
+                self._mask_refinement_active = False
         except BaseException as error:
             LOGGER.exception("depth processor stopped")
             with self._lock:

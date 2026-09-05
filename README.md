@@ -52,8 +52,10 @@ mischievous personality without tying its core to one camera vendor.
   stage; the **Background** switch enables one exclusive effect at a time:
   **Green screen** replaces the background with green, while **Blur** keeps the
   subject sharp and softens the background. Both affect the preview and virtual
-  camera using one-frame alignment and a narrow edge transition, while a
-  missing or stale mask fails closed to black until the effect is explicitly
+  camera using one-frame alignment and a narrow edge transition. When depth is
+  enabled, the worker combines MediaPipe's semantic person probability with
+  the local depth distribution to suppress background leaks at depth breaks;
+  a missing or stale mask fails closed to black until the effect is explicitly
   disabled;
 - an optional local avatar worker defaults to a cel-shaded procedural 3D head
   and bust driven by MediaPipe head pose and facial blendshapes; LivePortrait
@@ -62,9 +64,10 @@ mischievous personality without tying its core to one camera vendor.
   between the real camera and avatar, and a missing or stale avatar frame fails
   closed to black instead of revealing the camera;
 - an optional local Depth Anything V2 worker estimates relative monocular depth
-  on demand. Tarsier retains the original `float32` field for machine use and
-  independently colorizes it for the **Depth map** preview and virtual-camera
-  identity; a missing or stale estimate fails closed to black;
+  on demand for either **Depth map** or Camera's active background effect.
+  Tarsier retains the original `float32` field for machine use, independently
+  colorizes it for the depth identity, and uses only its likelihood as a
+  boundary refinement for person segmentation;
 - face presence and open-palm observations pass through dwell, release, and
   cooldown stabilization before becoming semantic events;
 - a responsive local web UI shows the preview, telemetry, perception state,
@@ -182,7 +185,12 @@ image without changing the public virtual-camera device. The reference camera
 configuration starts Green screen enabled and therefore emits black, never the
 unprocessed frame, while the first mask is still pending after a restart. The
 previous `/api/v1/video/green-screen` endpoint remains available for compatible
-clients and selects Green screen when called.
+clients and selects Green screen when called. With `[depth].enabled = true`,
+Camera plus an active background effect also loads Depth Anything V2. The
+semantic mask still decides what is a person; a temporally smoothed depth
+likelihood sharpens uncertain boundary pixels and rejects differently distanced
+background fragments. Turning the background effect off releases the depth
+model unless the Depth map identity is selected.
 The manual zoom slider applies x1-to-x4 changes continuously while coalescing
 obsolete intermediate positions. Embedded UI assets and the health response use
 `Cache-Control: no-store`; an open page detects a new
@@ -533,6 +541,12 @@ The first vertical slice was validated on 2026-09-05 with an OBSBOT Tiny 2
 - a fully supervised synthetic-source run published depth at 29.2-29.6 FPS,
   cleared the raw state when Camera was reselected, and released the CUDA model
   after the identity change;
+- on ten captured camera frames, depth-assisted segmentation reduced the mean
+  number of uncertain alpha pixels from 7,941 to 2,519 while preserving the
+  mask's certain foreground and background; a supervised Camera plus Green
+  screen run kept depth and refined-mask frames within two source frames,
+  sustained 29.9-30.0 FPS, and released the CUDA model after the effect was
+  disabled;
 - after the avatar worker stopped, the next snapshot was verified as entirely
   black once the 500 ms freshness window expired, confirming that the real
   camera cannot appear as an implicit fallback;
@@ -551,7 +565,7 @@ The first vertical slice was validated on 2026-09-05 with an OBSBOT Tiny 2
 - after the repair restart, the real 720p30 pipeline remained healthy for more
   than six minutes on the camera's 480 Mbit/s fallback link, passing 11,000
   frames without another USB event or required restart;
-- all 97 daemon tests, 2 MCP tests, 24 Python tests, JavaScript syntax checks,
+- all 98 daemon tests, 2 MCP tests, 25 Python tests, JavaScript syntax checks,
   formatting, lint, configuration, protocol, and API checks passed.
 
 An extended run changed the camera result: after approximately six minutes of
@@ -602,9 +616,10 @@ run before unattended use.
   sustained physical-camera use, expression calibration, occlusions, and
   broader aesthetic review still need testing;
 - monocular depth is relative inverse depth, not calibrated metric distance;
-  routing, raw-value retention, colorization, and stale-frame fallback have
-  automated coverage, but sustained physical-camera motion and downstream 3D
-  use still need validation;
+  routing, raw-value retention, colorization, mask refinement, and stale-frame
+  fallback have automated and recorded-frame coverage, but sustained
+  physical-camera motion, depth-boundary failure cases, and downstream 3D use
+  still need validation;
 - pipeline telemetry reports effective FPS, frame count, last frame, errors,
   and restart count, but not queue pressure or dropped-frame attribution;
 - configuration changes still require a restart; presentation preferences are

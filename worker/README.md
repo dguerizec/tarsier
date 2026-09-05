@@ -20,10 +20,13 @@ input so latency cannot grow without bound.
 
 With the optional `depth` dependency group, Depth Anything V2 Small estimates a
 relative inverse-depth field from that same raw input. The model is loaded only
-while **Depth map** is selected and releases its GPU allocation on a mode
-switch. The original two-dimensional `float32` values are published without
-colorization; the Rust daemon retains them for machine consumers and derives
-the false-color video output independently. Larger values are nearer, but the
+while **Depth map** is selected or Camera has an active background effect, and
+releases its GPU allocation when neither use remains. The original
+two-dimensional `float32` values are published without colorization; the Rust
+daemon retains them for machine consumers and derives the false-color video
+output independently. In Camera mode, a smoothed foreground/background depth
+likelihood refines only MediaPipe's uncertain alpha values, so semantic person
+segmentation remains authoritative. Larger depth values are nearer, but the
 monocular estimate is not a metric distance map.
 
 The MediaPipe model files are cached outside the repository and checked against
@@ -48,12 +51,12 @@ Avatar output is enabled by the daemon's `[avatar]` configuration. The
 supervisor installs both optional dependency groups and supplies the 3D profile,
 LivePortrait source image, output dimensions, and cadence automatically. The
 worker polls the daemon's selected identity and loads only the requested engine;
-PyTorch is not imported while Camera or Stylized 3D is selected. The depth and
-LivePortrait models load independently and only for their corresponding
-identity. Models and generated data stay on the local machine. Every generated
-frame identifies its source, and the daemon accepts it only when that identity
-is still selected. It emits black when matching data is unavailable or older
-than 500 ms.
+PyTorch is not imported while Stylized 3D is selected, or while Camera has no
+background effect. The depth and LivePortrait models load independently and
+only for an active use. Models and generated data stay on the local machine.
+Every generated frame identifies its source, and the daemon accepts it only
+while that output still requires it. It emits black when matching data is
+unavailable or stale rather than exposing an unprocessed camera frame.
 
 The `liveportrait` dependency group provides the experimental neural portrait
 fallback. It requires the five additional weights and a source illustration:
@@ -87,8 +90,9 @@ grayscale mask is published to the daemon's internal video-mask channel for
 background and future final-output effects. The web UI renders the face, body,
 and each detected hand locally as toggleable skeleton overlays.
 
-While Depth map is selected, `GET /api/v1/depth/frame` returns the latest raw
-field as row-major little-endian `float32`. Response headers provide its width,
-height, capture/publication timestamps, frame id, representation, and the
-display-only far/near bounds. The pinned Hugging Face Depth Anything V2 Small
-checkpoint and Transformers integration are Apache-2.0 licensed.
+While Depth map or depth-assisted background processing is active,
+`GET /api/v1/depth/frame` returns the latest raw field as row-major
+little-endian `float32`. Response headers provide its width, height,
+capture/publication timestamps, frame id, representation, and the display-only
+far/near bounds. The pinned Hugging Face Depth Anything V2 Small checkpoint and
+Transformers integration are Apache-2.0 licensed.
