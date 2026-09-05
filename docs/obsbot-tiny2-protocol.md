@@ -76,27 +76,32 @@ Tarsier records a gesture setting only after the UVC write succeeds. It does
 not issue an additional proprietary readback while video is streaming, so each
 setting starts as unknown after a daemon restart.
 
-## Standard UVC pan/tilt nudges
+## Standard UVC pan/tilt movement
 
 The direction pad uses the standard `V4L2_CID_PAN_SPEED` and
 `V4L2_CID_TILT_SPEED` controls instead of a proprietary query or an assumed
 absolute starting angle. Tarsier queries both supported ranges, selects 25% of
-the available speed in the requested direction, applies both axes in one
-`VIDIOC_S_EXT_CTRLS` call, waits 120 ms, and writes zero to both controls. The
-start and stop writes share the camera-owner thread with every other control.
+the available speed in the requested direction, and applies both axes in one
+`VIDIOC_S_EXT_CTRLS` call. A repeated request for the same direction renews a
+350 ms movement lease without rewriting the UVC controls. A direction change
+writes the new speed pair, while `stop` writes zero to both controls. All
+hardware writes share the camera-owner thread with every other control.
 
 On the tested Tiny 2, pan advertises -160 through 160 and tilt -120 through
-120. The resulting pulses use pan -40 for left, pan 40 for right, tilt 30 for
-up, and tilt -30 for down. This speed-control pan convention is the reverse of
-the device's absolute-pan convention. Hardware validation confirmed movement
-on both axes and verified that `pan_speed` and `tilt_speed` return to zero after
-every API request.
+120. Movement uses pan -40 for left, pan 40 for right, tilt 30 for up, and tilt
+-30 for down. This speed-control pan convention is the reverse of the device's
+absolute-pan convention. Hardware validation held pan 40 continuously across
+16 reads during lease renewal and returned both controls to zero after an
+explicit stop.
 
-The UI repeats these independently bounded pulses while a direction button or
-keyboard arrow remains held. Closing or disconnecting the browser cannot make
-one pulse exceed 120 ms because stopping is owned by the daemon. A speed pulse
-does not reveal its final angle, so Tarsier clears the previous attitude sample
-instead of presenting stale absolute coordinates as current telemetry.
+The UI renews the lease every 100 ms while a direction button or keyboard arrow
+remains held. It sends an explicit stop on release, page blur, visibility loss,
+or page exit. The camera-owner worker independently expires an unrenewed lease
+and stops both axes, so a lost browser or request stream cannot leave the motor
+running. A hardware test confirmed that one unrenewed command was active after
+100 ms and stopped by 450 ms. Relative movement does not reveal its final angle,
+so Tarsier clears the previous attitude sample instead of presenting stale
+absolute coordinates as current telemetry.
 
 ## Standard UVC zoom
 
