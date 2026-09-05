@@ -51,6 +51,7 @@ angle and never triggers an implicit device reset.
 | Operation | Selector | Receiver | Command | Payload |
 | --- | ---: | ---: | ---: | --- |
 | Wake | 2 | `0x02` | `0xa0c2` | four zero bytes |
+| Sleep | 2 | `0x02` | `0xa0c2` | `01 00 00 00` |
 | Read AI gimbal state | 2 | `0x04` | `0x6604` | empty query |
 | Read AI quick status | 2 | `0x04` | `0x0104` | empty query |
 | Recenter | 2 | `0x03` | `0x00c3` | six zero bytes |
@@ -86,19 +87,37 @@ then replaces that accepted value with measured camera state on the next quick
 status read. Quick status runs at one fifth of the pose rate, with a minimum
 five-second interval, to limit selector-2 traffic.
 
+## Power sequencing
+
+The public power control coordinates capture and extension-unit traffic rather
+than sending an isolated vendor command. To switch off, Tarsier first stops
+face-tracking movement, releases the active GStreamer pipeline and its physical
+capture descriptor, and only then sends the sleep frame. Telemetry polling is
+suspended after that write succeeds, so it cannot accidentally wake the camera.
+The perception supervisor intentionally stops its worker while frames are
+paused. The daemon, API, and embedded UI remain active. To switch on, Tarsier
+sends the wake frame, waits 100 ms for the device, rebuilds the managed video
+pipeline, and starts a fresh perception worker. A failed sleep write restarts
+capture as a rollback.
+
+Other camera controls are rejected while the adapter records the device as
+powered off. Power state in the public API therefore represents the last
+successful daemon-owned transition, not an inferred sensor or USB state.
+
 ## Selector-6 camera status
 
 The fixed 60-byte selector-6 `GET_CUR` status block exposes the current AI mode
 at offset `0x18` and its sub-mode at `0x1c`. The tuple `(0, 0)` means tracking
-is disabled. The known Tiny 2 tracking modes `(1, 0)`, `(3, 0)`, `(4, 0)`,
-`(5, 0)`, and `(2, 0..4)` mean it is enabled. Other tuples, including the
-observed transition value `(6, 0)`, are left unknown so a mode change cannot be
-misreported as a settled tracking state. An unknown sample preserves the last
-confirmed indicator. The same snapshot exposes the firmware's zoom position at
-offset `0x04` on a 0-to-100 scale. Tarsier maps it to x1 through x4 and uses it
-as the live zoom source because AI-driven reframing does not reliably update
-the standard V4L2 zoom control. HDR is reported at offset `0x06`; zero means
-disabled and a non-zero value means enabled.
+is disabled. The known Tiny 2 tracking modes
+`(1, 0)`, `(3, 0)`, `(4, 0)`, `(5, 0)`, and `(2, 0..4)` mean it is enabled.
+Other tuples, including the observed transition value `(6, 0)`, are left
+unknown so a mode change cannot be misreported as a settled tracking state. An
+unknown sample preserves the last confirmed indicator. The same snapshot
+exposes the firmware's zoom position at offset `0x04` on a 0-to-100 scale.
+Tarsier maps it to x1 through x4 and uses it as the live zoom source because
+AI-driven reframing does not reliably update the standard V4L2 zoom control.
+HDR is reported at offset `0x06`; zero means disabled and a non-zero value means
+enabled.
 
 HDR writes use libdev's raw selector-6 `[tag, length, value]` layout rather than
 the framed selector-2 mailbox. The SDK warns that switching HDR is expensive
@@ -215,9 +234,12 @@ the next measured sample arrives.
 ## Boundaries and uncertainty
 
 - These values are validated only for the device and firmware above.
+- The libdev-derived selector-6 byte at offset `0x02` reported sleep after one
+  successful live wake/capture cycle, so Tarsier does not use it as independent
+  power confirmation. Public power state records the successful command path.
 - Tarsier does not link, load, bundle, or redistribute a proprietary SDK.
 - The adapter does not yet discover compatible firmware capabilities.
-- Sleep, image controls other than HDR and zoom, tracking modes, and firmware
+- Image controls other than HDR and zoom, tracking-mode selection, and firmware
   update operations are deliberately unimplemented.
 - Built-in gesture state is measured through `AI_GET_QUICK_STATUS` when polling
   is enabled; immediately after a write it temporarily represents the accepted

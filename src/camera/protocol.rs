@@ -147,14 +147,22 @@ pub fn parse_frame(buffer: &[u8]) -> Result<ParsedFrame, FrameError> {
 }
 
 pub fn wake_frame(sequence: u16) -> [u8; FRAME_SIZE] {
+    power_frame(sequence, true)
+}
+
+pub fn sleep_frame(sequence: u16) -> [u8; FRAME_SIZE] {
+    power_frame(sequence, false)
+}
+
+fn power_frame(sequence: u16, enabled: bool) -> [u8; FRAME_SIZE] {
     build_frame(
         sequence,
         CAM_SET_DEV_STATUS,
         CAMERA_RECEIVER,
         0x25,
-        &[0, 0, 0, 0],
+        &[u8::from(!enabled), 0, 0, 0],
     )
-    .expect("wake payload fits")
+    .expect("camera power payload fits")
 }
 
 pub fn ai_gimbal_query(sequence: u16) -> [u8; FRAME_SIZE] {
@@ -297,6 +305,15 @@ mod tests {
         assert_eq!(
             &frame[..20],
             &hex("aa250c000c0089420a02c2a00400be0700000000")
+        );
+    }
+
+    #[test]
+    fn sleep_matches_libdev_command() {
+        let frame = sleep_frame(0x0042);
+        assert_eq!(
+            &frame[..20],
+            &hex("aa2542000c00ea630a02c2a00400bffb01000000")
         );
     }
 

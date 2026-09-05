@@ -26,6 +26,10 @@ mischievous personality without tying its core to one camera vendor.
   the final MJPEG preview and `/dev/video42` output at 720p30;
 - a video supervisor closes stale streams and rebuilds the pipeline against the
   stable device path after runtime errors or end-of-stream;
+- the camera Power switch releases physical capture before putting the OBSBOT
+  to sleep, then wakes it before rebuilding capture, while the daemon and UI
+  remain available throughout; the supervised perception worker pauses while
+  frames are unavailable and starts again after capture resumes;
 - generic V4L2 clients can consume `/dev/video42` while perception uses the
   daemon's internal preview branch;
 - camera attitude is explicitly labelled `last-commanded`, `measured`,
@@ -61,10 +65,11 @@ mischievous personality without tying its core to one camera vendor.
   cooldown stabilization before becoming semantic events;
 - a responsive local web UI shows the preview, telemetry, perception state,
   presets, scenarios, and recent events, with optional face, body, and two-hand
-  skeleton overlays, face tracking, and a direction pad with page-level
-  arrow-key control; manual movement disables whichever tracking mode owns the
-  gimbal, and the UI reloads its embedded assets after a daemon upgrade and
-  reconnects the MJPEG preview after either a pipeline or daemon restart;
+  skeleton overlays, physical camera power, face tracking, and a direction pad
+  with page-level arrow-key control; manual movement disables whichever
+  tracking mode owns the gimbal, and the UI reloads its embedded assets after a
+  daemon upgrade and reconnects the MJPEG preview after either a pipeline or
+  daemon restart;
 - snapshots are available as JPEG over HTTP and as image content over MCP.
 
 OBS, Stream Deck, scripts, and similar tools are possible API clients. OBS is
@@ -286,6 +291,7 @@ The default server binds only to `127.0.0.1:8742`.
 | `GET` | `/api/v1/state` | Complete runtime state |
 | `GET` | `/api/v1/config` | Effective configuration |
 | `GET` | `/api/v1/camera/state` | Camera availability and attitude |
+| `POST` | `/api/v1/camera/power` | Wake or sleep the physical camera while keeping the daemon available |
 | `POST` | `/api/v1/camera/move` | Bounded absolute yaw/pitch/roll target |
 | `POST` | `/api/v1/camera/nudge/{direction}` | Start or renew `left`, `right`, `up`, or `down` movement; `stop` ends it |
 | `POST` | `/api/v1/camera/zoom` | Set x1-to-x4 lens magnification |
@@ -315,6 +321,10 @@ Examples:
 
 ```sh
 curl -fsS http://127.0.0.1:8742/api/v1/state
+
+curl -fsS -X POST http://127.0.0.1:8742/api/v1/camera/power \
+  -H 'content-type: application/json' \
+  -d '{"enabled":false}'
 
 curl -fsS -X POST http://127.0.0.1:8742/api/v1/camera/move \
   -H 'content-type: application/json' \
@@ -396,6 +406,10 @@ The first vertical slice was validated on 2026-09-05 with an OBSBOT Tiny 2
 
 - the physical pipeline sustained approximately 30 FPS at 1280x720 with no
   pipeline restart;
+- a live Power off/on cycle kept the same daemon process and healthy loopback
+  API, stopped capture at 0 FPS without recording a pipeline error or restart,
+  intentionally paused the perception worker, then returned to 29.98 FPS with
+  a fresh worker and a successful JPEG snapshot;
 - target-selection, zoom, and dynamic-zoom gesture-disable commands were
   accepted while streaming without a pipeline restart or USB re-enumeration;
 - standard UVC zoom accepted x2.5 as raw position 50 on the discovered 0-to-100
@@ -495,7 +509,7 @@ The first vertical slice was validated on 2026-09-05 with an OBSBOT Tiny 2
 - after the repair restart, the real 720p30 pipeline remained healthy for more
   than six minutes on the camera's 480 Mbit/s fallback link, passing 11,000
   frames without another USB event or required restart;
-- all 75 daemon tests, 2 MCP tests, 15 Python tests, JavaScript syntax checks,
+- all 87 daemon tests, 2 MCP tests, 19 Python tests, JavaScript syntax checks,
   formatting, lint, configuration, protocol, and API checks passed.
 
 An extended run changed the camera result: after approximately six minutes of
@@ -515,6 +529,9 @@ run before unattended use.
   configured path and has synthetic EOS coverage, but a physical unplug/reset
   recovery cycle and long soak have not yet been revalidated;
 - the V4L2 loopback device must be created before startup;
+- while camera power is off, capture, preview, perception input, and virtual
+  camera production are intentionally stopped; consumers must tolerate the
+  stream pausing until the camera is switched back on;
 - absolute movement is safely bounded but has not been calibrated for precise
   agreement between requested and settled angles;
 - the previous `0x0043` live attitude query reset the tested camera during an
@@ -522,6 +539,8 @@ run before unattended use.
   five-minute soak but not an unattended endurance run;
 - unknown selector-6 AI mode tuples preserve the last confirmed tracking value
   instead of guessing during a firmware transition;
+- camera power state represents the daemon's last successful sleep/wake
+  transition rather than an independently confirmed hardware readback;
 - relative pan/tilt movement briefly clears attitude values until the next
   measured sample reports the final physical angle;
 - open-palm thresholds were calibrated for one operator and environment;

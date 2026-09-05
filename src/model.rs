@@ -98,6 +98,8 @@ pub enum CameraAttitudeSource {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct CameraState {
     pub available: bool,
+    pub powered_on: Option<bool>,
+    pub power_error: Option<String>,
     pub adapter: String,
     pub serial: Option<String>,
     pub tracking: Option<bool>,
@@ -177,6 +179,7 @@ impl BuiltInGestureState {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct PipelineState {
+    pub enabled: bool,
     pub running: bool,
     pub source: String,
     pub input_device: Option<String>,

@@ -28,7 +28,7 @@ use crate::{
         FaceTrackingTarget, Landmark, PerceptionObservation, ScenarioActivation, VideoIdentity,
         VideoOutputMode, unix_ms,
     },
-    pipeline::PreviewHub,
+    pipeline::{PreviewHub, VideoPipelineControl},
     runtime::Runtime,
     scenario::{FacePresenceStabilizer, OpenPalmStabilizer, PresenceChange},
 };
@@ -41,17 +41,31 @@ struct ApiState {
     face_presence: Arc<Mutex<FacePresenceStabilizer>>,
     preview: PreviewHub,
     camera: Option<CameraHandle>,
+    pipeline: Option<VideoPipelineControl>,
+    camera_power_control: Arc<Mutex<()>>,
     pan_tilt_motion: Arc<Mutex<PanTiltMotion>>,
     face_tracking: Arc<Mutex<FaceTrackingController>>,
     avatar_control: Arc<Mutex<()>>,
     shutdown: watch::Receiver<bool>,
 }
 
+#[cfg(test)]
 pub fn router(
     config: Config,
     runtime: Runtime,
     preview: PreviewHub,
     camera: Option<CameraHandle>,
+    shutdown: watch::Receiver<bool>,
+) -> Router {
+    router_with_pipeline(config, runtime, preview, camera, None, shutdown)
+}
+
+pub fn router_with_pipeline(
+    config: Config,
+    runtime: Runtime,
+    preview: PreviewHub,
+    camera: Option<CameraHandle>,
+    pipeline: Option<VideoPipelineControl>,
     shutdown: watch::Receiver<bool>,
 ) -> Router {
     let state = ApiState {
@@ -61,6 +75,8 @@ pub fn router(
         runtime,
         preview,
         camera,
+        pipeline,
+        camera_power_control: Arc::new(Mutex::new(())),
         pan_tilt_motion: Arc::new(Mutex::new(PanTiltMotion::default())),
         face_tracking: Arc::new(Mutex::new(FaceTrackingController::default())),
         avatar_control: Arc::new(Mutex::new(())),
@@ -73,6 +89,7 @@ pub fn router(
         .route("/api/v1/health", get(health))
         .route("/api/v1/state", get(current_state))
         .route("/api/v1/camera/state", get(camera_state))
+        .route("/api/v1/camera/power", post(set_camera_power))
         .route("/api/v1/camera/move", post(move_camera))
         .route("/api/v1/camera/nudge/{direction}", post(nudge_camera))
         .route("/api/v1/camera/zoom", post(set_zoom))
@@ -154,6 +171,7 @@ async fn health(State(state): State<ApiState>) -> impl IntoResponse {
         Json(json!({
             "status": if snapshot.pipeline.error.is_some()
                 || snapshot.camera.error.is_some()
+                || snapshot.camera.power_error.is_some()
                 || snapshot.perception.error.is_some()
             {
                 "degraded"
@@ -190,6 +208,125 @@ struct MoveCameraRequest {
 #[derive(Deserialize)]
 struct TrackingRequest {
     enabled: bool,
+}
+
+#[derive(Deserialize)]
+struct CameraPowerRequest {
+    enabled: bool,
+}
+
+async fn set_camera_power(
+    State(state): State<ApiState>,
+    Json(request): Json<CameraPowerRequest>,
+) -> Response {
+    let _power_change = state.camera_power_control.lock().await;
+    let Some(camera) = state.camera.clone() else {
+        return camera_unavailable();
+    };
+    let Some(pipeline) = state.pipeline.clone() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "video pipeline control is unavailable"})),
+        )
+            .into_response();
+    };
+
+    if request.enabled {
+        if !camera.is_powered_on()
+            && let Err(error) = camera.set_powered_on(true).await
+        {
+            record_camera_power_error(&state, &error).await;
+            return command_error(error);
+        }
+        state
+            .runtime
+            .update(|runtime| {
+                runtime.camera.powered_on = Some(true);
+                runtime.camera.power_error = None;
+            })
+            .await;
+        if let Err(error) = pipeline.set_enabled(true).await {
+            record_camera_power_error(&state, &error).await;
+            return command_error(error);
+        }
+    } else {
+        if camera.is_powered_on() {
+            if let Err(error) = camera.set_face_tracking_speed(0, 0, 0.0).await {
+                record_camera_power_error(&state, &error).await;
+                return command_error(error);
+            }
+            state.face_tracking.lock().await.set_enabled(false);
+            clear_pan_tilt_motion(&state).await;
+            state
+                .runtime
+                .update(|runtime| {
+                    runtime.camera.face_tracking = FaceTrackingState::default();
+                })
+                .await;
+            camera.begin_power_transition();
+        }
+        if let Err(error) = pipeline.set_enabled(false).await {
+            let rollback_error = pipeline.set_enabled(true).await.err();
+            camera.end_power_transition();
+            let error = if let Some(rollback_error) = rollback_error {
+                anyhow::anyhow!(
+                    "failed to stop video capture: {error}; video pipeline rollback failed: {rollback_error}"
+                )
+            } else {
+                anyhow::anyhow!("failed to stop video capture: {error}")
+            };
+            record_camera_power_error(&state, &error).await;
+            return command_error(error);
+        }
+        if camera.is_powered_on()
+            && let Err(error) = camera.set_powered_on(false).await
+        {
+            let rollback_error = pipeline.set_enabled(true).await.err();
+            camera.end_power_transition();
+            let error = if let Some(rollback_error) = rollback_error {
+                anyhow::anyhow!(
+                    "failed to put camera to sleep: {error}; video pipeline rollback failed: {rollback_error}"
+                )
+            } else {
+                anyhow::anyhow!("failed to put camera to sleep: {error}")
+            };
+            record_camera_power_error(&state, &error).await;
+            return command_error(error);
+        }
+        camera.end_power_transition();
+        state
+            .runtime
+            .update(|runtime| {
+                runtime.camera.powered_on = Some(false);
+                runtime.camera.power_error = None;
+                runtime.camera.face_tracking = FaceTrackingState::default();
+                runtime.camera.yaw_degrees = None;
+                runtime.camera.pitch_degrees = None;
+                runtime.camera.roll_degrees = None;
+                runtime.camera.euler_yaw_degrees = None;
+                runtime.camera.euler_pitch_degrees = None;
+                runtime.camera.euler_roll_degrees = None;
+                runtime.camera.yaw_velocity_degrees_per_second = None;
+                runtime.camera.pitch_velocity_degrees_per_second = None;
+                runtime.camera.roll_velocity_degrees_per_second = None;
+                runtime.camera.attitude_source = CameraAttitudeSource::Unavailable;
+                runtime.camera.sample_at_ms = None;
+                runtime.camera.telemetry_error = None;
+                runtime.perception.worker_connected = false;
+                runtime.perception.error = None;
+            })
+            .await;
+    }
+
+    record_camera_command(&state, "camera.power", json!({"enabled": request.enabled})).await;
+    StatusCode::ACCEPTED.into_response()
+}
+
+async fn record_camera_power_error(state: &ApiState, error: &anyhow::Error) {
+    state
+        .runtime
+        .update(|runtime| runtime.camera.power_error = Some(error.to_string()))
+        .await;
 }
 
 #[derive(Deserialize)]
@@ -818,7 +955,7 @@ fn mjpeg_response(
             }
             let frame = receiver.borrow_and_update().clone();
             let Some(frame) = frame else {
-                break;
+                continue;
             };
             let part_header = Bytes::from(format!(
                 "--tarsier-frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
@@ -974,6 +1111,9 @@ async fn set_output_mode(
 }
 
 async fn avatar_frame(State(state): State<ApiState>, headers: HeaderMap, body: Bytes) -> Response {
+    if let Some(response) = reject_stale_worker_update(&state).await {
+        return response;
+    }
     let engine = match required_avatar_engine_header(&headers) {
         Ok(value) => value,
         Err(error) => return unprocessable_entity(error),
@@ -1049,6 +1189,9 @@ async fn perception_mask(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    if let Some(response) = reject_stale_worker_update(&state).await {
+        return response;
+    }
     let frame_id = match required_u64_header(&headers, "x-tarsier-frame-id") {
         Ok(value) => value,
         Err(error) => return unprocessable_entity(error),
@@ -1153,6 +1296,9 @@ async fn perception_observation(
     State(state): State<ApiState>,
     Json(observation): Json<PerceptionObservation>,
 ) -> Response {
+    if let Some(response) = reject_stale_worker_update(&state).await {
+        return response;
+    }
     if observation.confidence.is_nan() || !(0.0..=1.0).contains(&observation.confidence) {
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -1307,6 +1453,20 @@ async fn perception_observation(
         }
     }
     StatusCode::NO_CONTENT.into_response()
+}
+
+async fn reject_stale_worker_update(state: &ApiState) -> Option<Response> {
+    if state.pipeline.is_some() && !state.runtime.state().await.pipeline.running {
+        Some(
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": "video pipeline is paused"})),
+            )
+                .into_response(),
+        )
+    } else {
+        None
+    }
 }
 
 async fn drive_face_tracking(
@@ -1514,10 +1674,118 @@ mod tests {
         }
         assert!(include_str!("../web/index.html").contains("id=\"face-tracking-toggle\""));
         assert!(include_str!("../web/app.js").contains("/api/v1/camera/face-tracking"));
+        assert!(include_str!("../web/index.html").contains("id=\"camera-power-toggle\""));
+        assert!(include_str!("../web/app.js").contains("/api/v1/camera/power"));
         assert!(include_str!("../web/index.html").contains("id=\"background-toggle\""));
         assert!(include_str!("../web/app.js").contains("/api/v1/video/background"));
         assert!(include_str!("../web/index.html").contains("data-output-mode"));
         assert!(include_str!("../web/app.js").contains("/api/v1/video/identity"));
+    }
+
+    #[tokio::test]
+    async fn camera_power_control_stops_and_restores_the_pipeline() {
+        let mut config = Config::default();
+        config.camera.adapter = CameraAdapter::Mock;
+        config.perception.enabled = false;
+        let runtime = Runtime::new();
+        runtime
+            .update(|state| {
+                state.pipeline.enabled = true;
+                state.pipeline.running = true;
+            })
+            .await;
+        let camera = camera::start(config.camera.clone(), runtime.clone())
+            .await
+            .unwrap();
+        let pipeline = VideoPipelineControl::mock(runtime.clone());
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = router_with_pipeline(
+            config,
+            runtime.clone(),
+            PreviewHub::new(),
+            camera,
+            Some(pipeline),
+            shutdown_rx,
+        );
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/camera/power")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"enabled":false}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let state = runtime.state().await;
+        assert_eq!(state.camera.powered_on, Some(false));
+        assert!(!state.pipeline.enabled);
+        assert!(!state.pipeline.running);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/perception/observations")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "frame_id": 1,
+                            "captured_at_ms": 100,
+                            "face_detected": false,
+                            "hand_detected": false,
+                            "pose_detected": false,
+                            "gesture": null,
+                            "confidence": 0.0,
+                            "latency_ms": 1.0
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(!runtime.state().await.perception.worker_connected);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/camera/actions/recenter")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let payload: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 1024).await.unwrap()).unwrap();
+        assert_eq!(payload["error"], "camera is powered off");
+
+        let response = app
+            .oneshot(
+                Request::post("/api/v1/camera/power")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"enabled":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let state = runtime.state().await;
+        assert_eq!(state.camera.powered_on, Some(true));
+        assert!(state.pipeline.enabled);
+        assert!(state.pipeline.running);
+        let power_events = runtime
+            .recent_events()
+            .await
+            .into_iter()
+            .filter(|event| event.kind == "camera.power")
+            .collect::<Vec<_>>();
+        assert_eq!(power_events.len(), 2);
+        assert_eq!(power_events[0].data["enabled"], false);
+        assert_eq!(power_events[1].data["enabled"], true);
     }
 
     #[tokio::test]
@@ -1564,6 +1832,65 @@ mod tests {
             .await
             .expect("preview stream should stop after shutdown")
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn mjpeg_stream_pauses_across_a_pipeline_power_cycle() {
+        let (frames_tx, frames_rx) = watch::channel(None);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let response = mjpeg_response(frames_rx, shutdown_rx);
+        let mut body = response.into_body().into_data_stream();
+
+        frames_tx.send_replace(Some(Bytes::from_static(b"first-frame")));
+        let _header = tokio::time::timeout(Duration::from_secs(1), body.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let first = tokio::time::timeout(Duration::from_secs(1), body.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(
+            first
+                .windows(b"first-frame".len())
+                .any(|part| part == b"first-frame")
+        );
+        let _terminator = body.next().await.unwrap().unwrap();
+
+        frames_tx.send_replace(None);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), body.next())
+                .await
+                .is_err()
+        );
+
+        frames_tx.send_replace(Some(Bytes::from_static(b"second-frame")));
+        let _header = tokio::time::timeout(Duration::from_secs(1), body.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let second = tokio::time::timeout(Duration::from_secs(1), body.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(
+            second
+                .windows(b"second-frame".len())
+                .any(|part| part == b"second-frame")
+        );
+        let _terminator = body.next().await.unwrap().unwrap();
+
+        shutdown_tx.send(true).unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), body.next())
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]

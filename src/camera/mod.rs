@@ -2,7 +2,11 @@ mod linux_uvc;
 mod protocol;
 
 use std::{
-    sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{Receiver, SyncSender, TryRecvError, sync_channel},
+    },
     time::{Duration, Instant},
 };
 
@@ -30,6 +34,9 @@ pub const PAN_TILT_LEASE: Duration = Duration::from_millis(350);
 
 #[derive(Debug)]
 enum Command {
+    Power {
+        enabled: bool,
+    },
     Move {
         yaw: f32,
         pitch: f32,
@@ -164,11 +171,32 @@ impl TelemetryPoller {
 #[derive(Clone)]
 pub struct CameraHandle {
     tx: SyncSender<Request>,
+    powered_on: Arc<AtomicBool>,
+    power_transition: Arc<AtomicBool>,
     max_yaw_degrees: f32,
     max_pitch_degrees: f32,
 }
 
 impl CameraHandle {
+    pub async fn set_powered_on(&self, enabled: bool) -> Result<()> {
+        self.begin_power_transition();
+        let result = self.request(Command::Power { enabled }).await;
+        self.end_power_transition();
+        result
+    }
+
+    pub fn is_powered_on(&self) -> bool {
+        self.powered_on.load(Ordering::Relaxed)
+    }
+
+    pub fn begin_power_transition(&self) {
+        self.power_transition.store(true, Ordering::Relaxed);
+    }
+
+    pub fn end_power_transition(&self) {
+        self.power_transition.store(false, Ordering::Relaxed);
+    }
+
     pub async fn move_to(&self, yaw: f32, pitch: f32, roll: f32) -> Result<()> {
         if !yaw.is_finite() || !pitch.is_finite() || !roll.is_finite() {
             bail!("camera angles must be finite");
@@ -254,6 +282,14 @@ impl CameraHandle {
     }
 
     async fn request(&self, command: Command) -> Result<()> {
+        if !matches!(command, Command::Power { .. }) {
+            if self.power_transition.load(Ordering::Relaxed) {
+                bail!("camera power is changing");
+            }
+            if !self.is_powered_on() {
+                bail!("camera is powered off");
+            }
+        }
         let (response, rx) = oneshot::channel();
         self.tx
             .try_send(Request { command, response })
@@ -276,6 +312,7 @@ pub async fn start(config: CameraConfig, runtime: Runtime) -> Result<Option<Came
             runtime
                 .update(|state| {
                     state.camera.available = true;
+                    state.camera.powered_on = Some(true);
                     state.camera.yaw_degrees = Some(0.0);
                     state.camera.pitch_degrees = Some(0.0);
                     state.camera.roll_degrees = Some(0.0);
@@ -310,6 +347,7 @@ pub async fn start(config: CameraConfig, runtime: Runtime) -> Result<Option<Came
             runtime
                 .update(|state| {
                     state.camera.available = true;
+                    state.camera.powered_on = Some(true);
                     state.camera.zoom_magnification = initial_zoom;
                     state.camera.zoom_sample_at_ms = zoom_sample_at_ms;
                     state.camera.error = None;
@@ -333,6 +371,8 @@ fn spawn_worker<T: XuTransport + 'static>(
 ) -> (CameraHandle, tokio_mpsc::UnboundedReceiver<TelemetryUpdate>) {
     let (tx, rx) = sync_channel(COMMAND_QUEUE_CAPACITY);
     let (telemetry_tx, telemetry_rx) = tokio_mpsc::unbounded_channel();
+    let powered_on = Arc::new(AtomicBool::new(true));
+    let worker_powered_on = Arc::clone(&powered_on);
     let interval = Duration::from_millis(config.minimum_command_interval_ms);
     let poll_interval =
         (config.poll_interval_ms > 0).then(|| Duration::from_millis(config.poll_interval_ms));
@@ -340,6 +380,7 @@ fn spawn_worker<T: XuTransport + 'static>(
         .name("tarsier-camera-owner".into())
         .spawn(move || {
             Worker::new(transport, rx, interval)
+                .with_power_state(worker_powered_on)
                 .with_telemetry(poll_interval, telemetry_tx)
                 .run()
         })
@@ -347,6 +388,8 @@ fn spawn_worker<T: XuTransport + 'static>(
     (
         CameraHandle {
             tx,
+            powered_on,
+            power_transition: Arc::new(AtomicBool::new(false)),
             max_yaw_degrees: config.max_yaw_degrees,
             max_pitch_degrees: config.max_pitch_degrees,
         },
@@ -366,6 +409,7 @@ struct Worker<T> {
     hdr_state: Option<bool>,
     last_hdr_switch: Option<Instant>,
     telemetry: Option<TelemetryPoller>,
+    powered_on: Arc<AtomicBool>,
 }
 
 impl<T: XuTransport> Worker<T> {
@@ -382,7 +426,13 @@ impl<T: XuTransport> Worker<T> {
             hdr_state: None,
             last_hdr_switch: None,
             telemetry: None,
+            powered_on: Arc::new(AtomicBool::new(true)),
         }
+    }
+
+    fn with_power_state(mut self, powered_on: Arc<AtomicBool>) -> Self {
+        self.powered_on = powered_on;
+        self
     }
 
     fn with_telemetry(
@@ -421,7 +471,11 @@ impl<T: XuTransport> Worker<T> {
     }
 
     fn execute(&mut self, command: Command) -> Result<()> {
+        if !matches!(command, Command::Power { .. }) && !self.powered_on.load(Ordering::Relaxed) {
+            bail!("camera is powered off");
+        }
         match command {
+            Command::Power { enabled } => self.set_powered_on(enabled),
             Command::Move { yaw, pitch, roll } => {
                 self.wake()?;
                 let mut frame = protocol::move_frame(self.next_sequence(), yaw, pitch, roll);
@@ -458,6 +512,26 @@ impl<T: XuTransport> Worker<T> {
                 speed_fraction,
             } => self.set_pan_tilt_speed(pan_direction, tilt_direction, speed_fraction),
         }
+    }
+
+    fn set_powered_on(&mut self, enabled: bool) -> Result<()> {
+        if self.powered_on.load(Ordering::Relaxed) == enabled {
+            return Ok(());
+        }
+        if !enabled && self.pan_tilt_direction != (0, 0) {
+            self.set_pan_tilt_speed(0, 0, NUDGE_SPEED_FRACTION)?;
+        }
+        let mut frame = if enabled {
+            protocol::wake_frame(self.next_sequence())
+        } else {
+            protocol::sleep_frame(self.next_sequence())
+        };
+        self.set(VENDOR_SELECTOR, &mut frame)?;
+        self.powered_on.store(enabled, Ordering::Relaxed);
+        if enabled {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        Ok(())
     }
 
     fn set_pan_tilt_speed(
@@ -543,6 +617,9 @@ impl<T: XuTransport> Worker<T> {
     }
 
     fn poll_telemetry_if_due(&mut self) -> bool {
+        if !self.powered_on.load(Ordering::Relaxed) {
+            return false;
+        }
         let now = Instant::now();
         let Some(kind) = self
             .telemetry
@@ -653,11 +730,17 @@ impl<T: XuTransport> Worker<T> {
 
 fn spawn_mock(config: &CameraConfig) -> CameraHandle {
     let (tx, rx) = sync_channel::<Request>(COMMAND_QUEUE_CAPACITY);
+    let powered_on = Arc::new(AtomicBool::new(true));
+    let worker_powered_on = Arc::clone(&powered_on);
     std::thread::Builder::new()
         .name("tarsier-mock-camera".into())
         .spawn(move || {
             while let Ok(request) = rx.recv() {
                 let result = match request.command {
+                    Command::Power { enabled } => {
+                        worker_powered_on.store(enabled, Ordering::Relaxed);
+                        Ok(())
+                    }
                     Command::Move { .. }
                     | Command::Recenter
                     | Command::Tracking { .. }
@@ -672,6 +755,8 @@ fn spawn_mock(config: &CameraConfig) -> CameraHandle {
         .expect("failed to spawn mock camera thread");
     CameraHandle {
         tx,
+        powered_on,
+        power_transition: Arc::new(AtomicBool::new(false)),
         max_yaw_degrees: config.max_yaw_degrees,
         max_pitch_degrees: config.max_pitch_degrees,
     }
@@ -1060,6 +1145,24 @@ mod tests {
         let command = protocol::parse_frame(&worker.transport.writes[1].1).unwrap();
         assert_eq!(command.command, protocol::AI_SET_GESTURE_ZOOM);
         assert_eq!(command.payload, [0]);
+    }
+
+    #[test]
+    fn power_command_sleeps_and_wakes_without_accepting_controls_while_off() {
+        let (_tx, rx) = sync_channel(1);
+        let mut worker = Worker::new(RecordingTransport::default(), rx, Duration::ZERO);
+
+        worker.execute(Command::Power { enabled: false }).unwrap();
+        assert!(!worker.powered_on.load(Ordering::Relaxed));
+        let sleep = protocol::parse_frame(&worker.transport.writes[0].1).unwrap();
+        assert_eq!(sleep.command, protocol::CAM_SET_DEV_STATUS);
+        assert_eq!(sleep.payload, [1, 0, 0, 0]);
+        assert!(worker.execute(Command::Recenter).is_err());
+
+        worker.execute(Command::Power { enabled: true }).unwrap();
+        assert!(worker.powered_on.load(Ordering::Relaxed));
+        let wake = protocol::parse_frame(&worker.transport.writes[1].1).unwrap();
+        assert_eq!(wake.payload, [0, 0, 0, 0]);
     }
 
     #[test]

@@ -26,6 +26,8 @@ main { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(17rem, .85
 .panel { padding: 1rem; }
 .panel-title { min-height: 2rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; color: var(--muted); font-size: .78rem; }
 .panel-title h2 { color: #fff; }
+.camera-heading-actions { display: flex; align-items: center; justify-content: flex-end; gap: .85rem; }
+.camera-heading-actions > span { text-align: right; }
 .preview-tools { display: flex; align-items: center; justify-content: flex-end; gap: .75rem; }
 .preview-panel { grid-row: span 2; }
 .preview-panel .panel-title { padding: .8rem 1rem; }
@@ -64,15 +66,17 @@ main { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(17rem, .85
 .output-mode-option input:focus-visible + .output-mode-card, .background-effect-option input:focus-visible + .background-effect-card { outline: 2px solid var(--green); outline-offset: 2px; }
 .output-mode-option input:disabled + .output-mode-card, .background-effect-option input:disabled + .background-effect-card { opacity: .45; cursor: not-allowed; }
 .output-control .error, .background-control .error { margin-top: 0; }
-.background-switch { display: flex; align-items: center; gap: .6rem; cursor: pointer; }
-.background-switch strong { font-size: .8rem; }
-.background-switch input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.toggle-switch, .background-switch { display: flex; align-items: center; gap: .6rem; cursor: pointer; }
+.toggle-switch strong, .background-switch strong { font-size: .8rem; }
+.toggle-switch input, .background-switch input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.camera-power-switch { color: #f2f5ef; font-weight: 700; }
+.camera-power-switch > span:first-child { min-width: 7.5rem; text-align: right; }
 .switch-track { position: relative; width: 2.35rem; height: 1.3rem; flex: 0 0 auto; border: 1px solid #536057; border-radius: 999px; background: #242c27; transition: background .15s ease, border-color .15s ease; }
 .switch-track::after { content: ""; position: absolute; top: .17rem; left: .17rem; width: .84rem; height: .84rem; border-radius: 50%; background: #a6afa8; transition: transform .15s ease, background .15s ease; }
-.background-switch input:checked + .switch-track { border-color: var(--green); background: #40582d; }
-.background-switch input:checked + .switch-track::after { background: var(--green); transform: translateX(1.02rem); }
-.background-switch input:focus-visible + .switch-track { outline: 2px solid var(--green); outline-offset: 3px; }
-.background-switch input:disabled ~ * { opacity: .45; cursor: not-allowed; }
+.toggle-switch input:checked + .switch-track, .background-switch input:checked + .switch-track { border-color: var(--green); background: #40582d; }
+.toggle-switch input:checked + .switch-track::after, .background-switch input:checked + .switch-track::after { background: var(--green); transform: translateX(1.02rem); }
+.toggle-switch input:focus-visible + .switch-track, .background-switch input:focus-visible + .switch-track { outline: 2px solid var(--green); outline-offset: 3px; }
+.toggle-switch:has(input:disabled), .background-switch:has(input:disabled) { opacity: .45; cursor: not-allowed; }
 .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: .5rem; margin-top: .75rem; }
 .metrics article { display: grid; gap: .3rem; background: #0a0e0c; padding: .75rem; border-radius: .65rem; }
 .metrics span, .hint { color: var(--muted); font-size: .72rem; }
@@ -134,6 +138,8 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   .pan-tilt-controls { justify-content: space-between; }
   .background-heading { align-items: flex-start; flex-direction: column; gap: .35rem; }
   .output-heading { align-items: flex-start; flex-direction: column; gap: .35rem; }
+  .camera-heading { align-items: flex-start; flex-direction: column; gap: .45rem; }
+  .camera-heading-actions { width: 100%; justify-content: space-between; }
   .output-heading > span, .background-heading > span { text-align: left; }
   .output-mode-list, .background-effect-list { grid-template-columns: 1fr; }
 }

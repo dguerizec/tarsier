@@ -95,18 +95,20 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
                 && config.video.background_effect == crate::model::BackgroundEffect::GreenScreen;
         })
         .await;
-    let _pipeline = VideoPipeline::start(config.video.clone(), runtime.clone(), preview.clone())
+    let pipeline = VideoPipeline::start(config.video.clone(), runtime.clone(), preview.clone())
         .await
         .context("failed to start video pipeline")?;
+    let pipeline_control = pipeline.control();
     let camera = camera::start(config.camera.clone(), runtime.clone())
         .await
         .context("failed to start camera adapter")?;
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let app = api::router(
+    let app = api::router_with_pipeline(
         config.clone(),
         runtime.clone(),
         preview,
         camera,
+        Some(pipeline_control),
         shutdown_rx,
     );
     let listener = tokio::net::TcpListener::bind(config.server.bind)

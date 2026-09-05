@@ -75,7 +75,17 @@ impl PreviewHub {
 
 pub struct VideoPipeline {
     supervisor_running: Arc<AtomicBool>,
+    desired_running: Arc<AtomicBool>,
+    runtime: Runtime,
     supervisor: Option<JoinHandle<()>>,
+}
+
+#[derive(Clone)]
+pub struct VideoPipelineControl {
+    desired_running: Arc<AtomicBool>,
+    runtime: Runtime,
+    #[cfg(test)]
+    immediate: bool,
 }
 
 struct ActivePipeline {
@@ -91,17 +101,86 @@ impl VideoPipeline {
         let pipeline =
             ActivePipeline::start(&config, runtime.clone(), preview.clone(), false).await?;
         let supervisor_running = Arc::new(AtomicBool::new(true));
+        let desired_running = Arc::new(AtomicBool::new(true));
         let supervisor = spawn_supervisor(
             pipeline,
             config,
-            runtime,
+            runtime.clone(),
             preview,
             Arc::clone(&supervisor_running),
+            Arc::clone(&desired_running),
         )?;
         Ok(Self {
             supervisor_running,
+            desired_running,
+            runtime,
             supervisor: Some(supervisor),
         })
+    }
+
+    pub fn control(&self) -> VideoPipelineControl {
+        VideoPipelineControl {
+            desired_running: Arc::clone(&self.desired_running),
+            runtime: self.runtime.clone(),
+            #[cfg(test)]
+            immediate: false,
+        }
+    }
+}
+
+impl VideoPipelineControl {
+    pub async fn set_enabled(&self, enabled: bool) -> Result<()> {
+        self.desired_running.store(enabled, Ordering::Relaxed);
+        if enabled {
+            self.runtime
+                .update(|state| {
+                    state.pipeline.enabled = true;
+                    state.pipeline.error = None;
+                })
+                .await;
+        }
+
+        #[cfg(test)]
+        if self.immediate {
+            self.runtime
+                .update(|state| {
+                    state.pipeline.enabled = enabled;
+                    state.pipeline.running = enabled;
+                    state.pipeline.error = None;
+                })
+                .await;
+            return Ok(());
+        }
+
+        let wait = async {
+            loop {
+                let pipeline = self.runtime.state().await.pipeline;
+                let reached_target = if enabled {
+                    pipeline.enabled && pipeline.running
+                } else {
+                    !pipeline.enabled && !pipeline.running
+                };
+                if reached_target {
+                    return Ok(());
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(10), wait)
+            .await
+            .map_err(|_| {
+                let action = if enabled { "start" } else { "stop" };
+                anyhow::anyhow!("timed out waiting for the video pipeline to {action}")
+            })?
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mock(runtime: Runtime) -> Self {
+        Self {
+            desired_running: Arc::new(AtomicBool::new(true)),
+            runtime,
+            immediate: true,
+        }
     }
 }
 
@@ -197,6 +276,7 @@ impl ActivePipeline {
         let running = Arc::new(AtomicBool::new(true));
         runtime
             .update(|state| {
+                state.pipeline.enabled = true;
                 state.pipeline.running = true;
                 state.pipeline.source = match config.source {
                     VideoSource::Camera => "camera",
@@ -334,6 +414,7 @@ fn spawn_telemetry(
 
 enum PipelineExit {
     Shutdown,
+    Disabled,
     Failed(String),
     Eos,
 }
@@ -344,76 +425,131 @@ fn spawn_supervisor(
     runtime: Runtime,
     preview: PreviewHub,
     supervisor_running: Arc<AtomicBool>,
+    desired_running: Arc<AtomicBool>,
 ) -> Result<JoinHandle<()>> {
     let tokio_handle = tokio::runtime::Handle::current();
     std::thread::Builder::new()
         .name("tarsier-video-supervisor".into())
         .spawn(move || {
             let mut active = Some(initial);
+            let mut retry_after_failure = false;
+            let mut disabled_reported = false;
             while supervisor_running.load(Ordering::Relaxed) {
-                let exit = wait_for_pipeline_exit(
-                    active.as_ref().expect("active pipeline is present"),
-                    &supervisor_running,
-                );
-                if matches!(exit, PipelineExit::Shutdown) {
+                if let Some(current) = active.as_ref() {
+                    let exit =
+                        wait_for_pipeline_exit(current, &supervisor_running, &desired_running);
+                    current.running.store(false, Ordering::Relaxed);
+                    preview.clear();
+                    drop(active.take());
+                    match exit {
+                        PipelineExit::Shutdown => break,
+                        PipelineExit::Disabled => {
+                            tokio_handle.block_on(runtime.update(|state| {
+                                state.pipeline.enabled = false;
+                                state.pipeline.running = false;
+                                state.pipeline.fps = 0.0;
+                                state.pipeline.last_frame_at_ms = None;
+                                state.pipeline.error = None;
+                                clear_runtime_effect_frames(state);
+                            }));
+                            tokio_handle.block_on(runtime.emit(
+                                "pipeline.disabled",
+                                "video-supervisor",
+                                None,
+                                json!({}),
+                            ));
+                            retry_after_failure = false;
+                            disabled_reported = true;
+                        }
+                        PipelineExit::Failed(detail) => {
+                            tokio_handle.block_on(runtime.update(|state| {
+                                state.pipeline.running = false;
+                                state.pipeline.fps = 0.0;
+                                state.pipeline.error = Some(detail.clone());
+                                clear_runtime_effect_frames(state);
+                            }));
+                            tokio_handle.block_on(runtime.emit(
+                                "pipeline.failed",
+                                "video-supervisor",
+                                None,
+                                json!({"error": detail}),
+                            ));
+                            retry_after_failure = true;
+                            disabled_reported = false;
+                        }
+                        PipelineExit::Eos => {
+                            let detail = "video pipeline reached end of stream".to_owned();
+                            tokio_handle.block_on(runtime.update(|state| {
+                                state.pipeline.running = false;
+                                state.pipeline.fps = 0.0;
+                                state.pipeline.error = Some(detail.clone());
+                                clear_runtime_effect_frames(state);
+                            }));
+                            tokio_handle.block_on(runtime.emit(
+                                "pipeline.failed",
+                                "video-supervisor",
+                                None,
+                                json!({"error": detail}),
+                            ));
+                            retry_after_failure = true;
+                            disabled_reported = false;
+                        }
+                    }
+                }
+
+                if !supervisor_running.load(Ordering::Relaxed) {
                     break;
                 }
 
-                let detail = match exit {
-                    PipelineExit::Failed(detail) => detail,
-                    PipelineExit::Eos => "video pipeline reached end of stream".to_owned(),
-                    PipelineExit::Shutdown => unreachable!(),
-                };
-                active
-                    .as_ref()
-                    .expect("active pipeline is present")
-                    .running
-                    .store(false, Ordering::Relaxed);
-                preview.clear();
-                tokio_handle.block_on(async {
-                    runtime
-                        .update(|state| {
+                if !desired_running.load(Ordering::Relaxed) {
+                    if !disabled_reported {
+                        tokio_handle.block_on(runtime.update(|state| {
+                            state.pipeline.enabled = false;
                             state.pipeline.running = false;
                             state.pipeline.fps = 0.0;
-                            state.pipeline.error = Some(detail.clone());
-                            state.video_effects.mask_available = false;
-                            state.video_effects.mask_frame_id = None;
-                            state.video_effects.mask_width = None;
-                            state.video_effects.mask_height = None;
-                            state.video_effects.mask_captured_at_ms = None;
-                            state.video_effects.mask_published_at_ms = None;
-                        })
-                        .await;
-                    runtime
-                        .emit(
-                            "pipeline.failed",
+                            state.pipeline.last_frame_at_ms = None;
+                            state.pipeline.error = None;
+                            clear_runtime_effect_frames(state);
+                        }));
+                        tokio_handle.block_on(runtime.emit(
+                            "pipeline.disabled",
                             "video-supervisor",
                             None,
-                            json!({"error": detail}),
-                        )
-                        .await;
-                });
-                drop(active.take());
+                            json!({}),
+                        ));
+                        retry_after_failure = false;
+                        disabled_reported = true;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                    continue;
+                }
 
-                while supervisor_running.load(Ordering::Relaxed) {
-                    if !wait_for_retry(
+                disabled_reported = false;
+                if retry_after_failure
+                    && !wait_for_retry(
                         &supervisor_running,
+                        &desired_running,
                         Duration::from_millis(config.restart_delay_ms),
-                    ) {
-                        break;
-                    }
-                    if config.source == VideoSource::Camera
-                        && !Path::new(&config.input_device).exists()
-                    {
-                        continue;
-                    }
-                    match tokio_handle.block_on(ActivePipeline::start(
-                        &config,
-                        runtime.clone(),
-                        preview.clone(),
-                        true,
-                    )) {
-                        Ok(next) => {
+                    )
+                {
+                    continue;
+                }
+                if config.source == VideoSource::Camera && !Path::new(&config.input_device).exists()
+                {
+                    retry_after_failure = true;
+                    continue;
+                }
+                let restarted = retry_after_failure;
+                match tokio_handle.block_on(ActivePipeline::start(
+                    &config,
+                    runtime.clone(),
+                    preview.clone(),
+                    restarted,
+                )) {
+                    Ok(next) => {
+                        active = Some(next);
+                        retry_after_failure = false;
+                        if restarted {
                             let restart_count = tokio_handle
                                 .block_on(async { runtime.state().await.pipeline.restart_count });
                             tokio_handle.block_on(runtime.emit(
@@ -423,18 +559,25 @@ fn spawn_supervisor(
                                 json!({"restart_count": restart_count}),
                             ));
                             tracing::info!(restart_count, "video pipeline restarted");
-                            active = Some(next);
-                            break;
+                        } else {
+                            tokio_handle.block_on(runtime.emit(
+                                "pipeline.enabled",
+                                "video-supervisor",
+                                None,
+                                json!({}),
+                            ));
                         }
-                        Err(error) => {
-                            let detail = format!("video pipeline restart failed: {error:#}");
-                            tracing::warn!(%detail);
-                            tokio_handle.block_on(runtime.update(|state| {
-                                state.pipeline.running = false;
-                                state.pipeline.fps = 0.0;
-                                state.pipeline.error = Some(detail);
-                            }));
-                        }
+                    }
+                    Err(error) => {
+                        let detail = format!("video pipeline start failed: {error:#}");
+                        tracing::warn!(%detail);
+                        tokio_handle.block_on(runtime.update(|state| {
+                            state.pipeline.enabled = true;
+                            state.pipeline.running = false;
+                            state.pipeline.fps = 0.0;
+                            state.pipeline.error = Some(detail.clone());
+                        }));
+                        retry_after_failure = true;
                     }
                 }
             }
@@ -447,11 +590,15 @@ fn spawn_supervisor(
 fn wait_for_pipeline_exit(
     active: &ActivePipeline,
     supervisor_running: &AtomicBool,
+    desired_running: &AtomicBool,
 ) -> PipelineExit {
     let Some(bus) = active.pipeline.bus() else {
         return PipelineExit::Failed("video pipeline has no GStreamer bus".into());
     };
     while supervisor_running.load(Ordering::Relaxed) {
+        if !desired_running.load(Ordering::Relaxed) {
+            return PipelineExit::Disabled;
+        }
         let Some(message) = bus.timed_pop(gst::ClockTime::from_mseconds(250)) else {
             continue;
         };
@@ -473,16 +620,28 @@ fn wait_for_pipeline_exit(
     PipelineExit::Shutdown
 }
 
-fn wait_for_retry(running: &AtomicBool, delay: Duration) -> bool {
+fn clear_runtime_effect_frames(state: &mut crate::model::RuntimeState) {
+    state.video_effects.mask_available = false;
+    state.video_effects.mask_frame_id = None;
+    state.video_effects.mask_width = None;
+    state.video_effects.mask_height = None;
+    state.video_effects.mask_captured_at_ms = None;
+    state.video_effects.mask_published_at_ms = None;
+}
+
+fn wait_for_retry(running: &AtomicBool, desired_running: &AtomicBool, delay: Duration) -> bool {
     let deadline = std::time::Instant::now() + delay;
-    while running.load(Ordering::Relaxed) && std::time::Instant::now() < deadline {
+    while running.load(Ordering::Relaxed)
+        && desired_running.load(Ordering::Relaxed)
+        && std::time::Instant::now() < deadline
+    {
         std::thread::sleep(
             deadline
                 .saturating_duration_since(std::time::Instant::now())
                 .min(Duration::from_millis(100)),
         );
     }
-    running.load(Ordering::Relaxed)
+    running.load(Ordering::Relaxed) && desired_running.load(Ordering::Relaxed)
 }
 
 #[cfg(test)]
@@ -505,12 +664,14 @@ mod tests {
             .unwrap();
         assert!(initial.pipeline.send_event(gst::event::Eos::new()));
         let supervisor_running = Arc::new(AtomicBool::new(true));
+        let desired_running = Arc::new(AtomicBool::new(true));
         let supervisor = spawn_supervisor(
             initial,
             config,
             runtime.clone(),
             preview.clone(),
             Arc::clone(&supervisor_running),
+            desired_running,
         )
         .unwrap();
 
@@ -538,6 +699,38 @@ mod tests {
                 .iter()
                 .any(|event| event.kind == "pipeline.restarted")
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pipeline_control_releases_and_restarts_the_active_pipeline() {
+        let config = VideoConfig {
+            source: VideoSource::Test,
+            loopback_enabled: false,
+            restart_delay_ms: 50,
+            ..VideoConfig::default()
+        };
+        let runtime = Runtime::new();
+        let preview = PreviewHub::new();
+        let pipeline = VideoPipeline::start(config, runtime.clone(), preview.clone())
+            .await
+            .unwrap();
+        let control = pipeline.control();
+
+        control.set_enabled(false).await.unwrap();
+        let state = runtime.state().await;
+        assert!(!state.pipeline.enabled);
+        assert!(!state.pipeline.running);
+        assert!(preview.latest().is_none());
+
+        control.set_enabled(true).await.unwrap();
+        let state = runtime.state().await;
+        assert!(state.pipeline.enabled);
+        assert!(state.pipeline.running);
+
+        drop(pipeline);
+        let events = runtime.recent_events().await;
+        assert!(events.iter().any(|event| event.kind == "pipeline.disabled"));
+        assert!(events.iter().any(|event| event.kind == "pipeline.enabled"));
     }
 
     #[test]

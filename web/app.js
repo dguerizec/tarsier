@@ -8,6 +8,7 @@ const skeletonToggle = $("#skeleton-toggle");
 const outputModeInputs = [...document.querySelectorAll("[data-output-mode]")];
 const backgroundToggle = $("#background-toggle");
 const backgroundEffectInputs = [...document.querySelectorAll("[data-background-effect]")];
+const cameraPowerToggle = $("#camera-power-toggle");
 const faceTrackingToggle = $("#face-tracking-toggle");
 const zoomSlider = $("#zoom-slider");
 const zoomReset = $("#zoom-reset");
@@ -23,6 +24,9 @@ let previewRetry = null;
 let daemonStartedAt = null;
 let reloadRequested = false;
 let cameraControlError = null;
+let cameraPowerPending = false;
+let cameraPowerError = null;
+let cameraPowerDraft = null;
 let zoomDraft = null;
 let zoomPending = false;
 let queuedZoom = null;
@@ -97,6 +101,8 @@ const attitudeLabel = (source) => ({
   simulated: "Simulated",
 }[source] || "No attitude sample");
 const magnification = (value) => `×${Number(value).toFixed(1)}`;
+const cameraIsPowered = (camera) => camera.powered_on !== false;
+const cameraControlsAvailable = (camera) => camera.available && cameraIsPowered(camera) && !cameraPowerPending;
 
 function observeDaemon(startedAt) {
   if (!Number.isFinite(startedAt)) return;
@@ -294,7 +300,7 @@ function renderBuiltInGestures(camera) {
     document.querySelectorAll(`[data-gesture-feature="${control.feature}"]`).forEach((button) => {
       const buttonValue = button.dataset.gestureEnabled === "true";
       button.setAttribute("aria-pressed", String(value != null && value === buttonValue));
-      button.disabled = !camera.available || pending;
+      button.disabled = !cameraControlsAvailable(camera) || pending;
     });
   }
 }
@@ -306,8 +312,8 @@ function renderZoom(camera) {
   $("#zoom-value").textContent = zoomPending
     ? `Applying ${magnification(displayed)}`
     : displayed == null ? "Unknown" : magnification(displayed);
-  zoomSlider.disabled = !camera.available;
-  zoomReset.disabled = !camera.available || zoomPending;
+  zoomSlider.disabled = !cameraControlsAvailable(camera);
+  zoomReset.disabled = !cameraControlsAvailable(camera) || zoomPending;
   $("#zoom-readback").textContent = camera.zoom_sample_at_ms == null
     ? "Awaiting camera readback."
     : `Camera readback ${age(camera.zoom_sample_at_ms)}.`;
@@ -320,7 +326,7 @@ function renderHdr(camera) {
   document.querySelectorAll('[data-camera-feature="hdr"]').forEach((button) => {
     const buttonValue = button.dataset.cameraEnabled === "true";
     button.setAttribute("aria-pressed", String(camera.hdr != null && camera.hdr === buttonValue));
-    button.disabled = !camera.available || hdrPending;
+    button.disabled = !cameraControlsAvailable(camera) || hdrPending;
     button.title = camera.hdr_sample_at_ms == null
       ? "Awaiting camera readback"
       : `Camera readback ${age(camera.hdr_sample_at_ms)}`;
@@ -334,7 +340,7 @@ function renderTracking(camera) {
   document.querySelectorAll('[data-camera-feature="tracking"]').forEach((button) => {
     const buttonValue = button.dataset.cameraEnabled === "true";
     button.setAttribute("aria-pressed", String(camera.tracking != null && camera.tracking === buttonValue));
-    button.disabled = !camera.available || trackingPending || faceTrackingPending;
+    button.disabled = !cameraControlsAvailable(camera) || trackingPending || faceTrackingPending;
     button.title = camera.tracking_sample_at_ms == null
       ? "Awaiting camera readback"
       : `Camera readback ${age(camera.tracking_sample_at_ms)}`;
@@ -344,7 +350,7 @@ function renderTracking(camera) {
 function renderFaceTracking(camera) {
   const tracking = camera.face_tracking || {};
   const targetName = tracking.target_source === "shoulders" ? "shoulders" : "face";
-  faceTrackingToggle.disabled = !camera.available || faceTrackingPending || trackingPending;
+  faceTrackingToggle.disabled = !cameraControlsAvailable(camera) || faceTrackingPending || trackingPending;
   faceTrackingToggle.setAttribute("aria-pressed", String(tracking.enabled === true));
   faceTrackingToggle.textContent = faceTrackingPending
     ? "Switching…"
@@ -363,7 +369,7 @@ function renderPanTilt(camera) {
   const direction = activeDirection();
   const trackingLocked = faceTrackingPending || trackingPending;
   for (const button of panTiltButtons) {
-    button.disabled = !camera.available || trackingLocked;
+    button.disabled = !cameraControlsAvailable(camera) || trackingLocked;
     button.setAttribute("aria-pressed", String(heldDirections.includes(button.dataset.panTilt)));
   }
   const faceTracking = camera.face_tracking || {};
@@ -376,6 +382,19 @@ function renderPanTilt(camera) {
     : faceTracking.enabled ? `Face tracking · ${trackingTarget} · centered`
     : direction ? `Moving ${direction}`
     : panTiltPending ? "Stopping…" : "Hold a button or use the arrow keys";
+}
+
+function renderCameraPower(camera) {
+  const poweredOn = cameraPowerDraft ?? camera.powered_on === true;
+  cameraPowerToggle.checked = poweredOn;
+  cameraPowerToggle.disabled = !camera.available || cameraPowerPending;
+  $("#camera-power-status").textContent = cameraPowerError
+    ? "Power · failed"
+    : cameraPowerPending ? (poweredOn ? "Power · waking…" : "Power · sleeping…")
+    : !camera.available ? "Power · unavailable"
+    : camera.powered_on == null ? "Power · unknown"
+    : poweredOn ? "Power · on" : "Power · off";
+  cameraPowerToggle.title = poweredOn ? "Put the physical camera to sleep" : "Wake the physical camera";
 }
 
 function backgroundState(videoEffects) {
@@ -474,10 +493,12 @@ function render(next) {
   renderFaceTracking(camera);
   renderPanTilt(camera);
   renderBuiltInGestures(camera);
+  renderCameraPower(camera);
   renderOutputMode(next.video_effects);
   renderBackground(next.video_effects);
   $("#pipeline-summary").textContent = pipeline.running
     ? `${pipeline.width}×${pipeline.height} · ${pipeline.fps.toFixed(1)} fps · ${pipeline.frame_count} frames`
+    : camera.powered_on === false ? "Camera off"
     : pipeline.error || "Pipeline stopped";
   syncPreview(pipeline);
   $("#worker").textContent = perception.worker_connected ? `Frame ${perception.frame_id}` : "Worker offline";
@@ -488,6 +509,8 @@ function render(next) {
   $("#perception-error").textContent = perception.error || "";
   const cameraError = [
     cameraControlError,
+    cameraPowerError,
+    camera.power_error,
     camera.error,
     camera.telemetry_error,
     camera.tracking_error,
@@ -499,7 +522,7 @@ function render(next) {
   $("#camera-error").hidden = !cameraError;
   $("#camera-error").textContent = cameraError || "";
   document.querySelectorAll("[data-action], [data-preset]").forEach((button) => {
-    button.disabled = !camera.available || faceTrackingPending || trackingPending;
+    button.disabled = !cameraControlsAvailable(camera) || faceTrackingPending || trackingPending;
   });
   drawSkeletons(
     socketConnected && pipeline.running ? perception.face_landmarks : [],
@@ -647,6 +670,42 @@ backgroundToggle.addEventListener("change", () => {
   const { effect } = backgroundState(state.video_effects);
   void setBackground(backgroundToggle.checked, effect);
 });
+
+async function setCameraPower(enabled) {
+  if (cameraPowerPending || !state?.camera.available) return;
+  cameraPowerPending = true;
+  cameraPowerError = null;
+  cameraPowerDraft = enabled;
+  heldDirections = [];
+  updatePanTiltKeepalive();
+  render(state);
+  try {
+    const response = await fetch("/api/v1/camera/power", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.error || `Camera power change failed (${response.status})`);
+    }
+    state.camera.powered_on = enabled;
+    state.camera.power_error = null;
+    state.pipeline.enabled = enabled;
+    state.pipeline.running = enabled;
+  } catch (error) {
+    cameraPowerError = error instanceof Error ? error.message : String(error);
+  } finally {
+    cameraPowerPending = false;
+    cameraPowerDraft = null;
+    if (state) render(state);
+  }
+}
+
+cameraPowerToggle.addEventListener("change", () => {
+  void setCameraPower(cameraPowerToggle.checked);
+});
+
 for (const input of backgroundEffectInputs) {
   input.addEventListener("change", () => {
     if (!input.checked || !state) return;
@@ -677,7 +736,7 @@ function clearHeldDirections() {
 }
 
 function holdDirection(direction) {
-  if (faceTrackingPending || trackingPending) return;
+  if (faceTrackingPending || trackingPending || !cameraControlsAvailable(state?.camera || {})) return;
   const previous = activeDirection();
   heldDirections = heldDirections.filter((held) => held !== direction);
   heldDirections.push(direction);
@@ -704,7 +763,7 @@ function updatePanTiltKeepalive() {
 }
 
 async function syncPanTiltMotion() {
-  if (!state?.camera.available) return;
+  if (!state || !cameraControlsAvailable(state.camera)) return;
   if (panTiltPending) {
     panTiltSyncQueued = true;
     return;
@@ -775,7 +834,7 @@ function blocksArrowControl(target) {
 document.addEventListener("keydown", (event) => {
   const direction = arrowDirections[event.key];
   if (!direction || event.altKey || event.ctrlKey || event.metaKey || blocksArrowControl(event.target)
-    || faceTrackingPending || trackingPending) return;
+    || faceTrackingPending || trackingPending || !cameraControlsAvailable(state?.camera || {})) return;
   event.preventDefault();
   if (!heldDirections.includes(direction)) holdDirection(direction);
 });
@@ -852,7 +911,8 @@ document.querySelectorAll("[data-camera-feature]").forEach((button) => {
 });
 
 faceTrackingToggle.addEventListener("click", async () => {
-  if (faceTrackingPending || trackingPending || !state?.camera.available) return;
+  if (faceTrackingPending || trackingPending || !state
+    || !cameraControlsAvailable(state.camera)) return;
   const enabled = state.camera.face_tracking?.enabled !== true;
   faceTrackingPending = true;
   clearHeldDirections();

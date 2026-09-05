@@ -106,7 +106,17 @@
       </section>
 
       <section class="telemetry panel">
-        <div class="panel-title"><h2>Camera</h2><span id="camera-age">No sample</span></div>
+        <div class="panel-title camera-heading">
+          <h2>Camera</h2>
+          <div class="camera-heading-actions">
+            <span id="camera-age">No sample</span>
+            <label class="toggle-switch camera-power-switch" for="camera-power-toggle">
+              <span id="camera-power-status" aria-live="polite">Loading power</span>
+              <input id="camera-power-toggle" type="checkbox" role="switch" disabled>
+              <span class="switch-track" aria-hidden="true"></span>
+            </label>
+          </div>
+        </div>
         <div class="metrics">
           <article><span>Motor yaw</span><strong id="yaw">—</strong></article>
           <article><span>Motor pitch</span><strong id="pitch">—</strong></article>

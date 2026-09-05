@@ -57,9 +57,25 @@ async fn supervise(
     mut shutdown: watch::Receiver<bool>,
 ) {
     let daemon_url = worker_daemon_url(server_address);
+    let mut states = runtime.subscribe_state();
     loop {
         if *shutdown.borrow() {
             break;
+        }
+        if !states.borrow().pipeline.running {
+            tokio::select! {
+                changed = states.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                }
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() {
+                        break;
+                    }
+                }
+            }
+            continue;
         }
         let mut command = Command::new("uv");
         command
@@ -82,23 +98,41 @@ async fn supervise(
                         json!({"pid": pid}),
                     )
                     .await;
-                tokio::select! {
-                    status = child.wait() => {
-                        let message = match status {
-                            Ok(status) => format!("perception worker exited with {status}"),
-                            Err(error) => format!("failed to wait for perception worker: {error}"),
-                        };
-                        mark_worker_offline(&runtime, message).await;
-                    }
+                enum WorkerOutcome {
+                    Exited(String),
+                    PipelineStopped,
+                    Shutdown,
+                }
+                let outcome = tokio::select! {
+                    biased;
                     changed = shutdown.changed() => {
-                        if changed.is_ok() && *shutdown.borrow() {
-                            let _ = child.kill().await;
-                            let _ = child.wait().await;
-                            runtime
-                                .update(|state| state.perception.worker_connected = false)
-                                .await;
-                            break;
+                        if changed.is_err() || *shutdown.borrow() {
+                            WorkerOutcome::Shutdown
+                        } else {
+                            continue;
                         }
+                    }
+                    () = wait_for_pipeline_stop(&mut states) => WorkerOutcome::PipelineStopped,
+                    status = child.wait() => WorkerOutcome::Exited(match status {
+                        Ok(status) => format!("perception worker exited with {status}"),
+                        Err(error) => format!("failed to wait for perception worker: {error}"),
+                    }),
+                };
+                match outcome {
+                    WorkerOutcome::Exited(message) => mark_worker_offline(&runtime, message).await,
+                    WorkerOutcome::PipelineStopped => {
+                        let _ = child.kill().await;
+                        let _ = child.wait().await;
+                        mark_worker_paused(&runtime).await;
+                        continue;
+                    }
+                    WorkerOutcome::Shutdown => {
+                        let _ = child.kill().await;
+                        let _ = child.wait().await;
+                        runtime
+                            .update(|state| state.perception.worker_connected = false)
+                            .await;
+                        break;
                     }
                 }
             }
@@ -120,6 +154,36 @@ async fn supervise(
             }
         }
     }
+}
+
+async fn wait_for_pipeline_stop(states: &mut watch::Receiver<crate::model::RuntimeState>) {
+    loop {
+        if !states.borrow().pipeline.running || states.changed().await.is_err() {
+            break;
+        }
+    }
+}
+
+async fn mark_worker_paused(runtime: &Runtime) {
+    runtime
+        .update(|state| {
+            state.perception.worker_connected = false;
+            state.perception.error = None;
+            state.camera.face_tracking.active = false;
+            state.camera.face_tracking.target_visible = false;
+            state.camera.face_tracking.target_x = None;
+            state.camera.face_tracking.target_y = None;
+            state.video_effects.avatar_available = false;
+        })
+        .await;
+    runtime
+        .emit(
+            "perception.worker.paused",
+            "supervisor",
+            None,
+            json!({"reason": "video-pipeline-stopped"}),
+        )
+        .await;
 }
 
 async fn mark_worker_offline(runtime: &Runtime, message: String) {
@@ -260,6 +324,35 @@ fn close_inherited_file_descriptors(_: &mut Command) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn pipeline_stop_pauses_the_worker_without_recording_a_failure() {
+        let runtime = Runtime::new();
+        runtime
+            .update(|state| {
+                state.pipeline.running = true;
+                state.perception.worker_connected = true;
+                state.perception.error = Some("stale error".into());
+            })
+            .await;
+        let mut states = runtime.subscribe_state();
+        let stopped = tokio::spawn(async move {
+            wait_for_pipeline_stop(&mut states).await;
+        });
+
+        runtime.update(|state| state.pipeline.running = false).await;
+        tokio::time::timeout(Duration::from_secs(1), stopped)
+            .await
+            .unwrap()
+            .unwrap();
+        mark_worker_paused(&runtime).await;
+
+        let state = runtime.state().await;
+        assert!(!state.perception.worker_connected);
+        assert_eq!(state.perception.error, None);
+        let events = runtime.recent_events().await;
+        assert_eq!(events.last().unwrap().kind, "perception.worker.paused");
+    }
 
     #[test]
     fn worker_command_uses_configured_stream_and_loopback_api() {
