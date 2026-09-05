@@ -13,8 +13,9 @@ mischievous personality without tying its core to one camera vendor.
 > on an OBSBOT Tiny 2 with live 720p30 video, bounded gimbal control, a generic
 > V4L2 consumer, physically validated open-palm activation, supervised local
 > perception, HTTP/MCP controls, and the embedded web UI. Camera attitude is
-> provenance-labelled and defaults to the last commanded target because
-> extended live polling proved unsafe. See
+> provenance-labelled, and a conservative libdev-derived telemetry path now
+> measures motor/Euler attitude, angular velocity, zoom, tracking, and built-in
+> gesture state. See
 > [Validation](#validation) and
 > [Known limitations](#known-limitations) before relying on it unattended.
 
@@ -28,6 +29,8 @@ mischievous personality without tying its core to one camera vendor.
   daemon's internal preview branch;
 - camera attitude is explicitly labelled `last-commanded`, `measured`,
   `simulated`, or `unavailable` rather than presenting an estimate as fact;
+- low-priority camera readback exposes motor and Euler angles, angular velocity,
+  zoom magnification, tracking, and the three built-in gesture switches;
 - bounded absolute gimbal moves, continuous held pan/tilt movement, x1-to-x4 zoom,
   recentering, tracking, named presets, and separate Tiny 2 built-in gesture
   controls are available over HTTP;
@@ -176,10 +179,13 @@ camera limit is +/-130 degrees yaw and +/-90 degrees pitch; every HTTP and MCP
 move is validated again by the daemon. The `mock` and `disabled` camera
 adapters support development without claiming real control hardware.
 
-`camera.poll_interval_ms = 0` disables proprietary live-attitude polling and is
-the safe default. A non-zero value enables the experimental `GIM_GET_STATE`
-query and labels successful samples `measured`, but an extended test reset the
-tested camera while streaming. Do not enable it for normal preview use.
+`camera.poll_interval_ms = 0` disables periodic camera readback. A non-zero
+value enables the libdev-derived `AI_GET_GIM_STATE` path at that interval,
+labels successful pose samples `measured`, and also schedules lower-rate
+gesture status plus selector-6 zoom and tracking readback. The selector-6 zoom
+captures AI-driven reframing that the standard V4L2 control can miss. The
+reference Tiny 2 configuration uses 1000 ms. Each signal backs off independently
+after an error without making camera controls unavailable.
 
 The first scenario action is deliberately small: an activation publishes the
 configured action name as a structured `scenario.activated` event. It does not
@@ -308,7 +314,16 @@ The first vertical slice was validated on 2026-09-05 with an OBSBOT Tiny 2
   hardware reads before an explicit stop returned both motor speeds to zero;
 - a single left request showed `pan_speed` -40 after 100 ms and zero by 450 ms,
   validating the daemon-owned 350 ms deadman lease;
-- a short attitude-polling run returned changing live values during capture;
+- the replacement `AI_GET_GIM_STATE` path returned measured motor/Euler angles
+  and angular velocities at 1 Hz while capture remained at approximately 30 FPS;
+- periodic readback reported the live x1-to-x4 zoom value, tracking indicator,
+  and all three built-in gesture switches with independent timestamps;
+- a final five-minute soak collected 30 telemetry samples at ten-second
+  intervals while the USB address stayed stable, capture remained near 30 FPS,
+  and both pipeline restarts and telemetry errors stayed at zero;
+- selector-6 AI zoom initially reported x1.99 and later x1.00 while the standard
+  V4L2 zoom control remained at raw 23, confirming that AI zoom readback is
+  distinct from the lens-control fallback;
 - a generic GStreamer V4L2 reader consumed 90 frames from `/dev/video42` and
   exited successfully while preview, perception, and polling continued;
 - the camera kept the same USB bus address throughout the initial loopback,
@@ -342,16 +357,18 @@ The first vertical slice was validated on 2026-09-05 with an OBSBOT Tiny 2
 - after the repair restart, the real 720p30 pipeline remained healthy for more
   than six minutes on the camera's 480 Mbit/s fallback link, passing 11,000
   frames without another USB event or required restart;
-- all 41 daemon tests, 2 MCP tests, 6 Python tests, JavaScript syntax checks,
+- all 47 daemon tests, 2 MCP tests, 6 Python tests, JavaScript syntax checks,
   formatting, lint, configuration, protocol, and API checks passed.
 
 An extended run changed the camera result: after approximately six minutes of
-2 Hz proprietary attitude queries during streaming, the device disconnected
+2 Hz `GIM_GET_STATE` (`0x0043`) queries during streaming, the device disconnected
 and re-enumerated on USB. A later disconnect with polling disabled moved the
 same camera from its SuperSpeed bus to the companion 480 Mbit/s bus, indicating
 that vendor polling is not the only possible source of link loss. The current
-video supervisor now rebuilds failed pipelines, while continuous vendor-query
-polling remains disabled because its extended test is independently unsafe.
+video supervisor now rebuilds failed pipelines. The new 1 Hz
+`AI_GET_GIM_STATE` (`0x6604`) path follows libdev's serialized command and
+decoding behavior and passed a five-minute live soak, but still needs a longer
+run before unattended use.
 
 ## Known limitations
 
@@ -362,11 +379,13 @@ polling remains disabled because its extended test is independently unsafe.
 - the V4L2 loopback device must be created before startup;
 - absolute movement is safely bounded but has not been calibrated for precise
   agreement between requested and settled angles;
-- live vendor attitude polling can reset the tested camera during streaming;
-  the safe default reports the last commanded target with explicit provenance;
-- live tracking state is only known after Tarsier issues a tracking command;
-- relative pan/tilt movement deliberately clears attitude values because the safe
-  default cannot measure the final physical angle after relative movement;
+- the previous `0x0043` live attitude query reset the tested camera during an
+  extended stream; the libdev-derived `0x6604` replacement has passed a
+  five-minute soak but not an unattended endurance run;
+- unknown selector-6 AI mode tuples preserve the last confirmed tracking value
+  instead of guessing during a firmware transition;
+- relative pan/tilt movement briefly clears attitude values until the next
+  measured sample reports the final physical angle;
 - open-palm thresholds were calibrated for one operator and environment;
   broader lighting, distance, skin-tone, orientation, and operator coverage is
   still required;
@@ -393,8 +412,7 @@ polling remains disabled because its extended test is independently unsafe.
 - **Headless core:** the daemon and API are the product; the web UI is a local
   control surface.
 
-The next focused increments are a safe live-attitude source (or an explicit
-last-commanded product contract), USB recovery soak testing, and broader
-gesture robustness testing. Background replacement, avatars, full-body pose,
-speech, robotics, ROS, cloud video processing, and a large gesture vocabulary
-remain outside the first version.
+The next focused increments are extended telemetry and USB recovery soak
+testing plus broader gesture robustness testing. Background replacement,
+avatars, full-body pose, speech, robotics, ROS, cloud video processing, and a
+large gesture vocabulary remain outside the first version.

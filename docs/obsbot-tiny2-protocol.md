@@ -51,7 +51,8 @@ angle and never triggers an implicit device reset.
 | Operation | Selector | Receiver | Command | Payload |
 | --- | ---: | ---: | ---: | --- |
 | Wake | 2 | `0x02` | `0xa0c2` | four zero bytes |
-| Read attitude (unsafe while streaming) | 2 | `0x03` | `0x0043` | empty query |
+| Read AI gimbal state | 2 | `0x04` | `0x6604` | empty query |
+| Read AI quick status | 2 | `0x04` | `0x0104` | empty query |
 | Recenter | 2 | `0x03` | `0x00c3` | six zero bytes |
 | Move absolute | 2 | `0x04` | `0x6444` | float32 roll, pitch, yaw |
 | Target-selection gesture | 2 | `0x04` | `0x30c4` | one byte: `1` enabled, `0` disabled |
@@ -59,9 +60,16 @@ angle and never triggers an implicit device reset.
 | Dynamic-zoom gesture | 2 | `0x04` | `0x3344` | one byte: `1` enabled, `0` disabled |
 | Tracking | 6 | n/a | n/a | `16 02 02` enabled, `16 02 00` disabled, then zeros |
 
-The attitude response begins with signed 16-bit roll, pitch, and yaw values in
-hundredths of a degree. The public Tarsier state normalizes their order to yaw,
-pitch, and roll.
+`AI_GET_GIM_STATE` matches the Tiny 2 UVC path used by libdev's
+`aiGetGimbalStateR()`. Its response starts with nine signed little-endian
+16-bit values in this order: Euler roll/pitch/yaw, motor roll/pitch/yaw, then
+roll/pitch/yaw angular velocity. Every value uses a 0.1 scale. The primary
+`yaw_degrees`, `pitch_degrees`, and `roll_degrees` API fields expose the motor
+coordinates; Euler coordinates and angular velocities are also retained.
+
+`AI_GET_QUICK_STATUS` matches libdev's `aiGetAiStatusR()` path for a Tiny 2.
+The target-selection, zoom, and dynamic-zoom gesture enables are bytes 3, 4,
+and 5 of its response payload. Tarsier treats non-zero values as enabled.
 
 Absolute movement targets are additionally checked against configured yaw and
 pitch limits and a fixed +/-45 degree roll limit before a frame is queued.
@@ -72,9 +80,23 @@ The three built-in gesture controls are independent of Tarsier's MediaPipe
 gesture recognition. They use the Tiny 2 commands documented by the vendor
 SDK's model-specific compatibility API rather than the newer unified gesture
 parameter command, which that SDK categorizes for Tail 2 and later products.
-Tarsier records a gesture setting only after the UVC write succeeds. It does
-not issue an additional proprietary readback while video is streaming, so each
-setting starts as unknown after a daemon restart.
+Tarsier records a gesture setting immediately after the UVC write succeeds,
+then replaces that accepted value with measured camera state on the next quick
+status read. Quick status runs at one fifth of the pose rate, with a minimum
+five-second interval, to limit selector-2 traffic.
+
+## Selector-6 tracking readback
+
+The fixed 60-byte selector-6 `GET_CUR` status block exposes the current AI mode
+at offset `0x18` and its sub-mode at `0x1c`. The tuple `(0, 0)` means tracking
+is disabled. The known Tiny 2 tracking modes `(1, 0)`, `(3, 0)`, `(4, 0)`,
+`(5, 0)`, and `(2, 0..4)` mean it is enabled. Other tuples, including the
+observed transition value `(6, 0)`, are left unknown so a mode change cannot be
+misreported as a settled tracking state. An unknown sample preserves the last
+confirmed indicator. The same snapshot exposes the firmware's zoom position at
+offset `0x04` on a 0-to-100 scale. Tarsier maps it to x1 through x4 and uses it
+as the live zoom source because AI-driven reframing does not reliably update
+the standard V4L2 zoom control.
 
 ## Standard UVC pan/tilt movement
 
@@ -120,10 +142,11 @@ raw = minimum + position * (maximum - minimum)
 ```
 
 The raw result is clamped and snapped to the reported step. The inverse mapping
-is used for startup readback. The tested Tiny 2 reported a range of 0 through
-100 with step 1: x2.5 therefore maps to raw 50, and x1 maps to raw 0. Both
-positions were read back successfully while 720p30 capture continued without a
-pipeline restart or USB re-enumeration.
+is used as an initial fallback before the first selector-6 status sample. The
+tested Tiny 2 reported a range of 0 through 100 with step 1: x2.5 therefore maps
+to raw 50, and x1 maps to raw 0. Both positions were read back successfully
+while 720p30 capture continued without a pipeline restart or USB
+re-enumeration.
 
 ## Concurrency evidence and safety decision
 
@@ -138,12 +161,20 @@ YUY2 frames from `/dev/video42` while preview, MediaPipe inference, and attitude
 polling continued. Small absolute-move and tracking-disable commands also
 completed during streaming without an immediate reset.
 
-That result did not survive a longer run. After approximately six minutes at
-the same 2 Hz query rate, the kernel reported a failed selector-2 `SET_CUR`, the
-device disconnected, and it re-enumerated at a new USB address. The physical
-pipeline stopped in that build. This matches earlier evidence that framed
-`GIM_GET_STATE` queries can destabilize the tested firmware when a physical UVC
-stream is active.
+That result used the gimbal receiver's `GIM_GET_STATE` command (`0x0043`) and
+did not survive a longer run. After approximately six minutes at the same 2 Hz
+query rate, the kernel reported a failed selector-2 `SET_CUR`, the device
+disconnected, and it re-enumerated at a new USB address. The physical pipeline
+stopped in that build.
+
+The replacement path follows libdev more closely: it uses
+`AI_GET_GIM_STATE` (`0x6604`), schedules telemetry only when the owner command
+queue is empty, performs at most one due telemetry operation before checking
+the command queue again, and starts at 1 Hz in the reference configuration.
+Pose, selector-6 camera status, and gesture status have independent exponential
+backoffs capped at 60 seconds. A telemetry failure preserves camera
+availability and the last timestamped sample instead of repeatedly querying or
+disabling the control surface.
 
 Tarsier now supervises GStreamer and retries the stable configured device path
 after an error or EOS. The Linux XU transport also reopens its control path for
@@ -151,11 +182,11 @@ definite stale-device errors before retrying. This recovery logic has a live
 synthetic EOS test; a deliberate physical unplug/reset cycle has not yet been
 rerun against the current build.
 
-Tarsier therefore sets `camera.poll_interval_ms = 0` by default. A non-zero
-value retains the query for deliberate experiments, emits a startup warning,
-and marks successful state as `measured`. Normal operation reports an accepted
-movement target as `last-commanded`; it does not claim that value is live
-telemetry.
+The library default remains `camera.poll_interval_ms = 0`, while the reference
+Tiny 2 configuration enables the new path at 1000 ms for controlled validation.
+A zero value disables all periodic camera readback. Successful pose samples are
+labelled `measured`; an accepted absolute target remains `last-commanded` until
+the next measured sample arrives.
 
 ## Boundaries and uncertainty
 
@@ -164,12 +195,20 @@ telemetry.
 - The adapter does not yet discover compatible firmware capabilities.
 - Sleep, image controls, tracking modes, and firmware update operations are
   deliberately unimplemented.
-- Built-in gesture state is the last setting accepted by the control transport,
-  not device readback, and returns to unknown when the daemon restarts.
+- Built-in gesture state is measured through `AI_GET_QUICK_STATUS` when polling
+  is enabled; immediately after a write it temporarily represents the accepted
+  command until readback arrives.
+- The Tiny 2 status layout exposed by libdev contains no numeric device
+  temperature. The SDK's numeric CPU and lens temperature fields belong to its
+  network-camera status path. Its public event enum defines normal/high-device-
+  temperature notifications, but does not document them as available on Tiny 2
+  and provides no value in degrees. V4L2 and Linux `hwmon` expose no device-
+  temperature control for the tested camera either.
 - Requested absolute angles and final physical attitude can differ; calibration
   and settling semantics need further study.
-- Continuous selector-2 attitude polling is known to be unsafe during streaming
-  on the tested firmware and is disabled by default.
+- The previous `0x0043` selector-2 polling path reset the camera during an
+  extended test. The libdev-derived `0x6604` replacement passed a five-minute
+  live soak but requires a longer unattended endurance run.
 - Reconnect and recovery after unplug, firmware failure, or USB bus reset are
   implemented but have not yet been physically revalidated or soak-tested.
 
