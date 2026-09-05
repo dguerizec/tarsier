@@ -42,13 +42,24 @@ pub struct CameraState {
     pub adapter: String,
     pub serial: Option<String>,
     pub tracking: Option<bool>,
+    pub tracking_sample_at_ms: Option<u64>,
+    pub tracking_error: Option<String>,
     pub zoom_magnification: Option<f32>,
+    pub zoom_sample_at_ms: Option<u64>,
+    pub zoom_error: Option<String>,
     pub built_in_gestures: BuiltInGestureState,
     pub yaw_degrees: Option<f32>,
     pub pitch_degrees: Option<f32>,
     pub roll_degrees: Option<f32>,
+    pub euler_yaw_degrees: Option<f32>,
+    pub euler_pitch_degrees: Option<f32>,
+    pub euler_roll_degrees: Option<f32>,
+    pub yaw_velocity_degrees_per_second: Option<f32>,
+    pub pitch_velocity_degrees_per_second: Option<f32>,
+    pub roll_velocity_degrees_per_second: Option<f32>,
     pub attitude_source: CameraAttitudeSource,
     pub sample_at_ms: Option<u64>,
+    pub telemetry_error: Option<String>,
     pub last_command_at_ms: Option<u64>,
     pub error: Option<String>,
 }
@@ -66,6 +77,8 @@ pub struct BuiltInGestureState {
     pub target_selection: Option<bool>,
     pub zoom: Option<bool>,
     pub dynamic_zoom: Option<bool>,
+    pub sample_at_ms: Option<u64>,
+    pub error: Option<String>,
 }
 
 impl BuiltInGestureState {

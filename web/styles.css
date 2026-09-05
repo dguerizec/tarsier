@@ -50,6 +50,8 @@ main { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(17rem, .85
 .metrics article { display: grid; gap: .3rem; background: #0a0e0c; padding: .75rem; border-radius: .65rem; }
 .metrics span, .hint { color: var(--muted); font-size: .72rem; }
 .metrics strong { font-variant-numeric: tabular-nums; }
+.telemetry-details { display: flex; flex-wrap: wrap; gap: .35rem 1rem; margin-top: .55rem; color: var(--muted); font-size: .68rem; }
+.telemetry-details strong { color: #f2f5ef; font-variant-numeric: tabular-nums; }
 .controls { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1rem; }
 .preset-controls { margin-top: .5rem; }
 .camera-subsection { margin-top: 1rem; border-top: 1px solid var(--panel-edge); padding-top: .85rem; }

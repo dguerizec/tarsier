@@ -6,7 +6,6 @@ pub const FRAME_SIZE: usize = 60;
 pub const VENDOR_SELECTOR: u8 = 2;
 pub const TRACKING_SELECTOR: u8 = 6;
 
-pub const GIM_GET_STATE: u16 = 0x0043;
 pub const GIMBAL_RECEIVER: u8 = 0x03;
 pub const GIM_SET_MOTOR: u16 = 0x00c3;
 pub const AI_RECEIVER: u8 = 0x04;
@@ -63,6 +62,12 @@ pub struct AiGestureStatus {
     pub target_selection: bool,
     pub zoom: bool,
     pub dynamic_zoom: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CameraStatus {
+    pub tracking: Option<bool>,
+    pub zoom_percent: Option<u8>,
 }
 
 pub fn build_frame(
@@ -151,10 +156,6 @@ pub fn wake_frame(sequence: u16) -> [u8; FRAME_SIZE] {
     .expect("wake payload fits")
 }
 
-pub fn gimbal_query(sequence: u16) -> [u8; FRAME_SIZE] {
-    build_frame(sequence, GIM_GET_STATE, GIMBAL_RECEIVER, 0x01, &[]).expect("empty query fits")
-}
-
 pub fn ai_gimbal_query(sequence: u16) -> [u8; FRAME_SIZE] {
     build_frame(sequence, AI_GET_GIM_STATE, AI_RECEIVER, 0x01, &[]).expect("empty query fits")
 }
@@ -199,16 +200,6 @@ pub fn tracking_payload(enabled: bool) -> [u8; FRAME_SIZE] {
     payload
 }
 
-pub fn decode_gimbal_angles(payload: &[u8]) -> Result<(f32, f32, f32), FrameError> {
-    if payload.len() < 6 {
-        return Err(FrameError::TooShort(payload.len()));
-    }
-    let roll = i16::from_le_bytes([payload[0], payload[1]]) as f32 / 100.0;
-    let pitch = i16::from_le_bytes([payload[2], payload[3]]) as f32 / 100.0;
-    let yaw = i16::from_le_bytes([payload[4], payload[5]]) as f32 / 100.0;
-    Ok((yaw, pitch, roll))
-}
-
 pub fn decode_ai_gimbal_state(payload: &[u8]) -> Result<AiGimbalState, FrameError> {
     if payload.len() < 18 {
         return Err(FrameError::TooShort(payload.len()));
@@ -241,6 +232,26 @@ pub fn decode_ai_gesture_status(payload: &[u8]) -> Result<AiGestureStatus, Frame
         target_selection: payload[3] != 0,
         zoom: payload[4] != 0,
         dynamic_zoom: payload[5] != 0,
+    })
+}
+
+pub fn decode_camera_status(block: &[u8]) -> Result<CameraStatus, FrameError> {
+    const ZOOM_PERCENT_OFFSET: usize = 0x04;
+    const AI_MODE_OFFSET: usize = 0x18;
+    const AI_SUB_MODE_OFFSET: usize = 0x1c;
+    if block.len() <= AI_SUB_MODE_OFFSET {
+        return Err(FrameError::TooShort(block.len()));
+    }
+    let mode = (block[AI_MODE_OFFSET], block[AI_SUB_MODE_OFFSET]);
+    let tracking = match mode {
+        (0, 0) => Some(false),
+        (1 | 3 | 4 | 5, 0) | (2, 0..=4) => Some(true),
+        _ => None,
+    };
+    let zoom_percent = (block[ZOOM_PERCENT_OFFSET] <= 100).then_some(block[ZOOM_PERCENT_OFFSET]);
+    Ok(CameraStatus {
+        tracking,
+        zoom_percent,
     })
 }
 
@@ -331,15 +342,6 @@ mod tests {
     }
 
     #[test]
-    fn decodes_known_gimbal_prefix() {
-        let payload = [0xD3, 0xFD, 0xFF, 0xF3, 0x8F, 0xEF];
-        let (yaw, pitch, roll) = decode_gimbal_angles(&payload).unwrap();
-        assert!((roll - -5.57).abs() < 0.01);
-        assert!((pitch - -30.73).abs() < 0.01);
-        assert!((yaw - -42.09).abs() < 0.01);
-    }
-
-    #[test]
     fn decodes_libdev_ai_gimbal_state() {
         let payload = [
             29, 0, 38, 0, 0xb3, 0xf9, 0, 0, 76, 0, 0x85, 0x05, 0xff, 0xff, 1, 0, 8, 0, 0, 0, 0, 0,
@@ -381,6 +383,52 @@ mod tests {
                 target_selection: true,
                 zoom: false,
                 dynamic_zoom: true,
+            }
+        );
+    }
+
+    #[test]
+    fn decodes_tracking_and_zoom_from_selector_six_status() {
+        let status = |mode, sub_mode, zoom_percent| {
+            let mut block = [0_u8; FRAME_SIZE];
+            block[0x04] = zoom_percent;
+            block[0x18] = mode;
+            block[0x1c] = sub_mode;
+            block
+        };
+        assert_eq!(
+            decode_camera_status(&status(0, 0, 0)).unwrap(),
+            CameraStatus {
+                tracking: Some(false),
+                zoom_percent: Some(0),
+            }
+        );
+        assert_eq!(
+            decode_camera_status(&status(2, 0, 50)).unwrap(),
+            CameraStatus {
+                tracking: Some(true),
+                zoom_percent: Some(50),
+            }
+        );
+        assert_eq!(
+            decode_camera_status(&status(2, 4, 100)).unwrap(),
+            CameraStatus {
+                tracking: Some(true),
+                zoom_percent: Some(100),
+            }
+        );
+        assert_eq!(
+            decode_camera_status(&status(6, 0, 101)).unwrap(),
+            CameraStatus {
+                tracking: None,
+                zoom_percent: None,
+            }
+        );
+        assert_eq!(
+            decode_camera_status(&status(2, 9, 25)).unwrap(),
+            CameraStatus {
+                tracking: None,
+                zoom_percent: Some(25),
             }
         );
     }

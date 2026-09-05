@@ -7,8 +7,7 @@ use std::{
 };
 
 use anyhow::{Result, anyhow, bail};
-use serde::Serialize;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc as tokio_mpsc, oneshot};
 
 use crate::{
     config::{CameraAdapter, CameraConfig},
@@ -16,23 +15,20 @@ use crate::{
     runtime::Runtime,
 };
 use linux_uvc::{LinuxUvcTransport, XuTransport, ZoomControl};
-use protocol::{FRAME_SIZE, GIM_GET_STATE, TRACKING_SELECTOR, VENDOR_SELECTOR};
+use protocol::{
+    AI_GET_GIM_STATE, AI_GET_QUICK_STATUS, AiGestureStatus, AiGimbalState, CameraStatus,
+    FRAME_SIZE, TRACKING_SELECTOR, VENDOR_SELECTOR,
+};
 
 const COMMAND_QUEUE_CAPACITY: usize = 32;
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(1);
+const GESTURE_STATUS_MINIMUM_INTERVAL: Duration = Duration::from_secs(5);
+const TELEMETRY_MAXIMUM_BACKOFF: Duration = Duration::from_secs(60);
 const NUDGE_SPEED_FRACTION: f64 = 0.25;
 pub const PAN_TILT_LEASE: Duration = Duration::from_millis(350);
 
-#[derive(Clone, Copy, Debug, Serialize)]
-pub struct GimbalAngles {
-    pub yaw_degrees: f32,
-    pub pitch_degrees: f32,
-    pub roll_degrees: f32,
-}
-
 #[derive(Debug)]
 enum Command {
-    QueryState,
     Move {
         yaw: f32,
         pitch: f32,
@@ -57,7 +53,107 @@ enum Command {
 
 struct Request {
     command: Command,
-    response: oneshot::Sender<Result<Option<GimbalAngles>, String>>,
+    response: oneshot::Sender<Result<(), String>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TelemetryKind {
+    Gimbal,
+    Gestures,
+    Status,
+}
+
+#[derive(Debug)]
+enum TelemetryUpdate {
+    Gimbal(AiGimbalState),
+    Gestures(AiGestureStatus),
+    Status(CameraStatus),
+    Failure {
+        kind: TelemetryKind,
+        error: String,
+        retry_after: Duration,
+    },
+}
+
+struct PollSchedule {
+    interval: Duration,
+    next_due: Instant,
+    consecutive_failures: u32,
+}
+
+impl PollSchedule {
+    fn new(interval: Duration, now: Instant) -> Self {
+        Self {
+            interval,
+            next_due: now + interval,
+            consecutive_failures: 0,
+        }
+    }
+
+    fn due(&self, now: Instant) -> bool {
+        now >= self.next_due
+    }
+
+    fn succeeded(&mut self, now: Instant) {
+        self.consecutive_failures = 0;
+        self.next_due = now + self.interval;
+    }
+
+    fn failed(&mut self, now: Instant) -> Duration {
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        let multiplier = 1_u32 << self.consecutive_failures.min(6);
+        let backoff = self
+            .interval
+            .saturating_mul(multiplier)
+            .min(TELEMETRY_MAXIMUM_BACKOFF);
+        self.next_due = now + backoff;
+        backoff
+    }
+}
+
+struct TelemetryPoller {
+    tx: tokio_mpsc::UnboundedSender<TelemetryUpdate>,
+    gimbal: PollSchedule,
+    gestures: PollSchedule,
+    status: PollSchedule,
+}
+
+impl TelemetryPoller {
+    fn new(
+        interval: Duration,
+        tx: tokio_mpsc::UnboundedSender<TelemetryUpdate>,
+        now: Instant,
+    ) -> Self {
+        let gesture_interval = interval
+            .saturating_mul(5)
+            .max(GESTURE_STATUS_MINIMUM_INTERVAL);
+        Self {
+            tx,
+            gimbal: PollSchedule::new(interval, now),
+            gestures: PollSchedule::new(gesture_interval, now),
+            status: PollSchedule::new(interval, now),
+        }
+    }
+
+    fn next_kind(&self, now: Instant) -> Option<TelemetryKind> {
+        if self.gimbal.due(now) {
+            Some(TelemetryKind::Gimbal)
+        } else if self.status.due(now) {
+            Some(TelemetryKind::Status)
+        } else if self.gestures.due(now) {
+            Some(TelemetryKind::Gestures)
+        } else {
+            None
+        }
+    }
+
+    fn schedule_mut(&mut self, kind: TelemetryKind) -> &mut PollSchedule {
+        match kind {
+            TelemetryKind::Gimbal => &mut self.gimbal,
+            TelemetryKind::Gestures => &mut self.gestures,
+            TelemetryKind::Status => &mut self.status,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -126,13 +222,7 @@ impl CameraHandle {
         .map(|_| ())
     }
 
-    async fn query_state(&self) -> Result<GimbalAngles> {
-        self.request(Command::QueryState)
-            .await?
-            .ok_or_else(|| anyhow!("camera returned no gimbal state"))
-    }
-
-    async fn request(&self, command: Command) -> Result<Option<GimbalAngles>> {
+    async fn request(&self, command: Command) -> Result<()> {
         let (response, rx) = oneshot::channel();
         self.tx
             .try_send(Request { command, response })
@@ -162,9 +252,6 @@ pub async fn start(config: CameraConfig, runtime: Runtime) -> Result<Option<Came
                     state.camera.sample_at_ms = Some(unix_ms());
                 })
                 .await;
-            if config.poll_interval_ms > 0 {
-                spawn_polling(handle.clone(), config.poll_interval_ms, runtime);
-            }
             Ok(Some(handle))
         }
         CameraAdapter::ObsbotTiny2 => {
@@ -182,38 +269,53 @@ pub async fn start(config: CameraConfig, runtime: Runtime) -> Result<Option<Came
                     None
                 }
             };
-            let handle = spawn_worker(transport, &config);
+            let (handle, telemetry_rx) = spawn_worker(transport, &config);
+            let zoom_sample_at_ms = initial_zoom.map(|_| unix_ms());
             runtime
                 .update(|state| {
                     state.camera.available = true;
                     state.camera.zoom_magnification = initial_zoom;
+                    state.camera.zoom_sample_at_ms = zoom_sample_at_ms;
                     state.camera.error = None;
                 })
                 .await;
             if config.poll_interval_ms > 0 {
-                tracing::warn!(
+                tracing::info!(
                     interval_ms = config.poll_interval_ms,
-                    "experimental vendor attitude polling is enabled and may reset the camera during streaming"
+                    "low-priority AI telemetry polling is enabled"
                 );
-                spawn_polling(handle.clone(), config.poll_interval_ms, runtime);
             }
+            spawn_telemetry_updates(telemetry_rx, runtime);
             Ok(Some(handle))
         }
     }
 }
 
-fn spawn_worker<T: XuTransport + 'static>(transport: T, config: &CameraConfig) -> CameraHandle {
+fn spawn_worker<T: XuTransport + 'static>(
+    transport: T,
+    config: &CameraConfig,
+) -> (CameraHandle, tokio_mpsc::UnboundedReceiver<TelemetryUpdate>) {
     let (tx, rx) = sync_channel(COMMAND_QUEUE_CAPACITY);
+    let (telemetry_tx, telemetry_rx) = tokio_mpsc::unbounded_channel();
     let interval = Duration::from_millis(config.minimum_command_interval_ms);
+    let poll_interval =
+        (config.poll_interval_ms > 0).then(|| Duration::from_millis(config.poll_interval_ms));
     std::thread::Builder::new()
         .name("tarsier-camera-owner".into())
-        .spawn(move || Worker::new(transport, rx, interval).run())
+        .spawn(move || {
+            Worker::new(transport, rx, interval)
+                .with_telemetry(poll_interval, telemetry_tx)
+                .run()
+        })
         .expect("failed to spawn camera owner thread");
-    CameraHandle {
-        tx,
-        max_yaw_degrees: config.max_yaw_degrees,
-        max_pitch_degrees: config.max_pitch_degrees,
-    }
+    (
+        CameraHandle {
+            tx,
+            max_yaw_degrees: config.max_yaw_degrees,
+            max_pitch_degrees: config.max_pitch_degrees,
+        },
+        telemetry_rx,
+    )
 }
 
 struct Worker<T> {
@@ -224,6 +326,7 @@ struct Worker<T> {
     last_io: Option<Instant>,
     pan_tilt_direction: (i8, i8),
     pan_tilt_deadline: Option<Instant>,
+    telemetry: Option<TelemetryPoller>,
 }
 
 impl<T: XuTransport> Worker<T> {
@@ -236,7 +339,18 @@ impl<T: XuTransport> Worker<T> {
             last_io: None,
             pan_tilt_direction: (0, 0),
             pan_tilt_deadline: None,
+            telemetry: None,
         }
+    }
+
+    fn with_telemetry(
+        mut self,
+        interval: Option<Duration>,
+        tx: tokio_mpsc::UnboundedSender<TelemetryUpdate>,
+    ) -> Self {
+        self.telemetry =
+            interval.map(|interval| TelemetryPoller::new(interval, tx, Instant::now()));
+        self
     }
 
     fn run(mut self) {
@@ -249,7 +363,11 @@ impl<T: XuTransport> Worker<T> {
                         .map_err(|error| error.to_string());
                     let _ = request.response.send(result);
                 }
-                Err(TryRecvError::Empty) => std::thread::sleep(self.minimum_interval),
+                Err(TryRecvError::Empty) => {
+                    if !self.poll_telemetry_if_due() {
+                        std::thread::sleep(self.minimum_interval);
+                    }
+                }
                 Err(TryRecvError::Disconnected) => {
                     if self.pan_tilt_direction != (0, 0) {
                         let _ = self.transport.set_pan_tilt_speed_units(0, 0);
@@ -260,33 +378,28 @@ impl<T: XuTransport> Worker<T> {
         }
     }
 
-    fn execute(&mut self, command: Command) -> Result<Option<GimbalAngles>> {
+    fn execute(&mut self, command: Command) -> Result<()> {
         match command {
-            Command::QueryState => self.query_gimbal().map(Some),
             Command::Move { yaw, pitch, roll } => {
                 self.wake()?;
                 let mut frame = protocol::move_frame(self.next_sequence(), yaw, pitch, roll);
-                self.set(VENDOR_SELECTOR, &mut frame)?;
-                Ok(None)
+                self.set(VENDOR_SELECTOR, &mut frame)
             }
             Command::Recenter => {
                 self.wake()?;
                 let mut frame = protocol::recenter_frame(self.next_sequence());
-                self.set(VENDOR_SELECTOR, &mut frame)?;
-                Ok(None)
+                self.set(VENDOR_SELECTOR, &mut frame)
             }
             Command::Tracking { enabled } => {
                 self.wake()?;
                 let mut payload = protocol::tracking_payload(enabled);
-                self.set(TRACKING_SELECTOR, &mut payload)?;
-                Ok(None)
+                self.set(TRACKING_SELECTOR, &mut payload)
             }
             Command::BuiltInGesture { feature, enabled } => {
                 self.wake()?;
                 let mut frame =
                     protocol::built_in_gesture_frame(self.next_sequence(), feature, enabled);
-                self.set(VENDOR_SELECTOR, &mut frame)?;
-                Ok(None)
+                self.set(VENDOR_SELECTOR, &mut frame)
             }
             Command::Zoom { magnification } => {
                 self.pace();
@@ -294,14 +407,12 @@ impl<T: XuTransport> Worker<T> {
                 let units = zoom_units_from_magnification(magnification, control)?;
                 self.transport.set_zoom_units(units)?;
                 self.last_io = Some(Instant::now());
-                Ok(None)
+                Ok(())
             }
             Command::PanTiltSpeed {
                 pan_direction,
                 tilt_direction,
-            } => self
-                .set_pan_tilt_speed(pan_direction, tilt_direction)
-                .map(|()| None),
+            } => self.set_pan_tilt_speed(pan_direction, tilt_direction),
         }
     }
 
@@ -353,9 +464,60 @@ impl<T: XuTransport> Worker<T> {
         Ok(())
     }
 
-    fn query_gimbal(&mut self) -> Result<GimbalAngles> {
+    fn poll_telemetry_if_due(&mut self) -> bool {
+        let now = Instant::now();
+        let Some(kind) = self
+            .telemetry
+            .as_ref()
+            .and_then(|poller| poller.next_kind(now))
+        else {
+            return false;
+        };
+
+        let result = match kind {
+            TelemetryKind::Gimbal => self.query_gimbal().map(TelemetryUpdate::Gimbal),
+            TelemetryKind::Gestures => self.query_ai_status().map(TelemetryUpdate::Gestures),
+            TelemetryKind::Status => self.query_status().map(TelemetryUpdate::Status),
+        };
+        let completed_at = Instant::now();
+        let poller = self.telemetry.as_mut().expect("telemetry poller exists");
+        let update = match result {
+            Ok(update) => {
+                poller.schedule_mut(kind).succeeded(completed_at);
+                update
+            }
+            Err(error) => TelemetryUpdate::Failure {
+                kind,
+                error: error.to_string(),
+                retry_after: poller.schedule_mut(kind).failed(completed_at),
+            },
+        };
+        if poller.tx.send(update).is_err() {
+            self.telemetry = None;
+        }
+        true
+    }
+
+    fn query_gimbal(&mut self) -> Result<AiGimbalState> {
         let sequence = self.next_sequence();
-        let mut request = protocol::gimbal_query(sequence);
+        let request = protocol::ai_gimbal_query(sequence);
+        let payload = self.query_vendor(request, sequence, AI_GET_GIM_STATE)?;
+        Ok(protocol::decode_ai_gimbal_state(&payload)?)
+    }
+
+    fn query_ai_status(&mut self) -> Result<AiGestureStatus> {
+        let sequence = self.next_sequence();
+        let request = protocol::ai_status_query(sequence);
+        let payload = self.query_vendor(request, sequence, AI_GET_QUICK_STATUS)?;
+        Ok(protocol::decode_ai_gesture_status(&payload)?)
+    }
+
+    fn query_vendor(
+        &mut self,
+        mut request: [u8; FRAME_SIZE],
+        sequence: u16,
+        command: u16,
+    ) -> Result<Vec<u8>> {
         self.set(VENDOR_SELECTOR, &mut request)?;
         let deadline = Instant::now() + RESPONSE_TIMEOUT;
         while Instant::now() < deadline {
@@ -364,17 +526,18 @@ impl<T: XuTransport> Worker<T> {
             let Ok(frame) = protocol::parse_frame(&reply) else {
                 continue;
             };
-            if frame.sequence != sequence || frame.command != GIM_GET_STATE {
+            if frame.sequence != sequence || frame.command != command {
                 continue;
             }
-            let (yaw, pitch, roll) = protocol::decode_gimbal_angles(&frame.payload)?;
-            return Ok(GimbalAngles {
-                yaw_degrees: yaw,
-                pitch_degrees: pitch,
-                roll_degrees: roll,
-            });
+            return Ok(frame.payload);
         }
-        bail!("timed out waiting for a matching gimbal state reply")
+        bail!("timed out waiting for camera reply 0x{command:04x}")
+    }
+
+    fn query_status(&mut self) -> Result<CameraStatus> {
+        let mut status = [0_u8; FRAME_SIZE];
+        self.get(TRACKING_SELECTOR, &mut status)?;
+        Ok(protocol::decode_camera_status(&status)?)
     }
 
     fn set(&mut self, selector: u8, data: &mut [u8]) -> Result<()> {
@@ -411,34 +574,14 @@ fn spawn_mock(config: &CameraConfig) -> CameraHandle {
     std::thread::Builder::new()
         .name("tarsier-mock-camera".into())
         .spawn(move || {
-            let mut angles = GimbalAngles {
-                yaw_degrees: 0.0,
-                pitch_degrees: 0.0,
-                roll_degrees: 0.0,
-            };
             while let Ok(request) = rx.recv() {
                 let result = match request.command {
-                    Command::QueryState => Ok(Some(angles)),
-                    Command::Move { yaw, pitch, roll } => {
-                        angles = GimbalAngles {
-                            yaw_degrees: yaw,
-                            pitch_degrees: pitch,
-                            roll_degrees: roll,
-                        };
-                        Ok(None)
-                    }
-                    Command::Recenter => {
-                        angles = GimbalAngles {
-                            yaw_degrees: 0.0,
-                            pitch_degrees: 0.0,
-                            roll_degrees: 0.0,
-                        };
-                        Ok(None)
-                    }
-                    Command::Tracking { .. } => Ok(None),
-                    Command::BuiltInGesture { .. } => Ok(None),
-                    Command::Zoom { .. } => Ok(None),
-                    Command::PanTiltSpeed { .. } => Ok(None),
+                    Command::Move { .. }
+                    | Command::Recenter
+                    | Command::Tracking { .. }
+                    | Command::BuiltInGesture { .. }
+                    | Command::Zoom { .. }
+                    | Command::PanTiltSpeed { .. } => Ok(()),
                 };
                 let _ = request.response.send(result);
             }
@@ -466,6 +609,10 @@ fn magnification_from_zoom_units(control: ZoomControl) -> Result<f32> {
     let position =
         (control.value - control.minimum) as f32 / (control.maximum - control.minimum) as f32;
     Ok(1.0 + 3.0 * position)
+}
+
+fn magnification_from_zoom_percent(percent: u8) -> f32 {
+    1.0 + 3.0 * f32::from(percent.min(100)) / 100.0
 }
 
 fn validate_zoom_control(control: ZoomControl) -> Result<()> {
@@ -504,33 +651,84 @@ fn speed_units(control: ZoomControl, direction: i8) -> Result<i32> {
     Ok(units.clamp(control.minimum, control.maximum))
 }
 
-fn spawn_polling(handle: CameraHandle, interval_ms: u64, runtime: Runtime) {
+fn spawn_telemetry_updates(
+    mut updates: tokio_mpsc::UnboundedReceiver<TelemetryUpdate>,
+    runtime: Runtime,
+) {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_millis(interval_ms));
-        let mut consecutive_failures = 0_u32;
-        loop {
-            interval.tick().await;
-            match handle.query_state().await {
-                Ok(angles) => {
-                    consecutive_failures = 0;
+        while let Some(update) = updates.recv().await {
+            match update {
+                TelemetryUpdate::Gimbal(sample) => {
                     runtime
                         .update(|state| {
-                            state.camera.available = true;
-                            state.camera.yaw_degrees = Some(angles.yaw_degrees);
-                            state.camera.pitch_degrees = Some(angles.pitch_degrees);
-                            state.camera.roll_degrees = Some(angles.roll_degrees);
+                            state.camera.yaw_degrees = Some(sample.motor.yaw);
+                            state.camera.pitch_degrees = Some(sample.motor.pitch);
+                            state.camera.roll_degrees = Some(sample.motor.roll);
+                            state.camera.euler_yaw_degrees = Some(sample.euler.yaw);
+                            state.camera.euler_pitch_degrees = Some(sample.euler.pitch);
+                            state.camera.euler_roll_degrees = Some(sample.euler.roll);
+                            state.camera.yaw_velocity_degrees_per_second =
+                                Some(sample.velocity.yaw);
+                            state.camera.pitch_velocity_degrees_per_second =
+                                Some(sample.velocity.pitch);
+                            state.camera.roll_velocity_degrees_per_second =
+                                Some(sample.velocity.roll);
                             state.camera.attitude_source = CameraAttitudeSource::Measured;
                             state.camera.sample_at_ms = Some(unix_ms());
-                            state.camera.error = None;
+                            state.camera.telemetry_error = None;
                         })
                         .await;
                 }
-                Err(error) => {
-                    consecutive_failures += 1;
+                TelemetryUpdate::Gestures(status) => {
                     runtime
                         .update(|state| {
-                            state.camera.available = consecutive_failures < 3;
-                            state.camera.error = Some(error.to_string());
+                            state.camera.built_in_gestures.target_selection =
+                                Some(status.target_selection);
+                            state.camera.built_in_gestures.zoom = Some(status.zoom);
+                            state.camera.built_in_gestures.dynamic_zoom = Some(status.dynamic_zoom);
+                            state.camera.built_in_gestures.sample_at_ms = Some(unix_ms());
+                            state.camera.built_in_gestures.error = None;
+                        })
+                        .await;
+                }
+                TelemetryUpdate::Status(status) => {
+                    runtime
+                        .update(|state| {
+                            state.camera.tracking_error = None;
+                            state.camera.zoom_error = None;
+                            if let Some(tracking) = status.tracking {
+                                state.camera.tracking = Some(tracking);
+                                state.camera.tracking_sample_at_ms = Some(unix_ms());
+                            }
+                            if let Some(zoom_percent) = status.zoom_percent {
+                                state.camera.zoom_magnification =
+                                    Some(magnification_from_zoom_percent(zoom_percent));
+                                state.camera.zoom_sample_at_ms = Some(unix_ms());
+                            }
+                        })
+                        .await;
+                }
+                TelemetryUpdate::Failure {
+                    kind,
+                    error,
+                    retry_after,
+                } => {
+                    tracing::warn!(
+                        telemetry = ?kind,
+                        retry_after_ms = retry_after.as_millis(),
+                        %error,
+                        "camera telemetry read failed; backing off this signal"
+                    );
+                    runtime
+                        .update(|state| match kind {
+                            TelemetryKind::Gimbal => state.camera.telemetry_error = Some(error),
+                            TelemetryKind::Gestures => {
+                                state.camera.built_in_gestures.error = Some(error)
+                            }
+                            TelemetryKind::Status => {
+                                state.camera.tracking_error = Some(error.clone());
+                                state.camera.zoom_error = Some(error);
+                            }
                         })
                         .await;
                 }
@@ -569,8 +767,12 @@ mod tests {
             Ok(())
         }
 
-        fn get(&mut self, _selector: u8, _data: &mut [u8]) -> Result<()> {
-            unreachable!("recorded commands do not read from the camera")
+        fn get(&mut self, selector: u8, data: &mut [u8]) -> Result<()> {
+            assert_eq!(selector, TRACKING_SELECTOR);
+            data[0x04] = 23;
+            data[0x18] = 2;
+            data[0x1c] = 0;
+            Ok(())
         }
 
         fn zoom_control(&mut self) -> Result<ZoomControl> {
@@ -621,7 +823,13 @@ mod tests {
         fn get(&mut self, selector: u8, data: &mut [u8]) -> Result<()> {
             assert_eq!(selector, VENDOR_SELECTOR);
             let request = protocol::parse_frame(self.request.as_ref().unwrap()).unwrap();
-            let payload = [0xd3, 0xfd, 0xff, 0xf3, 0x8f, 0xef];
+            let payload = match request.command {
+                AI_GET_GIM_STATE => vec![
+                    29, 0, 38, 0, 0xb3, 0xf9, 0, 0, 76, 0, 0x85, 0x05, 0xff, 0xff, 1, 0, 8, 0,
+                ],
+                AI_GET_QUICK_STATUS => vec![0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0],
+                command => panic!("unexpected query command 0x{command:04x}"),
+            };
             let reply =
                 protocol::build_frame(request.sequence, request.command, 0x0a, 0x29, &payload)
                     .unwrap();
@@ -660,10 +868,65 @@ mod tests {
             operations: Vec::new(),
         };
         let mut worker = Worker::new(transport, rx, Duration::ZERO);
-        let angles = worker.query_gimbal().unwrap();
+        let sample = worker.query_gimbal().unwrap();
         assert_eq!(worker.transport.operations, ["set", "get"]);
-        assert!((angles.yaw_degrees - -42.09).abs() < 0.01);
-        assert!((angles.roll_degrees - -5.57).abs() < 0.01);
+        assert_eq!(sample.motor.yaw, 141.3);
+        assert_eq!(sample.motor.pitch, 7.6);
+        assert_eq!(sample.velocity.yaw, 0.8);
+        let request = protocol::parse_frame(worker.transport.request.as_ref().unwrap()).unwrap();
+        assert_eq!(request.command, AI_GET_GIM_STATE);
+    }
+
+    #[test]
+    fn gesture_status_query_uses_the_same_serialized_mailbox() {
+        let (_tx, rx) = sync_channel(1);
+        let transport = ReplyingTransport {
+            request: None,
+            operations: Vec::new(),
+        };
+        let mut worker = Worker::new(transport, rx, Duration::ZERO);
+        let status = worker.query_ai_status().unwrap();
+        assert_eq!(worker.transport.operations, ["set", "get"]);
+        assert_eq!(
+            status,
+            AiGestureStatus {
+                target_selection: true,
+                zoom: false,
+                dynamic_zoom: true,
+            }
+        );
+        let request = protocol::parse_frame(worker.transport.request.as_ref().unwrap()).unwrap();
+        assert_eq!(request.command, AI_GET_QUICK_STATUS);
+    }
+
+    #[test]
+    fn failed_telemetry_reads_back_off_independently() {
+        let now = Instant::now();
+        let mut schedule = PollSchedule::new(Duration::from_secs(1), now);
+        assert!(!schedule.due(now));
+        assert!(schedule.due(now + Duration::from_secs(1)));
+
+        let retry = schedule.failed(now + Duration::from_secs(1));
+        assert_eq!(retry, Duration::from_secs(2));
+        assert!(!schedule.due(now + Duration::from_secs(2)));
+        assert!(schedule.due(now + Duration::from_secs(3)));
+
+        schedule.succeeded(now + Duration::from_secs(3));
+        assert_eq!(schedule.consecutive_failures, 0);
+        assert!(schedule.due(now + Duration::from_secs(4)));
+    }
+
+    #[test]
+    fn selector_six_status_reports_tracking_and_ai_zoom() {
+        let (_tx, rx) = sync_channel(1);
+        let mut worker = Worker::new(RecordingTransport::default(), rx, Duration::ZERO);
+        let status = worker.query_status().unwrap();
+        assert_eq!(status.tracking, Some(true));
+        assert_eq!(status.zoom_percent, Some(23));
+        assert_eq!(
+            magnification_from_zoom_percent(status.zoom_percent.unwrap()),
+            1.69
+        );
     }
 
     #[test]
@@ -707,6 +970,9 @@ mod tests {
             .unwrap(),
             2.5
         );
+        assert_eq!(magnification_from_zoom_percent(0), 1.0);
+        assert_eq!(magnification_from_zoom_percent(23), 1.69);
+        assert_eq!(magnification_from_zoom_percent(100), 4.0);
     }
 
     #[test]

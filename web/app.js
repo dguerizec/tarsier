@@ -43,6 +43,9 @@ const handConnections = [
 ];
 
 const angle = (value) => value == null ? "—" : `${value.toFixed(1)}°`;
+const angleVector = (roll, pitch, yaw, suffix = "°") => [roll, pitch, yaw].some((value) => value == null)
+  ? "—"
+  : `R ${roll.toFixed(1)}${suffix} · P ${pitch.toFixed(1)}${suffix} · Y ${yaw.toFixed(1)}${suffix}`;
 const age = (timestamp) => timestamp == null ? "No sample" : `${Math.max(0, (Date.now() - timestamp) / 1000).toFixed(1)}s ago`;
 const attitudeLabel = (source) => ({
   "last-commanded": "Last command",
@@ -176,6 +179,9 @@ function gestureDetail(perception) {
 
 function renderBuiltInGestures(camera) {
   const gestures = camera.built_in_gestures || {};
+  $("#gesture-readback").textContent = gestures.sample_at_ms == null
+    ? "Awaiting camera readback"
+    : `Measured ${age(gestures.sample_at_ms)}`;
   for (const control of builtInGestureControls) {
     const value = gestures[control.key] ?? null;
     const pending = pendingGestureFeatures.has(control.feature);
@@ -197,6 +203,9 @@ function renderZoom(camera) {
     : displayed == null ? "Unknown" : magnification(displayed);
   zoomSlider.disabled = !camera.available;
   zoomReset.disabled = !camera.available || zoomPending;
+  $("#zoom-readback").textContent = camera.zoom_sample_at_ms == null
+    ? "Awaiting camera readback."
+    : `Camera readback ${age(camera.zoom_sample_at_ms)}.`;
 }
 
 function activeDirection() {
@@ -223,6 +232,17 @@ function render(next) {
   $("#yaw").textContent = angle(camera.yaw_degrees);
   $("#pitch").textContent = angle(camera.pitch_degrees);
   $("#roll").textContent = angle(camera.roll_degrees);
+  $("#camera-euler").textContent = angleVector(
+    camera.euler_roll_degrees,
+    camera.euler_pitch_degrees,
+    camera.euler_yaw_degrees,
+  );
+  $("#camera-velocity").textContent = angleVector(
+    camera.roll_velocity_degrees_per_second,
+    camera.pitch_velocity_degrees_per_second,
+    camera.yaw_velocity_degrees_per_second,
+    "°/s",
+  );
   $("#tracking").textContent = camera.tracking == null ? "—" : camera.tracking ? "On" : "Off";
   $("#camera-age").textContent = camera.sample_at_ms == null
     ? attitudeLabel(camera.attitude_source)
@@ -240,7 +260,14 @@ function render(next) {
   $("#gesture-icon").classList.toggle("active", perception.gesture === "open_palm");
   $("#perception-error").hidden = !perception.error;
   $("#perception-error").textContent = perception.error || "";
-  const cameraError = cameraControlError || camera.error;
+  const cameraError = [
+    cameraControlError,
+    camera.error,
+    camera.telemetry_error,
+    camera.tracking_error,
+    camera.zoom_error,
+    camera.built_in_gestures?.error,
+  ].filter(Boolean).join(" · ");
   $("#camera-error").hidden = !cameraError;
   $("#camera-error").textContent = cameraError || "";
   document.querySelectorAll("[data-action], [data-preset]").forEach((button) => { button.disabled = !camera.available; });

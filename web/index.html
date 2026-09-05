@@ -48,10 +48,14 @@
       <section class="telemetry panel">
         <div class="panel-title"><h2>Camera</h2><span id="camera-age">No sample</span></div>
         <div class="metrics">
-          <article><span>Yaw</span><strong id="yaw">—</strong></article>
-          <article><span>Pitch</span><strong id="pitch">—</strong></article>
-          <article><span>Roll</span><strong id="roll">—</strong></article>
+          <article><span>Motor yaw</span><strong id="yaw">—</strong></article>
+          <article><span>Motor pitch</span><strong id="pitch">—</strong></article>
+          <article><span>Motor roll</span><strong id="roll">—</strong></article>
           <article><span>Tracking</span><strong id="tracking">—</strong></article>
+        </div>
+        <div class="telemetry-details">
+          <span>Euler <strong id="camera-euler">—</strong></span>
+          <span>Velocity <strong id="camera-velocity">—</strong></span>
         </div>
         <div class="controls">
           <button data-action="recenter">Recenter</button>
@@ -69,12 +73,12 @@
             <button id="zoom-reset" class="secondary compact" type="button" disabled>Reset ×1</button>
           </div>
           <div class="zoom-scale" aria-hidden="true"><span>×1</span><span>×4</span></div>
-          <p id="zoom-help" class="control-hint">Updates continuously while you drag.</p>
+          <p id="zoom-help" class="control-hint">Updates continuously while you drag. <span id="zoom-readback">Awaiting camera readback.</span></p>
         </div>
         <div class="camera-subsection">
           <div class="subsection-title">
             <h3>Built-in gestures</h3>
-            <span>Camera firmware</span>
+            <span id="gesture-readback">Awaiting camera readback</span>
           </div>
           <div class="feature-controls">
             <div class="feature-control">

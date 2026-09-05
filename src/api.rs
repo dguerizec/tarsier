@@ -286,6 +286,12 @@ async fn nudge_camera(
                         runtime.camera.yaw_degrees = None;
                         runtime.camera.pitch_degrees = None;
                         runtime.camera.roll_degrees = None;
+                        runtime.camera.euler_yaw_degrees = None;
+                        runtime.camera.euler_pitch_degrees = None;
+                        runtime.camera.euler_roll_degrees = None;
+                        runtime.camera.yaw_velocity_degrees_per_second = None;
+                        runtime.camera.pitch_velocity_degrees_per_second = None;
+                        runtime.camera.roll_velocity_degrees_per_second = None;
                         runtime.camera.attitude_source = CameraAttitudeSource::Unavailable;
                         runtime.camera.sample_at_ms = None;
                     })
@@ -326,7 +332,9 @@ async fn set_built_in_gesture(
                     runtime
                         .camera
                         .built_in_gestures
-                        .set(feature, request.enabled)
+                        .set(feature, request.enabled);
+                    runtime.camera.built_in_gestures.sample_at_ms = None;
+                    runtime.camera.built_in_gestures.error = None;
                 })
                 .await;
             record_camera_command(
@@ -349,7 +357,11 @@ async fn set_zoom(State(state): State<ApiState>, Json(request): Json<ZoomRequest
         Ok(()) => {
             state
                 .runtime
-                .update(|runtime| runtime.camera.zoom_magnification = Some(request.magnification))
+                .update(|runtime| {
+                    runtime.camera.zoom_magnification = Some(request.magnification);
+                    runtime.camera.zoom_sample_at_ms = None;
+                    runtime.camera.zoom_error = None;
+                })
                 .await;
             record_camera_command(
                 &state,
@@ -437,7 +449,11 @@ async fn set_tracking_inner(state: &ApiState, enabled: bool) -> Response {
         Ok(()) => {
             state
                 .runtime
-                .update(|runtime| runtime.camera.tracking = Some(enabled))
+                .update(|runtime| {
+                    runtime.camera.tracking = Some(enabled);
+                    runtime.camera.tracking_sample_at_ms = None;
+                    runtime.camera.tracking_error = None;
+                })
                 .await;
             record_camera_command(state, "camera.tracking", json!({"enabled": enabled})).await;
             StatusCode::ACCEPTED.into_response()
@@ -463,6 +479,12 @@ async fn record_commanded_attitude(state: &ApiState, yaw: f32, pitch: f32, roll:
             runtime.camera.yaw_degrees = Some(yaw);
             runtime.camera.pitch_degrees = Some(pitch);
             runtime.camera.roll_degrees = Some(roll);
+            runtime.camera.euler_yaw_degrees = None;
+            runtime.camera.euler_pitch_degrees = None;
+            runtime.camera.euler_roll_degrees = None;
+            runtime.camera.yaw_velocity_degrees_per_second = None;
+            runtime.camera.pitch_velocity_degrees_per_second = None;
+            runtime.camera.roll_velocity_degrees_per_second = None;
             runtime.camera.attitude_source = CameraAttitudeSource::LastCommanded;
             runtime.camera.sample_at_ms = Some(at_ms);
         })

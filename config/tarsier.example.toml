@@ -18,9 +18,9 @@ restart_delay_ms = 1000
 adapter = "obsbot-tiny-2"
 control_device = "/dev/v4l/by-id/usb-Remo_Tech_Co.__Ltd._OBSBOT_Tiny_2-video-index0"
 xu_unit = 2
-# A non-zero interval enables experimental GIM_GET_STATE polling. It is unsafe
-# during streaming on the tested firmware and is therefore disabled by default.
-poll_interval_ms = 0
+# Poll libdev's AI gimbal state and selector-6 zoom/tracking status at low
+# priority. Built-in gesture readback runs at one fifth of this rate.
+poll_interval_ms = 1000
 minimum_command_interval_ms = 20
 max_yaw_degrees = 130.0
 max_pitch_degrees = 90.0
