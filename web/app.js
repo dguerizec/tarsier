@@ -29,6 +29,7 @@ let skeletonEnabled = (
   localStorage.getItem("tarsier.skeletons")
   ?? localStorage.getItem("tarsier.handSkeleton")
 ) === "true";
+let previewMirrorEnabled = localStorage.getItem("tarsier.previewMirror") === "true";
 let socketConnected = false;
 let pipelineWasRunning = null;
 let previewRetry = null;
@@ -1473,11 +1474,19 @@ function transformLandmark(point, width, height) {
   return { x: mirror ? 1 - x : x, y };
 }
 
+function setPreviewMirror(enabled) {
+  clearHeldDirections();
+  previewMirrorEnabled = enabled;
+  localStorage.setItem("tarsier.previewMirror", String(enabled));
+  $("#preview-mirror").setAttribute("aria-pressed", String(enabled));
+  $(".preview-stage").classList.toggle("mirrored", enabled);
+}
+
 function sourceDirection(direction) {
   if (direction == null) return null;
   const { rotation, mirror } = videoTransform();
-  if (mirror && direction === "left") direction = "right";
-  else if (mirror && direction === "right") direction = "left";
+  if (mirror !== previewMirrorEnabled && direction === "left") direction = "right";
+  else if (mirror !== previewMirrorEnabled && direction === "right") direction = "left";
   const directions = ["right", "down", "left", "up"];
   return directions[(directions.indexOf(direction) - rotation / 90 + 4) % 4];
 }
@@ -1521,6 +1530,9 @@ for (const button of document.querySelectorAll("[data-video-rotation]")) {
   button.addEventListener("click", () => void setVideoTransform({ ...videoTransform(), rotation: Number(button.dataset.videoRotation) }));
 }
 $("#video-mirror").addEventListener("change", (event) => void setVideoTransform({ ...videoTransform(), mirror: event.target.checked }));
+
+$("#preview-mirror").addEventListener("click", () => setPreviewMirror(!previewMirrorEnabled));
+setPreviewMirror(previewMirrorEnabled);
 
 buildImageSettingsUi();
 setInterval(() => state && render(state), 500);

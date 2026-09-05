@@ -372,8 +372,13 @@ or cropping. The selection is persisted across daemon restarts.
 
 `GET /api/v1/video/transform` reads `{ "rotation": 0, "mirror": false }`;
 `POST` to the same endpoint replaces both values and emits `video.transform`.
-Runtime state exposes the selection as `video_effects.transform`. UI arrows
-use the displayed image's axes and skeleton overlays follow the same transform.
+Runtime state exposes the selection as `video_effects.transform`.
+
+The **Mirror preview** button flips only the browser preview and its skeleton
+overlay. This preference is saved in the current browser, independently of
+**Mirror output**; virtual-camera output and saved photos are unaffected.
+UI arrows use the displayed image's axes and skeleton overlays follow the same
+transform.
 The perception MJPEG feed carries `X-Tarsier-Inference-Rotation` on every frame.
 The worker rotates the image before face/hand/pose inference and segmentation,
 without letterboxing or mirroring, then maps landmarks and masks back to source
