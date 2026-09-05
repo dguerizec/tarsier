@@ -325,10 +325,12 @@ adapters support development without claiming real control hardware.
 `camera.poll_interval_ms = 0` disables periodic camera readback. A non-zero
 value enables the libdev-derived `AI_GET_GIM_STATE` path at that interval,
 labels successful pose samples `measured`, and also schedules lower-rate
-gesture status plus selector-6 zoom and tracking readback. The selector-6 zoom
-captures AI-driven reframing that the standard V4L2 control can miss. The
-reference Tiny 2 configuration uses 1000 ms. Each signal backs off independently
-after an error without making camera controls unavailable.
+gesture, image-setting, and selector-6 status readback. With the reference
+1000 ms polling interval, image settings refresh every five seconds and
+immediately after a write. The selector-6 zoom captures AI-driven reframing
+that the standard V4L2 control can miss. Proprietary telemetry signals back off
+independently after an error, while standard-control failures remain attached
+to their individual controls without making the rest unavailable.
 
 The first scenario action is deliberately small: an activation publishes the
 configured action name as a structured `scenario.activated` event. It does not
@@ -344,11 +346,12 @@ The default server binds only to `127.0.0.1:8742`.
 | `POST` | `/api/v1/daemon/restart` | Gracefully exit for restart by the active service supervisor |
 | `GET` | `/api/v1/state` | Complete runtime state |
 | `GET` | `/api/v1/config` | Effective configuration |
-| `GET` | `/api/v1/camera/state` | Camera availability and attitude |
+| `GET` | `/api/v1/camera/state` | Camera availability, attitude, and typed image-setting readback |
 | `POST` | `/api/v1/camera/power` | Wake or sleep the physical camera while keeping the daemon available |
 | `POST` | `/api/v1/camera/move` | Bounded absolute yaw/pitch/roll target |
 | `POST` | `/api/v1/camera/nudge/{direction}` | Start or renew `left`, `right`, `up`, or `down` movement; `stop` ends it |
 | `POST` | `/api/v1/camera/zoom` | Set x1-to-x4 lens magnification |
+| `POST` | `/api/v1/camera/image-settings/{control}` | Set one advertised image control with `{"value": integer}` and verify its readback |
 | `POST` | `/api/v1/camera/auto-zoom` | Preserve the current detected-face size while face tracking is active |
 | `POST` | `/api/v1/camera/hdr` | Enable or disable HDR/WDR |
 | `POST` | `/api/v1/camera/tracking` | Enable or disable built-in tracking |
@@ -395,6 +398,10 @@ curl -fsS -X POST \
 curl -fsS -X POST http://127.0.0.1:8742/api/v1/camera/zoom \
   -H 'content-type: application/json' \
   -d '{"magnification":2.5}'
+
+curl -fsS -X POST http://127.0.0.1:8742/api/v1/camera/image-settings/brightness \
+  -H 'content-type: application/json' \
+  -d '{"value":60}'
 
 curl -fsS -X POST \
   http://127.0.0.1:8742/api/v1/camera/built-in-gestures/zoom \
@@ -492,6 +499,10 @@ The first vertical slice was validated on 2026-09-05 with an OBSBOT Tiny 2
 - HDR was switched from its measured enabled state to disabled and back to
   enabled; both transitions were confirmed by selector-6 readback, the USB
   address stayed stable, and the pipeline recovered to 30 FPS without a restart;
+- all 17 advertised V4L2 image controls accepted a reversible adjacent-value
+  check in their valid mode, and selector-6 face-priority auto exposure was
+  switched global-to-face; every command returned exact readback, all starting
+  values were restored, and the pipeline remained near 30 FPS with zero restarts;
 - a generic GStreamer V4L2 reader consumed 90 frames from `/dev/video42` and
   exited successfully while preview, perception, and polling continued;
 - the camera kept the same USB bus address throughout the initial loopback,

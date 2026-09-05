@@ -129,12 +129,24 @@ The effective frame rate dipped during reconfiguration and returned to 30 FPS.
 ## Available image and perception surfaces
 
 The tested Tiny 2 advertises standard V4L2 controls for automatic/manual
-exposure, exposure time, gain, exposure bias, continuous/manual focus, white
-balance auto mode, white-balance color temperature, red/blue balance,
-anti-flicker, brightness, contrast, saturation, hue, and sharpness. These are
-available for future Tarsier controls but are not yet exposed by its API.
-Face-priority exposure and face-priority autofocus are separate camera features
-whose state is present in the selector-6 block.
+exposure, exposure time, gain, dynamic frame rate, backlight compensation,
+continuous/manual focus, white-balance auto mode, white-balance color
+temperature, red/blue balance, anti-flicker, brightness, contrast, saturation,
+hue, and sharpness. Tarsier reads and writes these controls with `VIDIOC_G_CTRL`
+and `VIDIOC_S_CTRL` inside the same camera-owner thread as proprietary XU
+traffic. Each successful write is immediately read back; a lower-rate poll
+keeps external changes visible in runtime state.
+
+Manual exposure time and gain require `V4L2_CID_EXPOSURE_AUTO = 1`. Manual
+temperature and red/blue balance require automatic white balance to be off,
+and manual focus requires continuous autofocus to be off. The daemon enforces
+these dependencies independently of the web UI.
+
+Face-priority auto exposure is a separate raw selector-6 control: write
+`[0x03, 0x01, 0x00]` for global metering or `[0x03, 0x01, 0x01]` for face
+metering, zero-padded to 60 bytes. The state is read from selector-6 offset
+`0x07`. This is available only with automatic exposure and is distinct from
+face-priority autofocus.
 
 The local MediaPipe worker currently reduces its face-detector result to a
 boolean. Its result already contains a bounding box, so Tarsier can expose and

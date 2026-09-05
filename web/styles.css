@@ -106,6 +106,23 @@ main { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(17rem, .85
 .zoom-control input:disabled { cursor: not-allowed; opacity: .45; }
 .zoom-scale { display: flex; justify-content: space-between; margin-right: 5.1rem; color: var(--muted); font-size: .65rem; }
 .control-hint { margin-top: .25rem; color: var(--muted); font-size: .68rem; }
+.image-settings-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: .65rem; margin-top: .65rem; }
+.image-settings-group { min-width: 0; padding: .7rem; border: 1px solid var(--panel-edge); border-radius: .7rem; background: #0a0e0c; }
+.image-settings-group h4 { margin: 0 0 .35rem; color: var(--green); font-size: .68rem; letter-spacing: .08em; text-transform: uppercase; }
+.image-setting-row { display: grid; grid-template-columns: minmax(7.5rem, 1fr) minmax(8rem, 1fr); align-items: center; gap: .65rem; min-height: 3.35rem; padding: .45rem 0; border-top: 1px solid #202920; }
+.image-setting-row:first-of-type { border-top: 0; }
+.image-setting-row.inactive { opacity: .58; }
+.image-setting-copy { display: grid; gap: .12rem; min-width: 0; }
+.image-setting-copy > label, .image-setting-copy > span { color: #f2f5ef; font-size: .72rem; font-weight: 650; }
+.image-setting-copy small { color: var(--muted); font-size: .62rem; line-height: 1.35; }
+.image-setting-editor { display: grid; justify-items: stretch; gap: .25rem; min-width: 0; }
+.image-setting-editor output { color: var(--green); font-size: .68rem; font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; }
+.image-setting-editor input[type="range"] { width: 100%; margin: 0; accent-color: var(--green); cursor: pointer; }
+.image-setting-editor input[type="range"]:disabled { cursor: not-allowed; }
+.image-setting-editor select { width: 100%; min-width: 0; padding: .4rem .5rem; border: 1px solid #536057; border-radius: .45rem; color: #f2f5ef; background: #151d17; font: inherit; font-size: .68rem; }
+.image-setting-editor select:focus-visible, .image-setting-editor input[type="range"]:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+.image-setting-editor .segmented-control { justify-content: flex-end; }
+.image-settings > .error { margin-bottom: 0; }
 .feature-controls { display: grid; gap: .45rem; margin-top: .65rem; }
 .feature-control { display: grid; grid-template-columns: minmax(7rem, 1fr) 4.5rem auto; align-items: center; gap: .6rem; min-height: 2.3rem; }
 .feature-control > span { color: var(--muted); font-size: .75rem; }
@@ -142,6 +159,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   .pan-tilt-bar { min-height: 6.5rem; }
   .pan-tilt-controls { gap: .5rem; }
   .feature-control { grid-template-columns: minmax(6.5rem, 1fr) 4rem auto; }
+  .image-settings-groups { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 520px) {
@@ -153,4 +171,5 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   .camera-heading-actions { width: 100%; justify-content: space-between; }
   .output-heading > span, .background-heading > span { text-align: left; }
   .output-mode-list, .background-effect-list { grid-template-columns: 1fr; }
+  .image-setting-row { grid-template-columns: minmax(6.5rem, 1fr) minmax(7.5rem, 1fr); }
 }

@@ -18,6 +18,7 @@ const faceTrackingToggle = $("#face-tracking-toggle");
 const zoomSlider = $("#zoom-slider");
 const zoomReset = $("#zoom-reset");
 const autoZoomToggle = $("#auto-zoom-toggle");
+const imageSettingsGroups = $("#image-settings-groups");
 const panTiltButtons = [...document.querySelectorAll("[data-pan-tilt]")];
 let state = null;
 let skeletonEnabled = (
@@ -44,6 +45,7 @@ let autoZoomDraft = null;
 let hdrPending = false;
 let trackingPending = false;
 let faceTrackingPending = false;
+let imageSettingError = null;
 let outputModePending = false;
 let outputModeError = null;
 let outputModeDraft = null;
@@ -55,7 +57,11 @@ let panTiltSyncQueued = false;
 let panTiltKeepaliveTimer = null;
 let heldDirections = [];
 const pendingGestureFeatures = new Set();
+const pendingImageSettings = new Set();
+const imageSettingDrafts = new Map();
+const imageSettingTimers = new Map();
 const zoomUpdateIntervalMs = 100;
+const imageSettingUpdateIntervalMs = 100;
 const panTiltKeepaliveIntervalMs = 100;
 
 const builtInGestureControls = [
@@ -63,6 +69,49 @@ const builtInGestureControls = [
   { feature: "zoom", key: "zoom", state: "#gesture-zoom-state" },
   { feature: "dynamic-zoom", key: "dynamic_zoom", state: "#gesture-dynamic-zoom-state" },
 ];
+
+const imageSettingGroups = [
+  {
+    label: "Image",
+    controls: [
+      { control: "brightness", label: "Brightness", kind: "integer", help: "Digital image brightness." },
+      { control: "contrast", label: "Contrast", kind: "integer", help: "Difference between dark and light tones." },
+      { control: "saturation", label: "Saturation", kind: "integer", help: "Color intensity." },
+      { control: "hue", label: "Hue", kind: "integer", help: "Overall color shift." },
+      { control: "sharpness", label: "Sharpness", kind: "integer", help: "Digital edge enhancement." },
+      { control: "power-line-frequency", label: "Anti-flicker", kind: "menu", help: "Match the local mains frequency." },
+    ],
+  },
+  {
+    label: "Exposure",
+    controls: [
+      { control: "auto-exposure", label: "Mode", kind: "menu", help: "Automatic or manual sensor exposure." },
+      { control: "face-priority-auto-exposure", label: "Face priority", kind: "boolean", help: "Meter automatic exposure for a detected face." },
+      { control: "exposure-dynamic-framerate", label: "Dynamic frame rate", kind: "boolean", help: "Allow automatic exposure to reduce frame rate." },
+      { control: "exposure-time-absolute", label: "Shutter", kind: "integer", help: "Manual exposure time in 100 µs units.", format: "exposure" },
+      { control: "gain", label: "Gain", kind: "integer", help: "Manual sensor gain." },
+      { control: "backlight-compensation", label: "Backlight", kind: "integer", help: "Compensate for a bright background." },
+    ],
+  },
+  {
+    label: "White balance",
+    controls: [
+      { control: "white-balance-automatic", label: "Automatic", kind: "boolean", help: "Let the camera adapt color balance." },
+      { control: "white-balance-temperature", label: "Color temperature", kind: "integer", help: "Manual white point in Kelvin.", format: "kelvin" },
+      { control: "red-balance", label: "Red balance", kind: "integer", help: "Manual red-channel balance." },
+      { control: "blue-balance", label: "Blue balance", kind: "integer", help: "Manual blue-channel balance." },
+    ],
+  },
+  {
+    label: "Focus",
+    controls: [
+      { control: "focus-automatic-continuous", label: "Continuous autofocus", kind: "boolean", help: "Keep focus under automatic camera control." },
+      { control: "focus-absolute", label: "Manual focus", kind: "integer", help: "Fixed focus position." },
+    ],
+  },
+];
+
+const imageSettingDefinitions = imageSettingGroups.flatMap((group) => group.controls);
 
 const handConnections = [
   [0, 1], [1, 2], [2, 3], [3, 4],
@@ -113,6 +162,157 @@ const attitudeLabel = (source) => ({
 const magnification = (value) => `×${Number(value).toFixed(1)}`;
 const cameraIsPowered = (camera) => camera.powered_on !== false;
 const cameraControlsAvailable = (camera) => camera.available && cameraIsPowered(camera) && !cameraPowerPending;
+
+function buildImageSettingsUi() {
+  imageSettingsGroups.innerHTML = imageSettingGroups.map((group) => `
+    <section class="image-settings-group" aria-labelledby="image-settings-${group.label.toLowerCase().replaceAll(" ", "-")}">
+      <h4 id="image-settings-${group.label.toLowerCase().replaceAll(" ", "-")}">${group.label}</h4>
+      ${group.controls.map((definition) => `
+        <div class="image-setting-row kind-${definition.kind}" data-image-setting-row="${definition.control}">
+          <div class="image-setting-copy">
+            ${definition.kind === "boolean"
+              ? `<span id="image-setting-${definition.control}-label">${definition.label}</span>`
+              : `<label id="image-setting-${definition.control}-label" for="image-setting-${definition.control}">${definition.label}</label>`}
+            <small data-image-setting-help="${definition.control}">${definition.help}</small>
+          </div>
+          <div class="image-setting-editor">
+            <output data-image-setting-value="${definition.control}">Unknown</output>
+            ${definition.kind === "integer" ? `
+              <input id="image-setting-${definition.control}" type="range" data-image-setting-input="${definition.control}" disabled>
+            ` : definition.kind === "menu" ? `
+              <select id="image-setting-${definition.control}" data-image-setting-input="${definition.control}" disabled></select>
+            ` : `
+              <div class="segmented-control" role="group" aria-labelledby="image-setting-${definition.control}-label">
+                <button class="secondary compact" type="button" data-image-setting-button="${definition.control}" data-image-setting-value-option="1" disabled>On</button>
+                <button class="secondary compact" type="button" data-image-setting-button="${definition.control}" data-image-setting-value-option="0" disabled>Off</button>
+              </div>
+            `}
+          </div>
+        </div>
+      `).join("")}
+    </section>
+  `).join("");
+}
+
+function imageSettingState(camera, control) {
+  return camera.image_settings?.controls?.find((setting) => setting.control === control) || null;
+}
+
+function imageSettingMode(camera, control) {
+  const value = (dependency) => imageSettingState(camera, dependency)?.value ?? null;
+  if (["exposure-time-absolute", "gain"].includes(control)) {
+    return value("auto-exposure") === 1
+      ? { active: true, reason: null }
+      : { active: false, reason: "Select Manual exposure first." };
+  }
+  if (["face-priority-auto-exposure", "exposure-dynamic-framerate"].includes(control)) {
+    const exposureMode = value("auto-exposure");
+    return exposureMode != null && exposureMode !== 1
+      ? { active: true, reason: null }
+      : { active: false, reason: "Available only with automatic exposure." };
+  }
+  if (["white-balance-temperature", "red-balance", "blue-balance"].includes(control)) {
+    return value("white-balance-automatic") === 0
+      ? { active: true, reason: null }
+      : { active: false, reason: "Turn Automatic white balance off first." };
+  }
+  if (control === "focus-absolute") {
+    return value("focus-automatic-continuous") === 0
+      ? { active: true, reason: null }
+      : { active: false, reason: "Turn Continuous autofocus off first." };
+  }
+  return { active: true, reason: null };
+}
+
+function formatImageSettingValue(definition, controlState, value) {
+  if (value == null) return "Unknown";
+  if (definition.kind === "boolean") return value === 1 ? "On" : "Off";
+  if (definition.kind === "menu") {
+    return controlState?.options?.find((option) => option.value === value)?.label || String(value);
+  }
+  if (definition.format === "kelvin") return `${value} K`;
+  if (definition.format === "exposure") return `${value} · ${(value / 10).toFixed(1)} ms`;
+  return String(value);
+}
+
+function renderImageSettings(camera) {
+  const settings = camera.image_settings || { controls: [] };
+  const samples = settings.controls
+    .map((control) => control.sample_at_ms)
+    .filter(Number.isFinite);
+  const newestSample = samples.length ? Math.max(...samples) : null;
+  const unavailable = settings.controls.filter((control) => !control.available).length;
+  $("#image-settings-readback").textContent = pendingImageSettings.size > 0
+    ? `Applying ${pendingImageSettings.size} change${pendingImageSettings.size === 1 ? "" : "s"}…`
+    : newestSample == null ? "Awaiting camera readback"
+    : unavailable > 0 ? `Readback ${age(newestSample)} · ${unavailable} unavailable`
+    : `Readback ${age(newestSample)}`;
+
+  const error = imageSettingError || settings.error;
+  $("#image-settings-error").hidden = !error;
+  $("#image-settings-error").textContent = error || "";
+
+  for (const definition of imageSettingDefinitions) {
+    const controlState = imageSettingState(camera, definition.control);
+    const row = document.querySelector(`[data-image-setting-row="${definition.control}"]`);
+    const output = document.querySelector(`[data-image-setting-value="${definition.control}"]`);
+    const help = document.querySelector(`[data-image-setting-help="${definition.control}"]`);
+    const pending = pendingImageSettings.has(definition.control);
+    const draft = imageSettingDrafts.get(definition.control);
+    const value = draft ?? controlState?.value ?? null;
+    const mode = imageSettingMode(camera, definition.control);
+    const writable = cameraControlsAvailable(camera)
+      && controlState?.available === true
+      && controlState.active === true
+      && controlState.read_only !== true
+      && mode.active;
+    const unavailableReason = controlState?.error
+      ? `Unavailable: ${controlState.error}`
+      : controlState && !controlState.active ? "Inactive in the current camera mode."
+      : mode.reason;
+
+    row.classList.toggle("inactive", !writable);
+    row.title = controlState?.sample_at_ms == null
+      ? "Awaiting camera readback"
+      : `Camera readback ${age(controlState.sample_at_ms)}`;
+    output.textContent = pending
+      ? `Applying ${formatImageSettingValue(definition, controlState, value)}`
+      : formatImageSettingValue(definition, controlState, value);
+    help.textContent = unavailableReason
+      ? `${definition.help} ${unavailableReason}`
+      : definition.help;
+
+    if (definition.kind === "integer") {
+      const input = document.querySelector(`[data-image-setting-input="${definition.control}"]`);
+      if (controlState?.minimum != null) input.min = String(controlState.minimum);
+      if (controlState?.maximum != null) input.max = String(controlState.maximum);
+      if (controlState?.step != null) input.step = String(controlState.step);
+      if (draft == null && controlState?.value != null) input.value = String(controlState.value);
+      input.disabled = !writable;
+    } else if (definition.kind === "menu") {
+      const input = document.querySelector(`[data-image-setting-input="${definition.control}"]`);
+      const options = controlState?.options || [];
+      const optionKey = JSON.stringify(options);
+      if (input.dataset.options !== optionKey) {
+        input.replaceChildren(...options.map((option) => {
+          const element = document.createElement("option");
+          element.value = String(option.value);
+          element.textContent = option.label;
+          return element;
+        }));
+        input.dataset.options = optionKey;
+      }
+      if (value != null) input.value = String(value);
+      input.disabled = !writable || options.length === 0 || pending;
+    } else {
+      document.querySelectorAll(`[data-image-setting-button="${definition.control}"]`).forEach((button) => {
+        const buttonValue = Number(button.dataset.imageSettingValueOption);
+        button.setAttribute("aria-pressed", String(value != null && value === buttonValue));
+        button.disabled = !writable || pending;
+      });
+    }
+  }
+}
 
 function syncDaemonRestartControl() {
   connection.disabled = !socketConnected || !daemonRestartAvailable || daemonRestartPending;
@@ -529,6 +729,7 @@ function render(next) {
     ? attitudeLabel(camera.attitude_source)
     : `${attitudeLabel(camera.attitude_source)} · ${age(camera.sample_at_ms)}`;
   renderZoom(camera);
+  renderImageSettings(camera);
   renderHdr(camera);
   renderTracking(camera);
   renderFaceTracking(camera);
@@ -1000,6 +1201,79 @@ document.querySelectorAll("[data-camera-feature]").forEach((button) => {
   });
 });
 
+function scheduleImageSetting(control) {
+  if (imageSettingTimers.has(control) || pendingImageSettings.has(control)) return;
+  const timer = setTimeout(() => {
+    imageSettingTimers.delete(control);
+    void sendImageSetting(control);
+  }, imageSettingUpdateIntervalMs);
+  imageSettingTimers.set(control, timer);
+}
+
+async function sendImageSetting(control) {
+  if (pendingImageSettings.has(control) || !imageSettingDrafts.has(control)) return;
+  const value = imageSettingDrafts.get(control);
+  pendingImageSettings.add(control);
+  imageSettingError = null;
+  if (state) render(state);
+  try {
+    const response = await fetch(`/api/v1/camera/image-settings/${control}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ value }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.error || `Image setting failed (${response.status})`);
+    }
+    const readback = imageSettingState(state?.camera || {}, control);
+    if (readback && Number.isInteger(payload.value)) {
+      readback.value = payload.value;
+      readback.sample_at_ms = Date.now();
+      readback.error = null;
+    }
+  } catch (error) {
+    const definition = imageSettingDefinitions.find((item) => item.control === control);
+    const message = error instanceof Error ? error.message : String(error);
+    imageSettingError = `${definition?.label || control}: ${message}`;
+  } finally {
+    pendingImageSettings.delete(control);
+    if (imageSettingDrafts.get(control) === value) imageSettingDrafts.delete(control);
+    else scheduleImageSetting(control);
+    if (state) render(state);
+  }
+}
+
+function queueImageSetting(control, value, realtime = false) {
+  if (!Number.isInteger(value)) return;
+  imageSettingDrafts.set(control, value);
+  imageSettingError = null;
+  if (state) render(state);
+  if (realtime) scheduleImageSetting(control);
+  else void sendImageSetting(control);
+}
+
+imageSettingsGroups.addEventListener("input", (event) => {
+  const input = event.target.closest('input[type="range"][data-image-setting-input]');
+  if (!input) return;
+  queueImageSetting(input.dataset.imageSettingInput, Number(input.value), true);
+});
+
+imageSettingsGroups.addEventListener("change", (event) => {
+  const input = event.target.closest("select[data-image-setting-input]");
+  if (!input) return;
+  queueImageSetting(input.dataset.imageSettingInput, Number(input.value));
+});
+
+imageSettingsGroups.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-image-setting-button]");
+  if (!button || button.disabled) return;
+  queueImageSetting(
+    button.dataset.imageSettingButton,
+    Number(button.dataset.imageSettingValueOption),
+  );
+});
+
 faceTrackingToggle.addEventListener("click", async () => {
   if (faceTrackingPending || trackingPending || !state
     || !cameraControlsAvailable(state.camera)) return;
@@ -1103,6 +1377,7 @@ autoZoomToggle.addEventListener("change", async () => {
   }
 });
 
+buildImageSettingsUi();
 setInterval(() => state && render(state), 500);
 setInterval(checkDaemonInstance, 2000);
 setSkeletonEnabled(skeletonEnabled);

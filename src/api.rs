@@ -2200,6 +2200,9 @@ mod tests {
         assert!(include_str!("../web/app.js").contains("/api/v1/video/identity"));
         assert!(include_str!("../web/index.html").contains("id=\"daemon-restart-dialog\""));
         assert!(include_str!("../web/app.js").contains("/api/v1/daemon/restart"));
+        assert!(include_str!("../web/index.html").contains("id=\"image-settings-groups\""));
+        assert!(include_str!("../web/app.js").contains("/api/v1/camera/image-settings/"));
+        assert!(include_str!("../web/app.js").contains("face-priority-auto-exposure"));
     }
 
     #[tokio::test]
