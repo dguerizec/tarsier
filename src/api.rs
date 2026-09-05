@@ -28,7 +28,7 @@ use crate::{
         FaceTrackingTarget, Landmark, PerceptionObservation, ScenarioActivation, VideoIdentity,
         VideoOutputMode, unix_ms,
     },
-    pipeline::{PreviewHub, VideoPipelineControl},
+    pipeline::{PerceptionFrame, PreviewHub, VideoPipelineControl},
     runtime::Runtime,
     scenario::{FacePresenceStabilizer, OpenPalmStabilizer, PresenceChange},
     settings::UserSettingsStore,
@@ -1021,7 +1021,49 @@ async fn preview_mjpeg(State(state): State<ApiState>) -> Response {
 }
 
 async fn perception_input_mjpeg(State(state): State<ApiState>) -> Response {
-    mjpeg_response(state.preview.subscribe_perception(), state.shutdown.clone())
+    perception_mjpeg_response(state.preview.subscribe_perception(), state.shutdown.clone())
+}
+
+fn perception_mjpeg_response(
+    mut receiver: watch::Receiver<Option<PerceptionFrame>>,
+    mut shutdown: watch::Receiver<bool>,
+) -> Response {
+    let stream = async_stream::stream! {
+        loop {
+            tokio::select! {
+                changed = receiver.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                }
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() {
+                        break;
+                    }
+                    continue;
+                }
+            }
+            let frame = receiver.borrow_and_update().clone();
+            let Some(frame) = frame else {
+                continue;
+            };
+            let part_header = Bytes::from(format!(
+                "--tarsier-frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\nX-Tarsier-Frame-Id: {}\r\nX-Tarsier-Captured-At-Ms: {}\r\n\r\n",
+                frame.bytes.len(), frame.frame_id, frame.captured_at_ms
+            ));
+            yield Ok::<Bytes, Infallible>(part_header);
+            yield Ok::<Bytes, Infallible>(frame.bytes);
+            yield Ok::<Bytes, Infallible>(Bytes::from_static(b"\r\n"));
+        }
+    };
+    Response::builder()
+        .header(
+            header::CONTENT_TYPE,
+            "multipart/x-mixed-replace; boundary=tarsier-frame",
+        )
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(Body::from_stream(stream))
+        .expect("static perception response is valid")
 }
 
 fn mjpeg_response(
@@ -2241,6 +2283,29 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn perception_mjpeg_carries_source_frame_provenance() {
+        let (frames_tx, frames_rx) = watch::channel(None);
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let response = perception_mjpeg_response(frames_rx, shutdown_rx);
+        let mut body = response.into_body().into_data_stream();
+
+        frames_tx.send_replace(Some(PerceptionFrame {
+            bytes: Bytes::from_static(b"jpeg-frame"),
+            frame_id: 152,
+            captured_at_ms: 1_725_000_000_033,
+        }));
+        let header = tokio::time::timeout(Duration::from_secs(1), body.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let header = std::str::from_utf8(&header).unwrap();
+
+        assert!(header.contains("X-Tarsier-Frame-Id: 152\r\n"));
+        assert!(header.contains("X-Tarsier-Captured-At-Ms: 1725000000033\r\n"));
     }
 
     #[tokio::test]

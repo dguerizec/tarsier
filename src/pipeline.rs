@@ -1,7 +1,7 @@
 use std::{
     path::Path,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread::JoinHandle,
@@ -26,8 +26,44 @@ use crate::{
 #[derive(Clone)]
 pub struct PreviewHub {
     output_tx: watch::Sender<Option<Bytes>>,
-    perception_tx: watch::Sender<Option<Bytes>>,
+    perception_tx: watch::Sender<Option<PerceptionFrame>>,
     effects: VideoEffects,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PerceptionFrame {
+    pub bytes: Bytes,
+    pub frame_id: u64,
+    pub captured_at_ms: u64,
+}
+
+struct CaptureClock {
+    started_at_ms: u64,
+    fps: u32,
+    first_pts_ns: OnceLock<u64>,
+}
+
+impl CaptureClock {
+    fn new(started_at_ms: u64, fps: u32) -> Self {
+        Self {
+            started_at_ms,
+            fps,
+            first_pts_ns: OnceLock::new(),
+        }
+    }
+
+    fn captured_at_ms(&self, pts_ns: u64) -> u64 {
+        self.started_at_ms.saturating_add(pts_ns / 1_000_000)
+    }
+
+    fn frame_id(&self, pts_ns: u64) -> u64 {
+        let first_pts_ns = *self.first_pts_ns.get_or_init(|| pts_ns);
+        let elapsed_ns = pts_ns.saturating_sub(first_pts_ns) as u128;
+        let rounded_frames = (elapsed_ns * self.fps as u128 + 500_000_000) / 1_000_000_000;
+        u64::try_from(rounded_frames)
+            .unwrap_or(u64::MAX - 1)
+            .saturating_add(1)
+    }
 }
 
 impl PreviewHub {
@@ -45,7 +81,7 @@ impl PreviewHub {
         self.output_tx.subscribe()
     }
 
-    pub fn subscribe_perception(&self) -> watch::Receiver<Option<Bytes>> {
+    pub(crate) fn subscribe_perception(&self) -> watch::Receiver<Option<PerceptionFrame>> {
         self.perception_tx.subscribe()
     }
 
@@ -61,7 +97,7 @@ impl PreviewHub {
         self.output_tx.send_replace(Some(frame));
     }
 
-    fn publish_perception(&self, frame: Bytes) {
+    fn publish_perception(&self, frame: PerceptionFrame) {
         self.perception_tx.send_replace(Some(frame));
     }
 
@@ -212,15 +248,28 @@ impl ActivePipeline {
             .by_name("effect_processor")
             .context("effect processor is missing")?;
 
+        let capture_clock = Arc::new(CaptureClock::new(unix_ms(), config.fps));
+
         perception_sink.set_callbacks(
             gst_app::AppSinkCallbacks::builder()
                 .new_sample({
                     let preview = preview.clone();
+                    let capture_clock = Arc::clone(&capture_clock);
                     move |sink| {
                         let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
                         let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
+                        let pts_ns = buffer
+                            .pts()
+                            .map(|pts| pts.nseconds())
+                            .ok_or(gst::FlowError::Error)?;
+                        let frame_id = capture_clock.frame_id(pts_ns);
+                        let captured_at_ms = capture_clock.captured_at_ms(pts_ns);
                         let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
-                        preview.publish_perception(Bytes::copy_from_slice(map.as_slice()));
+                        preview.publish_perception(PerceptionFrame {
+                            bytes: Bytes::copy_from_slice(map.as_slice()),
+                            frame_id,
+                            captured_at_ms,
+                        });
                         Ok(gst::FlowSuccess::Ok)
                     }
                 })
@@ -228,6 +277,7 @@ impl ActivePipeline {
         );
 
         let effects = preview.effects().clone();
+        let effect_clock = Arc::clone(&capture_clock);
         let width = config.width;
         let height = config.height;
         effect_processor
@@ -241,10 +291,19 @@ impl ActivePipeline {
                     return gst::PadProbeReturn::Drop;
                 };
                 let buffer = buffer.make_mut();
+                let frame_id = buffer
+                    .pts()
+                    .map(|pts| effect_clock.frame_id(pts.nseconds()));
                 let Ok(mut map) = buffer.map_writable() else {
                     return gst::PadProbeReturn::Drop;
                 };
-                effects.apply_output(map.as_mut_slice(), width, height, unix_ms());
+                effects.apply_output_for_frame(
+                    map.as_mut_slice(),
+                    width,
+                    height,
+                    unix_ms(),
+                    frame_id,
+                );
                 gst::PadProbeReturn::Ok
             });
 
@@ -656,6 +715,19 @@ fn wait_for_retry(running: &AtomicBool, desired_running: &AtomicBool, delay: Dur
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_clock_maps_source_pts_to_one_wall_clock_timeline() {
+        let clock = CaptureClock::new(1_725_000_000_000, 30);
+        let first = clock.captured_at_ms(5_000_000_000);
+
+        assert_eq!(first, 1_725_000_005_000);
+        assert_eq!(clock.captured_at_ms(5_033_333_333), first + 33);
+        assert_eq!(clock.captured_at_ms(5_066_666_666), first + 66);
+        assert_eq!(clock.frame_id(5_000_000_000), 1);
+        assert_eq!(clock.frame_id(5_033_333_333), 2);
+        assert_eq!(clock.frame_id(5_066_666_666), 3);
+    }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn supervisor_restarts_a_pipeline_after_eos() {

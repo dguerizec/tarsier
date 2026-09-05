@@ -34,6 +34,7 @@ from tarsier_perception.worker import (
     expand_pose_constraint,
     normalize_gesture,
     rate_is_due,
+    read_mjpeg_parts,
     select_gesture,
     select_landmarks,
 )
@@ -155,6 +156,32 @@ def test_rate_gate_keeps_its_cadence_across_small_frame_jitter() -> None:
     assert not rate_is_due(9.990, deadline, interval)
     assert abs(advance_deadline(deadline, 10.001, interval) - 10.1) < 1e-9
     assert abs(advance_deadline(deadline, 10.350, interval) - 10.4) < 1e-9
+
+
+def test_mjpeg_reader_preserves_source_frame_provenance() -> None:
+    stream = io.BytesIO(
+        b"--tarsier-frame\r\n"
+        b"Content-Type: image/jpeg\r\n"
+        b"Content-Length: 4\r\n"
+        b"X-Tarsier-Frame-Id: 152\r\n"
+        b"X-Tarsier-Captured-At-Ms: 1725000000033\r\n"
+        b"\r\n"
+        b"jpeg\r\n"
+    )
+
+    parts = list(read_mjpeg_parts(stream))
+
+    assert parts == [
+        (
+            {
+                "content-type": "image/jpeg",
+                "content-length": "4",
+                "x-tarsier-frame-id": "152",
+                "x-tarsier-captured-at-ms": "1725000000033",
+            },
+            b"jpeg",
+        )
+    ]
 
 
 def test_pose_constraint_expands_around_the_detected_person() -> None:

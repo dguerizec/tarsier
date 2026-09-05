@@ -87,8 +87,12 @@ presence, the 478 normalized face landmarks, the best gesture candidate,
 confidence, processing latency, 33 normalized pose landmarks, and up to 42
 normalized hand landmarks is sent over the loopback HTTP API. A separate raw
 grayscale mask is published to the daemon's internal video-mask channel for
-background and future final-output effects. The web UI renders the face, body,
-and each detected hand locally as toggleable skeleton overlays.
+background and future final-output effects. For the daemon MJPEG source, the
+worker preserves the source-derived sequential frame id and capture timestamp
+carried by each multipart frame so the daemon can pair the result with that
+exact camera frame. The source PTS remains internal to the daemon. The web UI
+renders the face, body, and each detected hand locally as toggleable skeleton
+overlays.
 
 While Depth map or depth-assisted background processing is active,
 `GET /api/v1/depth/frame` returns the latest raw field as row-major

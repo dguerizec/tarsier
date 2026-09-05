@@ -11,7 +11,7 @@ from collections.abc import Iterator
 from contextlib import ExitStack, suppress
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 import cv2
 import mediapipe as mp
@@ -294,6 +294,13 @@ class DetectionFrame:
     frame_bgr: np.ndarray
 
 
+@dataclass(frozen=True)
+class SourceFrame:
+    frame_id: int | None
+    captured_at_ms: int | None
+    frame_bgr: np.ndarray
+
+
 class ObservationProcessor:
     def __init__(
         self,
@@ -396,7 +403,52 @@ class ObservationProcessor:
         self.close()
 
 
-def capture_frames(source: str, width: int, height: int) -> Iterator[np.ndarray]:
+def read_mjpeg_parts(stream: BinaryIO) -> Iterator[tuple[dict[str, str], bytes]]:
+    while boundary := stream.readline():
+        if not boundary.strip().startswith(b"--"):
+            continue
+        headers: dict[str, str] = {}
+        while line := stream.readline():
+            if line in (b"\r\n", b"\n"):
+                break
+            name, separator, value = line.decode("ascii").partition(":")
+            if not separator:
+                raise RuntimeError("invalid MJPEG part header")
+            headers[name.strip().lower()] = value.strip()
+        try:
+            length = int(headers["content-length"])
+        except (KeyError, ValueError) as error:
+            raise RuntimeError("MJPEG part is missing a valid Content-Length") from error
+        body = stream.read(length)
+        if len(body) != length:
+            raise RuntimeError("MJPEG stream ended inside a frame")
+        yield headers, body
+
+
+def capture_mjpeg_frames(source: str, width: int, height: int) -> Iterator[SourceFrame]:
+    request = urllib.request.Request(source, headers={"Cache-Control": "no-store"})
+    try:
+        with urllib.request.urlopen(request, timeout=5.0) as response:  # noqa: S310
+            for headers, encoded in read_mjpeg_parts(response):
+                frame = cv2.imdecode(np.frombuffer(encoded, dtype=np.uint8), cv2.IMREAD_COLOR)
+                if frame is None:
+                    raise RuntimeError("failed to decode an MJPEG frame")
+                if frame.shape[:2] != (height, width):
+                    frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_LINEAR)
+                try:
+                    frame_id = int(headers["x-tarsier-frame-id"])
+                    captured_at_ms = int(headers["x-tarsier-captured-at-ms"])
+                except (KeyError, ValueError) as error:
+                    raise RuntimeError("MJPEG frame is missing Tarsier provenance") from error
+                yield SourceFrame(frame_id, captured_at_ms, frame)
+    except urllib.error.URLError as error:
+        raise RuntimeError(f"failed to read MJPEG source: {error.reason}") from error
+
+
+def capture_frames(source: str, width: int, height: int) -> Iterator[SourceFrame]:
+    if source.startswith(("http://", "https://")) and source.endswith(".mjpeg"):
+        yield from capture_mjpeg_frames(source, width, height)
+        return
     capture_source: int | str = int(source) if source.isdigit() else source
     is_live_source = source.isdigit() or source.startswith(("/dev/video", "http://", "https://"))
     if source.isdigit() or source.startswith("/dev/video"):
@@ -417,7 +469,7 @@ def capture_frames(source: str, width: int, height: int) -> Iterator[np.ndarray]
             ok, frame = capture.read()
             if not ok:
                 raise RuntimeError(f"failed to read a frame from {source}")
-            yield frame
+            yield SourceFrame(None, None, frame)
             if frame_interval > 0:
                 next_frame_at += frame_interval
                 time.sleep(max(0.0, next_frame_at - time.monotonic()))
@@ -501,7 +553,9 @@ def run_worker(
             if depth_enabled
             else None
         )
-        for frame_id, frame in enumerate(capture_frames(source, width, height), start=1):
+        for local_frame_id, source_frame in enumerate(
+            capture_frames(source, width, height), start=1
+        ):
             observation_processor.raise_if_failed()
             if avatar_processor is not None:
                 avatar_processor.raise_if_failed()
@@ -518,8 +572,16 @@ def run_worker(
             )
             if not mask_due and not observation_due and not avatar_due and not depth_due:
                 continue
+            frame = source_frame.frame_bgr
+            frame_id = (
+                source_frame.frame_id if source_frame.frame_id is not None else local_frame_id
+            )
             timestamp_ms = max(0, int((now - started_at) * 1000))
-            captured_at_ms = time.time_ns() // 1_000_000
+            captured_at_ms = (
+                source_frame.captured_at_ms
+                if source_frame.captured_at_ms is not None
+                else time.time_ns() // 1_000_000
+            )
             if observation_due:
                 next_observation_at = advance_deadline(
                     next_observation_at, now, observation_interval

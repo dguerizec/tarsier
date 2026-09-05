@@ -52,11 +52,12 @@ mischievous personality without tying its core to one camera vendor.
   stage; the **Background** switch enables one exclusive effect at a time:
   **Green screen** replaces the background with green, while **Blur** keeps the
   subject sharp and softens the background. Both affect the preview and virtual
-  camera using one-frame alignment and a narrow edge transition. When depth is
-  enabled, the worker combines MediaPipe's semantic person probability with
-  the local depth distribution to suppress background leaks at depth breaks;
-  a missing or stale mask fails closed to black until the effect is explicitly
-  disabled;
+  camera using exact source-PTS pairing and a narrow edge transition. When
+  depth is enabled, the worker combines MediaPipe's semantic person
+  probability with the local depth distribution to suppress background leaks
+  at depth breaks. The output branch waits for the mask generated from the
+  same camera frame; a missing or stale mask fails closed to black until the
+  effect is explicitly disabled;
 - an optional local avatar worker defaults to a cel-shaded procedural 3D head
   and bust driven by MediaPipe head pose and facial blendshapes; LivePortrait
   remains an alternate engine. Both publish complete BGRx scenes to the same

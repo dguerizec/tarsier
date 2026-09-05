@@ -1,6 +1,10 @@
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, AtomicU8, Ordering},
+use std::{
+    collections::VecDeque,
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicBool, AtomicU8, Ordering},
+    },
+    time::{Duration, Instant},
 };
 
 use anyhow::{Result, bail};
@@ -9,6 +13,8 @@ use tokio::sync::watch;
 use crate::model::{BackgroundEffect, VideoOutputMode, unix_ms};
 
 pub const MASK_MAX_AGE_MS: u64 = 200;
+const MASK_SYNC_WAIT_MS: u64 = 150;
+const MASK_BUFFER_CAPACITY: usize = 16;
 pub const AVATAR_MAX_AGE_MS: u64 = 500;
 pub const DEPTH_MAX_AGE_MS: u64 = 500;
 const MAX_MASK_PIXELS: usize = 1920 * 1080;
@@ -190,10 +196,16 @@ pub struct VideoEffects {
     output_mode: Arc<AtomicU8>,
     background_enabled: Arc<AtomicBool>,
     background_effect: Arc<AtomicU8>,
-    mask_tx: watch::Sender<Option<Arc<VideoMask>>>,
+    masks: Arc<(Mutex<MaskStore>, Condvar)>,
     avatar_tx: watch::Sender<Option<Arc<AvatarFrame>>>,
     depth_tx: watch::Sender<Option<Arc<DepthFrame>>>,
     scratch: Arc<Mutex<EffectScratch>>,
+}
+
+#[derive(Default)]
+struct MaskStore {
+    latest: Option<Arc<VideoMask>>,
+    pending: VecDeque<Arc<VideoMask>>,
 }
 
 #[derive(Default)]
@@ -204,14 +216,13 @@ struct EffectScratch {
 
 impl VideoEffects {
     pub fn new() -> Self {
-        let (mask_tx, _) = watch::channel(None);
         let (avatar_tx, _) = watch::channel(None);
         let (depth_tx, _) = watch::channel(None);
         Self {
             output_mode: Arc::new(AtomicU8::new(output_mode_code(VideoOutputMode::Camera))),
             background_enabled: Arc::new(AtomicBool::new(false)),
             background_effect: Arc::new(AtomicU8::new(effect_code(BackgroundEffect::GreenScreen))),
-            mask_tx,
+            masks: Arc::new((Mutex::new(MaskStore::default()), Condvar::new())),
             avatar_tx,
             depth_tx,
             scratch: Arc::new(Mutex::new(EffectScratch::default())),
@@ -255,15 +266,37 @@ impl VideoEffects {
     }
 
     pub fn publish_mask(&self, mask: VideoMask) {
-        self.mask_tx.send_replace(Some(Arc::new(mask)));
+        let mask = Arc::new(mask);
+        let (store, available) = &*self.masks;
+        let Ok(mut store) = store.lock() else {
+            return;
+        };
+        store.latest = Some(Arc::clone(&mask));
+        if let Some(index) = store
+            .pending
+            .iter()
+            .position(|candidate| candidate.frame_id == mask.frame_id)
+        {
+            store.pending[index] = mask;
+        } else {
+            store.pending.push_back(mask);
+            while store.pending.len() > MASK_BUFFER_CAPACITY {
+                store.pending.pop_front();
+            }
+        }
+        available.notify_all();
     }
 
     pub fn latest_mask(&self) -> Option<Arc<VideoMask>> {
-        self.mask_tx.borrow().clone()
+        self.masks.0.lock().ok()?.latest.clone()
     }
 
     pub fn clear_mask(&self) {
-        self.mask_tx.send_replace(None);
+        let (store, available) = &*self.masks;
+        if let Ok(mut store) = store.lock() {
+            *store = MaskStore::default();
+            available.notify_all();
+        }
     }
 
     pub fn publish_avatar(&self, frame: AvatarFrame) {
@@ -290,9 +323,23 @@ impl VideoEffects {
         self.depth_tx.send_replace(None);
     }
 
+    #[cfg(test)]
     pub fn apply_output(&self, frame: &mut [u8], width: u32, height: u32, now_ms: u64) -> bool {
+        self.apply_output_for_frame(frame, width, height, now_ms, None)
+    }
+
+    pub fn apply_output_for_frame(
+        &self,
+        frame: &mut [u8],
+        width: u32,
+        height: u32,
+        now_ms: u64,
+        frame_id: Option<u64>,
+    ) -> bool {
         match self.output_mode() {
-            VideoOutputMode::Camera => self.apply_background(frame, width, height, now_ms),
+            VideoOutputMode::Camera => {
+                self.apply_background_for_frame(frame, width, height, now_ms, frame_id)
+            }
             VideoOutputMode::ComicAvatar => {
                 let expected_len = avatar_frame_len(width, height).ok();
                 let avatar = self.latest_avatar().filter(|avatar| {
@@ -320,7 +367,19 @@ impl VideoEffects {
         }
     }
 
+    #[cfg(test)]
     pub fn apply_background(&self, frame: &mut [u8], width: u32, height: u32, now_ms: u64) -> bool {
+        self.apply_background_for_frame(frame, width, height, now_ms, None)
+    }
+
+    fn apply_background_for_frame(
+        &self,
+        frame: &mut [u8],
+        width: u32,
+        height: u32,
+        now_ms: u64,
+        frame_id: Option<u64>,
+    ) -> bool {
         if !self.background_enabled() {
             return false;
         }
@@ -346,7 +405,11 @@ impl VideoEffects {
             frame.fill(0);
             return true;
         }
-        let Some(mask) = self.latest_mask().filter(|mask| mask.is_fresh(now_ms)) else {
+        let mask = match frame_id {
+            Some(frame_id) => self.wait_for_mask(frame_id),
+            None => self.latest_mask().filter(|mask| mask.is_fresh(now_ms)),
+        };
+        let Some(mask) = mask else {
             frame[..expected_len].fill(0);
             return true;
         };
@@ -366,6 +429,32 @@ impl VideoEffects {
             }
         }
         true
+    }
+
+    fn wait_for_mask(&self, frame_id: u64) -> Option<Arc<VideoMask>> {
+        let deadline = Instant::now() + Duration::from_millis(MASK_SYNC_WAIT_MS);
+        let (store, available) = &*self.masks;
+        let mut store = store.lock().ok()?;
+        loop {
+            let now_ms = unix_ms();
+            store.pending.retain(|mask| mask.is_fresh(now_ms));
+            if let Some(index) = store
+                .pending
+                .iter()
+                .position(|mask| mask.frame_id == frame_id)
+            {
+                return store.pending.remove(index);
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return None;
+            }
+            let (next_store, result) = available.wait_timeout(store, remaining).ok()?;
+            store = next_store;
+            if result.timed_out() {
+                return None;
+            }
+        }
     }
 }
 
@@ -751,6 +840,19 @@ mod tests {
                 0, 255, 0, 255, 0, 255, 0, 255, 70, 80, 90, 255, 100, 110, 120, 255,
             ]
         );
+    }
+
+    #[test]
+    fn green_screen_pairs_a_camera_frame_with_its_exact_mask() {
+        let effects = VideoEffects::new();
+        effects.set_green_screen_enabled(true);
+        let captured_at_ms = unix_ms();
+        effects.publish_mask(VideoMask::new(10, captured_at_ms, 2, 1, vec![255, 0]).unwrap());
+        effects.publish_mask(VideoMask::new(20, captured_at_ms, 2, 1, vec![0, 255]).unwrap());
+        let mut frame = [10, 20, 30, 255, 40, 50, 60, 255];
+
+        assert!(effects.apply_output_for_frame(&mut frame, 2, 1, captured_at_ms, Some(10),));
+        assert_eq!(frame, [10, 20, 30, 255, 0, 255, 0, 255]);
     }
 
     #[test]
