@@ -20,11 +20,13 @@ let zoomDraft = null;
 let zoomPending = false;
 let queuedZoom = null;
 let zoomSendTimer = null;
-let nudgePending = false;
-let nudgeRepeatTimer = null;
+let panTiltPending = false;
+let panTiltSyncQueued = false;
+let panTiltKeepaliveTimer = null;
 let heldDirections = [];
 const pendingGestureFeatures = new Set();
 const zoomUpdateIntervalMs = 100;
+const panTiltKeepaliveIntervalMs = 100;
 
 const builtInGestureControls = [
   { feature: "target-selection", key: "target_selection", state: "#gesture-target-selection-state" },
@@ -207,9 +209,9 @@ function renderPanTilt(camera) {
     button.disabled = !camera.available;
     button.setAttribute("aria-pressed", String(heldDirections.includes(button.dataset.panTilt)));
   }
-  $("#pan-tilt-status").textContent = nudgePending && direction
+  $("#pan-tilt-status").textContent = direction
     ? `Moving ${direction}`
-    : "Hold a button or use the arrow keys";
+    : panTiltPending ? "Stopping…" : "Hold a button or use the arrow keys";
 }
 
 function render(next) {
@@ -325,54 +327,72 @@ document.querySelectorAll("[data-action]").forEach((button) => {
 });
 
 function clearHeldDirections() {
+  const previous = activeDirection();
   heldDirections = [];
-  if (nudgeRepeatTimer != null) {
-    clearTimeout(nudgeRepeatTimer);
-    nudgeRepeatTimer = null;
-  }
+  updatePanTiltKeepalive();
   if (state) render(state);
+  if (previous != null) void syncPanTiltMotion();
 }
 
 function holdDirection(direction) {
+  const previous = activeDirection();
   heldDirections = heldDirections.filter((held) => held !== direction);
   heldDirections.push(direction);
+  updatePanTiltKeepalive();
   if (state) render(state);
-  sendNudge();
+  if (previous !== direction) void syncPanTiltMotion();
 }
 
 function releaseDirection(direction) {
+  const previous = activeDirection();
   heldDirections = heldDirections.filter((held) => held !== direction);
-  if (heldDirections.length === 0 && nudgeRepeatTimer != null) {
-    clearTimeout(nudgeRepeatTimer);
-    nudgeRepeatTimer = null;
-  }
+  updatePanTiltKeepalive();
   if (state) render(state);
+  if (previous !== activeDirection()) void syncPanTiltMotion();
 }
 
-async function sendNudge() {
+function updatePanTiltKeepalive() {
+  if (activeDirection() != null && panTiltKeepaliveTimer == null) {
+    panTiltKeepaliveTimer = setInterval(() => void syncPanTiltMotion(), panTiltKeepaliveIntervalMs);
+  } else if (activeDirection() == null && panTiltKeepaliveTimer != null) {
+    clearInterval(panTiltKeepaliveTimer);
+    panTiltKeepaliveTimer = null;
+  }
+}
+
+async function syncPanTiltMotion() {
+  if (!state?.camera.available) return;
+  if (panTiltPending) {
+    panTiltSyncQueued = true;
+    return;
+  }
+
   const direction = activeDirection();
-  if (nudgePending || direction == null || !state?.camera.available) return;
-  nudgePending = true;
+  panTiltPending = true;
+  panTiltSyncQueued = false;
   cameraControlError = null;
   if (state) render(state);
+  let failed = false;
   try {
-    const response = await fetch(`/api/v1/camera/nudge/${direction}`, { method: "POST" });
+    const response = await fetch(`/api/v1/camera/nudge/${direction ?? "stop"}`, {
+      method: "POST",
+      keepalive: direction == null,
+    });
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}));
       throw new Error(payload.error || `Camera command failed (${response.status})`);
     }
   } catch (error) {
+    failed = true;
     cameraControlError = error instanceof Error ? error.message : String(error);
-    clearHeldDirections();
+    heldDirections = [];
+    updatePanTiltKeepalive();
   } finally {
-    nudgePending = false;
-    if (activeDirection() != null) {
-      nudgeRepeatTimer = setTimeout(() => {
-        nudgeRepeatTimer = null;
-        sendNudge();
-      }, 40);
-    }
+    panTiltPending = false;
+    const shouldResync = !failed && (panTiltSyncQueued || activeDirection() !== direction);
+    panTiltSyncQueued = false;
     if (state) render(state);
+    if (shouldResync) void syncPanTiltMotion();
   }
 }
 
@@ -424,6 +444,7 @@ document.addEventListener("keyup", (event) => {
 });
 
 window.addEventListener("blur", clearHeldDirections);
+window.addEventListener("pagehide", clearHeldDirections);
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) clearHeldDirections();
 });
