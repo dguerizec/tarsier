@@ -68,6 +68,7 @@ pub struct AiGestureStatus {
 pub struct CameraStatus {
     pub tracking: Option<bool>,
     pub zoom_percent: Option<u8>,
+    pub hdr: Option<bool>,
 }
 
 pub fn build_frame(
@@ -200,6 +201,14 @@ pub fn tracking_payload(enabled: bool) -> [u8; FRAME_SIZE] {
     payload
 }
 
+pub fn hdr_payload(enabled: bool) -> [u8; FRAME_SIZE] {
+    let mut payload = [0_u8; FRAME_SIZE];
+    payload[0] = 0x01;
+    payload[1] = 0x01;
+    payload[2] = u8::from(enabled);
+    payload
+}
+
 pub fn decode_ai_gimbal_state(payload: &[u8]) -> Result<AiGimbalState, FrameError> {
     if payload.len() < 18 {
         return Err(FrameError::TooShort(payload.len()));
@@ -237,6 +246,7 @@ pub fn decode_ai_gesture_status(payload: &[u8]) -> Result<AiGestureStatus, Frame
 
 pub fn decode_camera_status(block: &[u8]) -> Result<CameraStatus, FrameError> {
     const ZOOM_PERCENT_OFFSET: usize = 0x04;
+    const HDR_OFFSET: usize = 0x06;
     const AI_MODE_OFFSET: usize = 0x18;
     const AI_SUB_MODE_OFFSET: usize = 0x1c;
     if block.len() <= AI_SUB_MODE_OFFSET {
@@ -248,10 +258,17 @@ pub fn decode_camera_status(block: &[u8]) -> Result<CameraStatus, FrameError> {
         (1 | 3 | 4 | 5, 0) | (2, 0..=4) => Some(true),
         _ => None,
     };
-    let zoom_percent = (block[ZOOM_PERCENT_OFFSET] <= 100).then_some(block[ZOOM_PERCENT_OFFSET]);
+    let zoom_percent =
+        u16::from_le_bytes([block[ZOOM_PERCENT_OFFSET], block[ZOOM_PERCENT_OFFSET + 1]]);
+    let flag = |offset| match block[offset] {
+        0 => Some(false),
+        1 => Some(true),
+        _ => None,
+    };
     Ok(CameraStatus {
         tracking,
-        zoom_percent,
+        zoom_percent: (zoom_percent <= 100).then_some(zoom_percent as u8),
+        hdr: flag(HDR_OFFSET),
     })
 }
 
@@ -388,47 +405,59 @@ mod tests {
     }
 
     #[test]
-    fn decodes_tracking_and_zoom_from_selector_six_status() {
-        let status = |mode, sub_mode, zoom_percent| {
+    fn encodes_hdr_as_libdev_selector_six_payload() {
+        assert_eq!(&hdr_payload(false)[..3], &[0x01, 0x01, 0x00]);
+        assert_eq!(&hdr_payload(true)[..3], &[0x01, 0x01, 0x01]);
+    }
+
+    #[test]
+    fn decodes_tracking_zoom_and_hdr_from_selector_six_status() {
+        let status = |mode, sub_mode, zoom_percent: u16, hdr| {
             let mut block = [0_u8; FRAME_SIZE];
-            block[0x04] = zoom_percent;
+            block[0x04..0x06].copy_from_slice(&zoom_percent.to_le_bytes());
+            block[0x06] = hdr;
             block[0x18] = mode;
             block[0x1c] = sub_mode;
             block
         };
         assert_eq!(
-            decode_camera_status(&status(0, 0, 0)).unwrap(),
+            decode_camera_status(&status(0, 0, 0_u16, 0)).unwrap(),
             CameraStatus {
                 tracking: Some(false),
                 zoom_percent: Some(0),
+                hdr: Some(false),
             }
         );
         assert_eq!(
-            decode_camera_status(&status(2, 0, 50)).unwrap(),
+            decode_camera_status(&status(2, 0, 50_u16, 1)).unwrap(),
             CameraStatus {
                 tracking: Some(true),
                 zoom_percent: Some(50),
+                hdr: Some(true),
             }
         );
         assert_eq!(
-            decode_camera_status(&status(2, 4, 100)).unwrap(),
+            decode_camera_status(&status(2, 4, 100_u16, 0)).unwrap(),
             CameraStatus {
                 tracking: Some(true),
                 zoom_percent: Some(100),
+                hdr: Some(false),
             }
         );
         assert_eq!(
-            decode_camera_status(&status(6, 0, 101)).unwrap(),
+            decode_camera_status(&status(6, 0, 101_u16, 2)).unwrap(),
             CameraStatus {
                 tracking: None,
                 zoom_percent: None,
+                hdr: None,
             }
         );
         assert_eq!(
-            decode_camera_status(&status(2, 9, 25)).unwrap(),
+            decode_camera_status(&status(2, 9, 25_u16, 1)).unwrap(),
             CameraStatus {
                 tracking: None,
                 zoom_percent: Some(25),
+                hdr: Some(true),
             }
         );
     }

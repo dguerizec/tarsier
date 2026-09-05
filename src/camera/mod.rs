@@ -24,6 +24,7 @@ const COMMAND_QUEUE_CAPACITY: usize = 32;
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(1);
 const GESTURE_STATUS_MINIMUM_INTERVAL: Duration = Duration::from_secs(5);
 const TELEMETRY_MAXIMUM_BACKOFF: Duration = Duration::from_secs(60);
+const HDR_SWITCH_MINIMUM_INTERVAL: Duration = Duration::from_secs(3);
 const NUDGE_SPEED_FRACTION: f64 = 0.25;
 pub const PAN_TILT_LEASE: Duration = Duration::from_millis(350);
 
@@ -36,6 +37,9 @@ enum Command {
     },
     Recenter,
     Tracking {
+        enabled: bool,
+    },
+    Hdr {
         enabled: bool,
     },
     BuiltInGesture {
@@ -192,6 +196,10 @@ impl CameraHandle {
             .map(|_| ())
     }
 
+    pub async fn set_hdr(&self, enabled: bool) -> Result<()> {
+        self.request(Command::Hdr { enabled }).await
+    }
+
     pub async fn set_built_in_gesture(&self, feature: BuiltInGesture, enabled: bool) -> Result<()> {
         self.request(Command::BuiltInGesture { feature, enabled })
             .await
@@ -241,6 +249,7 @@ pub async fn start(config: CameraConfig, runtime: Runtime) -> Result<Option<Came
         CameraAdapter::Disabled => Ok(None),
         CameraAdapter::Mock => {
             let handle = spawn_mock(&config);
+            let now = unix_ms();
             runtime
                 .update(|state| {
                     state.camera.available = true;
@@ -248,8 +257,10 @@ pub async fn start(config: CameraConfig, runtime: Runtime) -> Result<Option<Came
                     state.camera.pitch_degrees = Some(0.0);
                     state.camera.roll_degrees = Some(0.0);
                     state.camera.zoom_magnification = Some(1.0);
+                    state.camera.hdr = Some(false);
+                    state.camera.hdr_sample_at_ms = Some(now);
                     state.camera.attitude_source = CameraAttitudeSource::Simulated;
-                    state.camera.sample_at_ms = Some(unix_ms());
+                    state.camera.sample_at_ms = Some(now);
                 })
                 .await;
             Ok(Some(handle))
@@ -326,6 +337,8 @@ struct Worker<T> {
     last_io: Option<Instant>,
     pan_tilt_direction: (i8, i8),
     pan_tilt_deadline: Option<Instant>,
+    hdr_state: Option<bool>,
+    last_hdr_switch: Option<Instant>,
     telemetry: Option<TelemetryPoller>,
 }
 
@@ -339,6 +352,8 @@ impl<T: XuTransport> Worker<T> {
             last_io: None,
             pan_tilt_direction: (0, 0),
             pan_tilt_deadline: None,
+            hdr_state: None,
+            last_hdr_switch: None,
             telemetry: None,
         }
     }
@@ -395,6 +410,7 @@ impl<T: XuTransport> Worker<T> {
                 let mut payload = protocol::tracking_payload(enabled);
                 self.set(TRACKING_SELECTOR, &mut payload)
             }
+            Command::Hdr { enabled } => self.set_hdr(enabled),
             Command::BuiltInGesture { feature, enabled } => {
                 self.wake()?;
                 let mut frame =
@@ -442,6 +458,26 @@ impl<T: XuTransport> Worker<T> {
         self.last_io = Some(Instant::now());
         self.pan_tilt_direction = direction;
         self.pan_tilt_deadline = (direction != (0, 0)).then(|| Instant::now() + PAN_TILT_LEASE);
+        Ok(())
+    }
+
+    fn set_hdr(&mut self, enabled: bool) -> Result<()> {
+        if self.hdr_state == Some(enabled) {
+            return Ok(());
+        }
+        if let Some(remaining) = self
+            .last_hdr_switch
+            .and_then(|last_switch| HDR_SWITCH_MINIMUM_INTERVAL.checked_sub(last_switch.elapsed()))
+        {
+            bail!(
+                "HDR must not be switched again for another {:.1} seconds",
+                remaining.as_secs_f32()
+            );
+        }
+        let mut payload = protocol::hdr_payload(enabled);
+        self.set(TRACKING_SELECTOR, &mut payload)?;
+        self.hdr_state = Some(enabled);
+        self.last_hdr_switch = Some(Instant::now());
         Ok(())
     }
 
@@ -537,7 +573,11 @@ impl<T: XuTransport> Worker<T> {
     fn query_status(&mut self) -> Result<CameraStatus> {
         let mut status = [0_u8; FRAME_SIZE];
         self.get(TRACKING_SELECTOR, &mut status)?;
-        Ok(protocol::decode_camera_status(&status)?)
+        let status = protocol::decode_camera_status(&status)?;
+        if status.hdr.is_some() {
+            self.hdr_state = status.hdr;
+        }
+        Ok(status)
     }
 
     fn set(&mut self, selector: u8, data: &mut [u8]) -> Result<()> {
@@ -579,6 +619,7 @@ fn spawn_mock(config: &CameraConfig) -> CameraHandle {
                     Command::Move { .. }
                     | Command::Recenter
                     | Command::Tracking { .. }
+                    | Command::Hdr { .. }
                     | Command::BuiltInGesture { .. }
                     | Command::Zoom { .. }
                     | Command::PanTiltSpeed { .. } => Ok(()),
@@ -696,6 +737,7 @@ fn spawn_telemetry_updates(
                         .update(|state| {
                             state.camera.tracking_error = None;
                             state.camera.zoom_error = None;
+                            state.camera.hdr_error = None;
                             if let Some(tracking) = status.tracking {
                                 state.camera.tracking = Some(tracking);
                                 state.camera.tracking_sample_at_ms = Some(unix_ms());
@@ -704,6 +746,10 @@ fn spawn_telemetry_updates(
                                 state.camera.zoom_magnification =
                                     Some(magnification_from_zoom_percent(zoom_percent));
                                 state.camera.zoom_sample_at_ms = Some(unix_ms());
+                            }
+                            if let Some(hdr) = status.hdr {
+                                state.camera.hdr = Some(hdr);
+                                state.camera.hdr_sample_at_ms = Some(unix_ms());
                             }
                         })
                         .await;
@@ -727,7 +773,8 @@ fn spawn_telemetry_updates(
                             }
                             TelemetryKind::Status => {
                                 state.camera.tracking_error = Some(error.clone());
-                                state.camera.zoom_error = Some(error);
+                                state.camera.zoom_error = Some(error.clone());
+                                state.camera.hdr_error = Some(error);
                             }
                         })
                         .await;
@@ -770,6 +817,7 @@ mod tests {
         fn get(&mut self, selector: u8, data: &mut [u8]) -> Result<()> {
             assert_eq!(selector, TRACKING_SELECTOR);
             data[0x04] = 23;
+            data[0x06] = 1;
             data[0x18] = 2;
             data[0x1c] = 0;
             Ok(())
@@ -923,10 +971,30 @@ mod tests {
         let status = worker.query_status().unwrap();
         assert_eq!(status.tracking, Some(true));
         assert_eq!(status.zoom_percent, Some(23));
+        assert_eq!(status.hdr, Some(true));
         assert_eq!(
             magnification_from_zoom_percent(status.zoom_percent.unwrap()),
             1.69
         );
+    }
+
+    #[test]
+    fn hdr_uses_selector_six_and_enforces_the_sdk_switch_interval() {
+        let (_tx, rx) = sync_channel(1);
+        let mut worker = Worker::new(RecordingTransport::default(), rx, Duration::ZERO);
+
+        worker.set_hdr(true).unwrap();
+        assert_eq!(worker.transport.writes.len(), 1);
+        assert_eq!(worker.transport.writes[0].0, TRACKING_SELECTOR);
+        assert_eq!(&worker.transport.writes[0].1[..3], &[0x01, 0x01, 0x01]);
+
+        worker.set_hdr(true).unwrap();
+        assert_eq!(worker.transport.writes.len(), 1);
+        assert!(worker.set_hdr(false).is_err());
+
+        worker.last_hdr_switch = Some(Instant::now() - HDR_SWITCH_MINIMUM_INTERVAL);
+        worker.set_hdr(false).unwrap();
+        assert_eq!(&worker.transport.writes[1].1[..3], &[0x01, 0x01, 0x00]);
     }
 
     #[test]

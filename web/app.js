@@ -7,6 +7,7 @@ const overlayContext = overlay.getContext("2d");
 const skeletonToggle = $("#skeleton-toggle");
 const zoomSlider = $("#zoom-slider");
 const zoomReset = $("#zoom-reset");
+const hdrToggle = $("#hdr-toggle");
 const panTiltButtons = [...document.querySelectorAll("[data-pan-tilt]")];
 let state = null;
 let skeletonEnabled = localStorage.getItem("tarsier.handSkeleton") === "true";
@@ -20,6 +21,7 @@ let zoomDraft = null;
 let zoomPending = false;
 let queuedZoom = null;
 let zoomSendTimer = null;
+let hdrPending = false;
 let panTiltPending = false;
 let panTiltSyncQueued = false;
 let panTiltKeepaliveTimer = null;
@@ -208,6 +210,17 @@ function renderZoom(camera) {
     : `Camera readback ${age(camera.zoom_sample_at_ms)}.`;
 }
 
+function renderHdr(camera) {
+  hdrToggle.textContent = hdrPending
+    ? "HDR · Applying…"
+    : camera.hdr == null ? "HDR · Unknown" : `HDR · ${camera.hdr ? "On" : "Off"}`;
+  hdrToggle.setAttribute("aria-pressed", String(camera.hdr === true));
+  hdrToggle.disabled = !camera.available || hdrPending || camera.hdr == null;
+  hdrToggle.title = camera.hdr_sample_at_ms == null
+    ? "Awaiting camera readback"
+    : `Camera readback ${age(camera.hdr_sample_at_ms)}`;
+}
+
 function activeDirection() {
   return heldDirections.at(-1) ?? null;
 }
@@ -248,6 +261,7 @@ function render(next) {
     ? attitudeLabel(camera.attitude_source)
     : `${attitudeLabel(camera.attitude_source)} · ${age(camera.sample_at_ms)}`;
   renderZoom(camera);
+  renderHdr(camera);
   renderPanTilt(camera);
   renderBuiltInGestures(camera);
   $("#pipeline-summary").textContent = pipeline.running
@@ -266,6 +280,7 @@ function render(next) {
     camera.telemetry_error,
     camera.tracking_error,
     camera.zoom_error,
+    camera.hdr_error,
     camera.built_in_gestures?.error,
   ].filter(Boolean).join(" · ");
   $("#camera-error").hidden = !cameraError;
@@ -500,6 +515,30 @@ document.querySelectorAll("[data-gesture-feature]").forEach((button) => {
       if (state) render(state);
     }
   });
+});
+
+hdrToggle.addEventListener("click", async () => {
+  if (state?.camera.hdr == null || hdrPending) return;
+  const enabled = !state.camera.hdr;
+  hdrPending = true;
+  cameraControlError = null;
+  render(state);
+  try {
+    const response = await fetch("/api/v1/camera/hdr", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.error || `Camera command failed (${response.status})`);
+    }
+  } catch (error) {
+    cameraControlError = error instanceof Error ? error.message : String(error);
+  } finally {
+    hdrPending = false;
+    if (state) render(state);
+  }
 });
 
 function scheduleZoom() {

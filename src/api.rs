@@ -68,6 +68,7 @@ pub fn router(
         .route("/api/v1/camera/move", post(move_camera))
         .route("/api/v1/camera/nudge/{direction}", post(nudge_camera))
         .route("/api/v1/camera/zoom", post(set_zoom))
+        .route("/api/v1/camera/hdr", post(set_hdr))
         .route("/api/v1/camera/tracking", post(set_tracking))
         .route(
             "/api/v1/camera/built-in-gestures/{feature}",
@@ -163,6 +164,11 @@ struct MoveCameraRequest {
 
 #[derive(Deserialize)]
 struct TrackingRequest {
+    enabled: bool,
+}
+
+#[derive(Deserialize)]
+struct HdrRequest {
     enabled: bool,
 }
 
@@ -314,6 +320,27 @@ async fn set_tracking(
     Json(request): Json<TrackingRequest>,
 ) -> Response {
     set_tracking_inner(&state, request.enabled).await
+}
+
+async fn set_hdr(State(state): State<ApiState>, Json(request): Json<HdrRequest>) -> Response {
+    let Some(camera) = state.camera.clone() else {
+        return camera_unavailable();
+    };
+    match camera.set_hdr(request.enabled).await {
+        Ok(()) => {
+            state
+                .runtime
+                .update(|runtime| {
+                    runtime.camera.hdr = Some(request.enabled);
+                    runtime.camera.hdr_sample_at_ms = None;
+                    runtime.camera.hdr_error = None;
+                })
+                .await;
+            record_camera_command(&state, "camera.hdr", json!({"enabled": request.enabled})).await;
+            StatusCode::ACCEPTED.into_response()
+        }
+        Err(error) => command_error(error),
+    }
 }
 
 async fn set_built_in_gesture(
@@ -994,6 +1021,43 @@ mod tests {
         let events = runtime.recent_events().await;
         assert_eq!(events[0].kind, "camera.zoom");
         assert!((events[0].data["magnification"].as_f64().unwrap() - 3.4).abs() < 1e-6);
+    }
+
+    #[tokio::test]
+    async fn hdr_control_updates_state_and_emits_an_event() {
+        let mut config = Config::default();
+        config.camera.adapter = CameraAdapter::Mock;
+        config.perception.enabled = false;
+        let runtime = Runtime::new();
+        let camera = camera::start(config.camera.clone(), runtime.clone())
+            .await
+            .unwrap();
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = router(
+            config,
+            runtime.clone(),
+            PreviewHub::new(),
+            camera,
+            shutdown_rx,
+        );
+
+        let response = app
+            .oneshot(
+                Request::post("/api/v1/camera/hdr")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"enabled":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let state = runtime.state().await;
+        assert_eq!(state.camera.hdr, Some(true));
+        assert_eq!(state.camera.hdr_sample_at_ms, None);
+        let events = runtime.recent_events().await;
+        assert_eq!(events[0].kind, "camera.hdr");
+        assert_eq!(events[0].data["enabled"], true);
     }
 
     #[tokio::test]
