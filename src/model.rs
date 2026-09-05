@@ -150,6 +150,19 @@ pub struct FaceTrackingState {
     pub target_y: Option<f32>,
     #[serde(default)]
     pub speed_fraction: f32,
+    #[serde(default)]
+    pub auto_zoom: AutoZoomState,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct AutoZoomState {
+    pub enabled: bool,
+    pub calibrated: bool,
+    pub zoom_magnification: Option<f32>,
+    pub target_face_size: Option<f32>,
+    pub face_size: Option<f32>,
+    pub at_limit: bool,
     pub error: Option<String>,
 }
 

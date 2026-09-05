@@ -17,6 +17,7 @@ const cameraPowerToggle = $("#camera-power-toggle");
 const faceTrackingToggle = $("#face-tracking-toggle");
 const zoomSlider = $("#zoom-slider");
 const zoomReset = $("#zoom-reset");
+const autoZoomToggle = $("#auto-zoom-toggle");
 const panTiltButtons = [...document.querySelectorAll("[data-pan-tilt]")];
 let state = null;
 let skeletonEnabled = (
@@ -38,6 +39,8 @@ let zoomDraft = null;
 let zoomPending = false;
 let queuedZoom = null;
 let zoomSendTimer = null;
+let autoZoomPending = false;
+let autoZoomDraft = null;
 let hdrPending = false;
 let trackingPending = false;
 let faceTrackingPending = false;
@@ -322,7 +325,10 @@ function renderBuiltInGestures(camera) {
 }
 
 function renderZoom(camera) {
-  const current = camera.zoom_magnification ?? null;
+  const faceTracking = camera.face_tracking || {};
+  const autoZoom = faceTracking.auto_zoom || {};
+  const current = (autoZoom.enabled ? autoZoom.zoom_magnification : null)
+    ?? camera.zoom_magnification ?? null;
   if (zoomDraft == null && current != null) zoomSlider.value = String(current);
   const displayed = zoomDraft ?? current;
   $("#zoom-value").textContent = zoomPending
@@ -330,6 +336,18 @@ function renderZoom(camera) {
     : displayed == null ? "Unknown" : magnification(displayed);
   zoomSlider.disabled = !cameraControlsAvailable(camera);
   zoomReset.disabled = !cameraControlsAvailable(camera) || zoomPending;
+  autoZoomToggle.checked = autoZoomDraft ?? autoZoom.enabled === true;
+  autoZoomToggle.disabled = !cameraControlsAvailable(camera) || !faceTracking.enabled
+    || autoZoomPending || faceTrackingPending;
+  $("#auto-zoom-readback").textContent = autoZoomPending
+    ? "Switching auto zoom…"
+    : autoZoom.error ? `Auto zoom failed: ${autoZoom.error}.`
+    : !faceTracking.enabled ? "Auto zoom needs face tracking."
+    : !autoZoom.enabled ? "Auto zoom is off."
+    : !autoZoom.calibrated ? "Auto zoom is waiting for a fresh face."
+    : autoZoom.face_size == null ? "Auto zoom is waiting for the face to return."
+    : autoZoom.at_limit ? "Auto zoom reached the lens limit."
+    : "Auto zoom is holding the calibrated face size.";
   $("#zoom-readback").textContent = camera.zoom_sample_at_ms == null
     ? "Awaiting camera readback."
     : `Camera readback ${age(camera.zoom_sample_at_ms)}.`;
@@ -538,6 +556,7 @@ function render(next) {
     camera.telemetry_error,
     camera.tracking_error,
     camera.face_tracking?.error,
+    camera.face_tracking?.auto_zoom?.error,
     camera.zoom_error,
     camera.hdr_error,
     camera.built_in_gestures?.error,
@@ -1054,6 +1073,34 @@ zoomReset.addEventListener("click", () => {
   queuedZoom = 1;
   if (state) render(state);
   scheduleZoom();
+});
+
+autoZoomToggle.addEventListener("change", async () => {
+  if (autoZoomPending || !state || !cameraControlsAvailable(state.camera)
+    || !state.camera.face_tracking?.enabled) return;
+  const enabled = autoZoomToggle.checked;
+  autoZoomPending = true;
+  autoZoomDraft = enabled;
+  cameraControlError = null;
+  render(state);
+  try {
+    const response = await fetch("/api/v1/camera/auto-zoom", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.error || `Auto zoom change failed (${response.status})`);
+    }
+    state.camera.face_tracking.auto_zoom = { enabled };
+  } catch (error) {
+    cameraControlError = error instanceof Error ? error.message : String(error);
+  } finally {
+    autoZoomPending = false;
+    autoZoomDraft = null;
+    if (state) render(state);
+  }
 });
 
 setInterval(() => state && render(state), 500);

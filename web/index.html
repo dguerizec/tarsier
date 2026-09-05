@@ -49,7 +49,14 @@
             <span id="pan-tilt-status">Hold a button or use the arrow keys</span>
           </div>
           <div class="pan-tilt-controls">
-            <button id="face-tracking-toggle" class="secondary compact" type="button" aria-pressed="false">Face tracking</button>
+            <div class="face-tracking-controls">
+              <button id="face-tracking-toggle" class="secondary compact" type="button" aria-pressed="false">Face tracking</button>
+              <label class="toggle-switch tracking-auto-zoom-switch" for="auto-zoom-toggle">
+                <strong>Auto zoom</strong>
+                <input id="auto-zoom-toggle" type="checkbox" role="switch" disabled>
+                <span class="switch-track" aria-hidden="true"></span>
+              </label>
+            </div>
             <div class="direction-pad" role="group" aria-label="Pan and tilt camera">
               <button class="secondary direction-up" type="button" data-pan-tilt="up" aria-label="Tilt up" title="Tilt up · Arrow Up">↑</button>
               <button class="secondary direction-left" type="button" data-pan-tilt="left" aria-label="Pan left" title="Pan left · Arrow Left">←</button>
@@ -177,7 +184,7 @@
         </div>
         <div class="camera-subsection manual-zoom">
           <div class="subsection-title">
-            <h3>Manual zoom</h3>
+            <h3>Zoom</h3>
             <output id="zoom-value" for="zoom-slider">Unknown</output>
           </div>
           <div class="zoom-control">
@@ -185,7 +192,7 @@
             <button id="zoom-reset" class="secondary compact" type="button" disabled>Reset ×1</button>
           </div>
           <div class="zoom-scale" aria-hidden="true"><span>×1</span><span>×4</span></div>
-          <p id="zoom-help" class="control-hint">Updates continuously while you drag. <span id="zoom-readback">Awaiting camera readback.</span></p>
+          <p id="zoom-help" class="control-hint">Manual changes become the new framing while auto zoom is on. <span id="auto-zoom-readback">Auto zoom needs face tracking.</span> <span id="zoom-readback">Awaiting camera readback.</span></p>
         </div>
         <div class="camera-subsection">
           <div class="subsection-title">

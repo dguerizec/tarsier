@@ -129,6 +129,11 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
                 state.camera.tracking = Some(false);
                 state.camera.face_tracking = model::FaceTrackingState {
                     enabled: true,
+                    auto_zoom: model::AutoZoomState {
+                        enabled: user_settings.auto_zoom_enabled,
+                        zoom_magnification: camera.controlled_zoom_magnification(),
+                        ..model::AutoZoomState::default()
+                    },
                     ..model::FaceTrackingState::default()
                 };
             })
@@ -154,6 +159,7 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
             daemon_restart,
             user_settings: Some(settings_store),
             face_tracking_enabled,
+            auto_zoom_enabled: face_tracking_enabled && user_settings.auto_zoom_enabled,
         },
         shutdown_rx,
     );

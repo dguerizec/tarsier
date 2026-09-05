@@ -26,6 +26,8 @@ pub struct UserSettings {
     pub background_enabled: bool,
     pub background_effect: BackgroundEffect,
     pub face_tracking_enabled: bool,
+    #[serde(default)]
+    pub auto_zoom_enabled: bool,
 }
 
 impl UserSettings {
@@ -36,6 +38,7 @@ impl UserSettings {
             background_enabled: config.video.background_enabled,
             background_effect: config.video.background_effect,
             face_tracking_enabled: false,
+            auto_zoom_enabled: false,
         }
     }
 
@@ -61,6 +64,9 @@ impl UserSettings {
                 "unsupported user settings version {}, expected {SETTINGS_VERSION}",
                 self.version
             );
+        }
+        if self.auto_zoom_enabled && !self.face_tracking_enabled {
+            bail!("auto zoom cannot be restored without face tracking");
         }
         Ok(self)
     }
@@ -126,7 +132,17 @@ impl UserSettingsStore {
     }
 
     pub async fn set_face_tracking(&self, enabled: bool) -> Result<()> {
-        self.replace(|settings| settings.face_tracking_enabled = enabled)
+        self.replace(|settings| {
+            settings.face_tracking_enabled = enabled;
+            if !enabled {
+                settings.auto_zoom_enabled = false;
+            }
+        })
+        .await
+    }
+
+    pub async fn set_auto_zoom(&self, enabled: bool) -> Result<()> {
+        self.replace(|settings| settings.auto_zoom_enabled = enabled)
             .await
     }
 
@@ -256,6 +272,7 @@ mod tests {
             .await
             .unwrap();
         store.set_face_tracking(true).await.unwrap();
+        store.set_auto_zoom(true).await.unwrap();
 
         let (_, restored) = UserSettingsStore::load(path.clone(), fallback)
             .await
@@ -264,6 +281,7 @@ mod tests {
         assert!(restored.background_enabled);
         assert_eq!(restored.background_effect, BackgroundEffect::Blur);
         assert!(restored.face_tracking_enabled);
+        assert!(restored.auto_zoom_enabled);
         assert_eq!(restored.output_mode(), VideoOutputMode::ComicAvatar);
         assert_eq!(restored.avatar_engine(), Some(AvatarEngine::Liveportrait));
         #[cfg(unix)]
@@ -288,6 +306,50 @@ mod tests {
                 .await
                 .unwrap_err();
         assert!(error.to_string().contains("invalid user settings"));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn settings_without_auto_zoom_remain_compatible() {
+        let path = test_path("legacy-without-auto-zoom");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            br#"{
+                "version": 1,
+                "video_identity": "camera",
+                "background_enabled": false,
+                "background_effect": "green-screen",
+                "face_tracking_enabled": true
+            }"#,
+        )
+        .unwrap();
+
+        let (_, restored) =
+            UserSettingsStore::load(path.clone(), UserSettings::from_config(&Config::default()))
+                .await
+                .unwrap();
+        assert!(restored.face_tracking_enabled);
+        assert!(!restored.auto_zoom_enabled);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn disabling_face_tracking_also_disables_auto_zoom() {
+        let path = test_path("tracking-dependency");
+        let fallback = UserSettings::from_config(&Config::default());
+        let (store, _) = UserSettingsStore::load(path.clone(), fallback)
+            .await
+            .unwrap();
+        store.set_face_tracking(true).await.unwrap();
+        store.set_auto_zoom(true).await.unwrap();
+        store.set_face_tracking(false).await.unwrap();
+
+        let (_, restored) = UserSettingsStore::load(path.clone(), fallback)
+            .await
+            .unwrap();
+        assert!(!restored.face_tracking_enabled);
+        assert!(!restored.auto_zoom_enabled);
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 }

@@ -22,11 +22,11 @@ use crate::{
     camera::{CameraHandle, PAN_TILT_LEASE},
     config::{CameraPresetConfig, Config, ScenarioConfig},
     effects::{AvatarFrame, DepthFrame, MAX_AVATAR_FRAME_BYTES, MAX_DEPTH_FRAME_BYTES, VideoMask},
-    face_tracking::FaceTrackingController,
+    face_tracking::{FaceTrackingController, MANUAL_ZOOM_SETTLE_MS},
     model::{
-        AvatarEngine, BackgroundEffect, BuiltInGesture, CameraAttitudeSource, FaceTrackingState,
-        FaceTrackingTarget, Landmark, PerceptionObservation, ScenarioActivation, VideoIdentity,
-        VideoOutputMode, unix_ms,
+        AutoZoomState, AvatarEngine, BackgroundEffect, BuiltInGesture, CameraAttitudeSource,
+        FaceTrackingState, FaceTrackingTarget, Landmark, PerceptionObservation, ScenarioActivation,
+        VideoIdentity, VideoOutputMode, unix_ms,
     },
     pipeline::{PerceptionFrame, PreviewHub, VideoPipelineControl},
     runtime::Runtime,
@@ -80,6 +80,7 @@ pub struct ApiOptions {
     pub daemon_restart: Option<DaemonRestart>,
     pub user_settings: Option<UserSettingsStore>,
     pub face_tracking_enabled: bool,
+    pub auto_zoom_enabled: bool,
 }
 
 #[cfg(test)]
@@ -110,6 +111,7 @@ pub fn router_with_controls(
 ) -> Router {
     let mut face_tracking = FaceTrackingController::default();
     face_tracking.set_enabled(options.face_tracking_enabled);
+    face_tracking.set_auto_zoom_enabled(options.auto_zoom_enabled, unix_ms());
     let state = ApiState {
         stabilizer: Arc::new(Mutex::new(OpenPalmStabilizer::new(&config.perception))),
         face_presence: Arc::new(Mutex::new(FacePresenceStabilizer::new(&config.perception))),
@@ -138,6 +140,7 @@ pub fn router_with_controls(
         .route("/api/v1/camera/move", post(move_camera))
         .route("/api/v1/camera/nudge/{direction}", post(nudge_camera))
         .route("/api/v1/camera/zoom", post(set_zoom))
+        .route("/api/v1/camera/auto-zoom", post(set_auto_zoom))
         .route("/api/v1/camera/hdr", post(set_hdr))
         .route("/api/v1/camera/tracking", post(set_tracking))
         .route("/api/v1/camera/face-tracking", post(set_face_tracking))
@@ -414,6 +417,11 @@ struct ZoomRequest {
 }
 
 #[derive(Deserialize)]
+struct AutoZoomRequest {
+    enabled: bool,
+}
+
+#[derive(Deserialize)]
 struct GreenScreenRequest {
     enabled: bool,
 }
@@ -655,12 +663,26 @@ async fn set_zoom(State(state): State<ApiState>, Json(request): Json<ZoomRequest
     };
     match camera.set_zoom(request.magnification).await {
         Ok(()) => {
+            let now = unix_ms();
+            let auto_zoom_enabled = {
+                let mut face_tracking = state.face_tracking.lock().await;
+                face_tracking
+                    .recalibrate_auto_zoom_after(now.saturating_add(MANUAL_ZOOM_SETTLE_MS));
+                face_tracking.auto_zoom_enabled()
+            };
             state
                 .runtime
                 .update(|runtime| {
                     runtime.camera.zoom_magnification = Some(request.magnification);
                     runtime.camera.zoom_sample_at_ms = None;
                     runtime.camera.zoom_error = None;
+                    if auto_zoom_enabled {
+                        runtime.camera.face_tracking.auto_zoom = AutoZoomState {
+                            enabled: true,
+                            zoom_magnification: Some(request.magnification),
+                            ..AutoZoomState::default()
+                        };
+                    }
                 })
                 .await;
             record_camera_command(
@@ -673,6 +695,56 @@ async fn set_zoom(State(state): State<ApiState>, Json(request): Json<ZoomRequest
         }
         Err(error) => command_error(error),
     }
+}
+
+async fn set_auto_zoom(
+    State(state): State<ApiState>,
+    Json(request): Json<AutoZoomRequest>,
+) -> Response {
+    if state.camera.is_none() {
+        return camera_unavailable();
+    }
+    let controlled_zoom = state
+        .camera
+        .as_ref()
+        .and_then(CameraHandle::controlled_zoom_magnification);
+    if request.enabled && controlled_zoom.is_none() {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "current camera zoom is unavailable"})),
+        )
+            .into_response();
+    }
+    let mut face_tracking = state.face_tracking.lock().await;
+    if request.enabled && !face_tracking.enabled() {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "enable face tracking before auto zoom"})),
+        )
+            .into_response();
+    }
+    face_tracking.set_auto_zoom_enabled(request.enabled, unix_ms());
+    drop(face_tracking);
+    state
+        .runtime
+        .update(|runtime| {
+            runtime.camera.face_tracking.auto_zoom = AutoZoomState {
+                enabled: request.enabled,
+                zoom_magnification: request.enabled.then_some(controlled_zoom).flatten(),
+                ..AutoZoomState::default()
+            };
+        })
+        .await;
+    if let Err(error) = save_auto_zoom_setting(&state, request.enabled).await {
+        return user_settings_error(error);
+    }
+    record_camera_command(
+        &state,
+        "camera.auto_zoom",
+        json!({"enabled": request.enabled}),
+    )
+    .await;
+    StatusCode::ACCEPTED.into_response()
 }
 
 async fn camera_action(
@@ -937,6 +1009,13 @@ async fn disable_tracking_for_manual_control(
 async fn save_face_tracking_setting(state: &ApiState, enabled: bool) -> anyhow::Result<()> {
     if let Some(settings) = &state.user_settings {
         settings.set_face_tracking(enabled).await?;
+    }
+    Ok(())
+}
+
+async fn save_auto_zoom_setting(state: &ApiState, enabled: bool) -> anyhow::Result<()> {
+    if let Some(settings) = &state.user_settings {
+        settings.set_auto_zoom(enabled).await?;
     }
     Ok(())
 }
@@ -1729,7 +1808,13 @@ async fn perception_observation(
     } else {
         &[]
     };
-    drive_face_tracking(&state, tracking_landmarks, tracking_pose_landmarks).await;
+    drive_face_tracking(
+        &state,
+        tracking_landmarks,
+        tracking_pose_landmarks,
+        observation.captured_at_ms,
+    )
+    .await;
 
     let presence_change = state
         .face_presence
@@ -1800,6 +1885,7 @@ async fn drive_face_tracking(
     state: &ApiState,
     face_landmarks: &[Landmark],
     pose_landmarks: &[Landmark],
+    captured_at_ms: u64,
 ) {
     let Some(camera) = state.camera.clone() else {
         return;
@@ -1809,7 +1895,8 @@ async fn drive_face_tracking(
         return;
     }
 
-    if state.runtime.state().await.camera.tracking == Some(true) {
+    let camera_state = state.runtime.state().await.camera;
+    if camera_state.tracking == Some(true) {
         let error = camera
             .set_face_tracking_speed(0, 0, 0.0)
             .await
@@ -1846,6 +1933,15 @@ async fn drive_face_tracking(
         .as_ref()
         .map(|(target, _)| target.motion)
         .unwrap_or_default();
+    let auto_zoom = controller.auto_zoom(
+        target.as_ref().and_then(|(target, source)| {
+            (*source == FaceTrackingTarget::Face)
+                .then_some(target.size)
+                .flatten()
+        }),
+        camera.controlled_zoom_magnification(),
+        captured_at_ms,
+    );
     let should_command = desired_motion != controller.motion() || desired_motion.active();
     let command_error = if should_command {
         camera
@@ -1863,10 +1959,33 @@ async fn drive_face_tracking(
     if command_error.is_none() {
         controller.record_motion(desired_motion);
     }
+    let auto_zoom_error = if let Some(magnification) = auto_zoom.requested_magnification {
+        camera
+            .set_zoom(magnification)
+            .await
+            .err()
+            .map(|error| error.to_string())
+    } else {
+        None
+    };
     let motion = controller.motion();
+    drop(controller);
+    let controlled_zoom = camera.controlled_zoom_magnification();
+    let zoom_changed = auto_zoom.requested_magnification.is_some() && auto_zoom_error.is_none();
+    let auto_zoom_attempted = auto_zoom.requested_magnification.is_some();
     state
         .runtime
         .update(|runtime| {
+            if let Some(magnification) = auto_zoom
+                .requested_magnification
+                .filter(|_| auto_zoom_error.is_none())
+            {
+                runtime.camera.zoom_magnification = Some(magnification);
+                runtime.camera.zoom_sample_at_ms = None;
+                runtime.camera.zoom_error = None;
+                runtime.camera.last_command_at_ms = Some(unix_ms());
+            }
+            let previous_auto_zoom_error = runtime.camera.face_tracking.auto_zoom.error.clone();
             runtime.camera.face_tracking = FaceTrackingState {
                 enabled: true,
                 active: motion.active(),
@@ -1875,10 +1994,34 @@ async fn drive_face_tracking(
                 target_x: target.as_ref().map(|(target, _)| target.x),
                 target_y: target.as_ref().map(|(target, _)| target.y),
                 speed_fraction: motion.speed_fraction as f32,
+                auto_zoom: AutoZoomState {
+                    enabled: auto_zoom.enabled,
+                    calibrated: auto_zoom.calibrated,
+                    zoom_magnification: controlled_zoom,
+                    target_face_size: auto_zoom.target_face_size,
+                    face_size: auto_zoom.face_size,
+                    at_limit: auto_zoom.at_limit,
+                    error: if auto_zoom_attempted {
+                        auto_zoom_error.clone()
+                    } else {
+                        previous_auto_zoom_error
+                    },
+                },
                 error: command_error,
             };
         })
         .await;
+    if zoom_changed {
+        state
+            .runtime
+            .emit(
+                "camera.auto_zoom.adjusted",
+                "face-tracking",
+                None,
+                json!({"magnification": auto_zoom.requested_magnification}),
+            )
+            .await;
+    }
 }
 
 async fn activate_scenario(state: &ApiState, scenario: &ScenarioConfig, trigger_sequence: u64) {
@@ -2452,6 +2595,7 @@ mod tests {
                 json!({"enabled": true, "effect": "blur"}),
             ),
             ("/api/v1/camera/face-tracking", json!({"enabled": true})),
+            ("/api/v1/camera/auto-zoom", json!({"enabled": true})),
         ] {
             let response = app
                 .clone()
@@ -2473,6 +2617,7 @@ mod tests {
         assert!(restored.background_enabled);
         assert_eq!(restored.background_effect, BackgroundEffect::Blur);
         assert!(restored.face_tracking_enabled);
+        assert!(restored.auto_zoom_enabled);
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
@@ -2964,6 +3109,152 @@ mod tests {
         let events = runtime.recent_events().await;
         assert_eq!(events[0].kind, "camera.zoom");
         assert!((events[0].data["magnification"].as_f64().unwrap() - 3.4).abs() < 1e-6);
+    }
+
+    #[tokio::test]
+    async fn auto_zoom_holds_face_size_and_manual_zoom_recalibrates_it() {
+        let mut config = Config::default();
+        config.camera.adapter = CameraAdapter::Mock;
+        config.perception.enabled = false;
+        let runtime = Runtime::new();
+        let camera = camera::start(config.camera.clone(), runtime.clone())
+            .await
+            .unwrap();
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = router(
+            config,
+            runtime.clone(),
+            PreviewHub::new(),
+            camera,
+            shutdown_rx,
+        );
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/camera/auto-zoom")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"enabled":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        for (path, body) in [
+            ("/api/v1/camera/zoom", json!({"magnification": 2.0})),
+            ("/api/v1/camera/face-tracking", json!({"enabled": true})),
+            ("/api/v1/camera/auto-zoom", json!({"enabled": true})),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post(path)
+                        .header("content-type", "application/json")
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::ACCEPTED);
+        }
+
+        let observation = |frame_id: u64, captured_at_ms: u64, face_size: f64| {
+            let mut face_landmarks = (0..478)
+                .map(|_| json!({"x": 0.5, "y": 0.5, "z": 0.0}))
+                .collect::<Vec<_>>();
+            face_landmarks[0] = json!({"x": 0.5 - face_size / 2.0, "y": 0.5, "z": 0.0});
+            face_landmarks[1] = json!({"x": 0.5 + face_size / 2.0, "y": 0.5, "z": 0.0});
+            json!({
+                "frame_id": frame_id,
+                "captured_at_ms": captured_at_ms,
+                "face_detected": true,
+                "face_landmarks": face_landmarks,
+                "hand_detected": false,
+                "gesture": null,
+                "confidence": 0.0,
+                "latency_ms": 10.0
+            })
+        };
+        let first_capture = unix_ms().saturating_add(100);
+        for body in [
+            observation(1, first_capture, 0.2),
+            observation(2, first_capture + 600, 0.1),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post("/api/v1/perception/observations")
+                        .header("content-type", "application/json")
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        }
+        let state = runtime.state().await;
+        assert_eq!(state.camera.zoom_magnification, Some(2.16));
+        assert!(state.camera.face_tracking.auto_zoom.enabled);
+        assert!(state.camera.face_tracking.auto_zoom.calibrated);
+        assert!(
+            (state
+                .camera
+                .face_tracking
+                .auto_zoom
+                .target_face_size
+                .unwrap()
+                - 0.2)
+                .abs()
+                < 1e-6
+        );
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/camera/zoom")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"magnification":3.0}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert!(
+            !runtime
+                .state()
+                .await
+                .camera
+                .face_tracking
+                .auto_zoom
+                .calibrated
+        );
+
+        let response = app
+            .oneshot(
+                Request::post("/api/v1/perception/observations")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        observation(3, unix_ms().saturating_add(1_000), 0.3).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let state = runtime.state().await;
+        assert_eq!(state.camera.zoom_magnification, Some(3.0));
+        assert!(
+            (state
+                .camera
+                .face_tracking
+                .auto_zoom
+                .target_face_size
+                .unwrap()
+                - 0.3)
+                .abs()
+                < 1e-6
+        );
     }
 
     #[tokio::test]

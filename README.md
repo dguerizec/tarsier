@@ -42,7 +42,8 @@ mischievous personality without tying its core to one camera vendor.
 - optional Tarsier face tracking follows the detected face with proportional,
   ramped gimbal movement, falls back to calibrated visible shoulders when the
   face mesh disappears, and switches exclusively with the camera's built-in
-  tracking;
+  tracking; optional auto zoom calibrates the current face size, then adjusts
+  the x1-to-x4 zoom conservatively to preserve that framing;
 - a supervised Python 3.12 worker performs local MediaPipe face and body-pose
   landmarking and canned gesture recognition for up to two hands at a bounded
   observation rate, while a dedicated selfie segmenter publishes person masks
@@ -192,16 +193,20 @@ semantic mask still decides what is a person; a temporally smoothed depth
 likelihood sharpens uncertain boundary pixels and rejects differently distanced
 background fragments. Turning the background effect off releases the depth
 model unless the Depth map identity is selected.
-The manual zoom slider applies x1-to-x4 changes continuously while coalescing
-obsolete intermediate positions. Embedded UI assets and the health response use
-`Cache-Control: no-store`; an open page detects a new
-daemon instance and reloads itself after a restart. When Tarsier runs under a
-service supervisor, the **Live** status is also a button: it opens a confirmation
-dialog before requesting a graceful daemon restart. Manual foreground runs keep
-the indicator read-only so a restart request cannot become an accidental stop.
+The zoom slider applies x1-to-x4 changes continuously while coalescing obsolete
+intermediate positions. With Face tracking active, the **Auto zoom** switch next
+to the face-tracking and pan/tilt controls captures the face's current on-screen
+size and holds it with smoothed, rate-limited corrections. Moving the slider
+while Auto zoom is active pauses correction while the lens settles, then makes
+the resulting face size the new target. Embedded UI assets and the
+health response use `Cache-Control: no-store`; an open page detects a new daemon
+instance and reloads itself after a restart. When Tarsier runs under a service
+supervisor, the **Live** status is also a button: it opens a confirmation dialog
+before requesting a graceful daemon restart. Manual foreground runs keep the
+indicator read-only so a restart request cannot become an accidental stop.
 
 Tarsier atomically persists the selected video identity, background switch and
-effect, and Face tracking preference in
+effect, Face tracking preference, and dependent Auto zoom preference in
 `$XDG_STATE_HOME/tarsier/user-settings.json`, or
 `~/.local/state/tarsier/user-settings.json` when `XDG_STATE_HOME` is unset.
 `TARSIER_USER_SETTINGS_PATH` can override the exact file path. The saved video
@@ -254,7 +259,17 @@ and pose are both visible, their vertical offset is calibrated continuously;
 when the face disappears, stable shoulders therefore preserve the inferred
 head height instead of causing a tilt jump. Manual pan, tilt, recenter, and
 preset controls stop either tracking mode before moving and remain available
-whenever the camera is connected.
+whenever the camera is connected. Auto zoom requires Face tracking and a valid
+face mesh. It measures the horizontal face-mesh span, smooths it, starts
+correcting beyond 6%, and derives one zoom destination from the observed size
+ratio. When the face mesh disappears, any pending zoom destination is cancelled,
+the size filter is reset, and zoom remains frozen until a valid face mesh
+returns. Shoulder fallback remains available for pan and tilt but never affects
+zoom. The controller approaches each destination with proportional bounded
+steps, abandons it immediately when the observed size requires the opposite
+direction, and briefly waits for the image to settle before reassessing. It
+reports when the x1 or x4 bound prevents preserving the calibrated size.
+Disabling Face tracking also disables Auto zoom.
 
 ```sh
 cargo run -- status
@@ -334,6 +349,7 @@ The default server binds only to `127.0.0.1:8742`.
 | `POST` | `/api/v1/camera/move` | Bounded absolute yaw/pitch/roll target |
 | `POST` | `/api/v1/camera/nudge/{direction}` | Start or renew `left`, `right`, `up`, or `down` movement; `stop` ends it |
 | `POST` | `/api/v1/camera/zoom` | Set x1-to-x4 lens magnification |
+| `POST` | `/api/v1/camera/auto-zoom` | Preserve the current detected-face size while face tracking is active |
 | `POST` | `/api/v1/camera/hdr` | Enable or disable HDR/WDR |
 | `POST` | `/api/v1/camera/tracking` | Enable or disable built-in tracking |
 | `POST` | `/api/v1/camera/face-tracking` | Enable or disable Tarsier face tracking |

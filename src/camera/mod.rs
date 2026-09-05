@@ -4,7 +4,7 @@ mod protocol;
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
         mpsc::{Receiver, SyncSender, TryRecvError, sync_channel},
     },
     time::{Duration, Instant},
@@ -175,6 +175,7 @@ pub struct CameraHandle {
     power_transition: Arc<AtomicBool>,
     max_yaw_degrees: f32,
     max_pitch_degrees: f32,
+    controlled_zoom_bits: Arc<AtomicU32>,
 }
 
 impl CameraHandle {
@@ -239,9 +240,15 @@ impl CameraHandle {
         if !magnification.is_finite() || !(1.0..=4.0).contains(&magnification) {
             bail!("zoom magnification must be between 1.0 and 4.0");
         }
-        self.request(Command::Zoom { magnification })
-            .await
-            .map(|_| ())
+        self.request(Command::Zoom { magnification }).await?;
+        self.controlled_zoom_bits
+            .store(magnification.to_bits(), Ordering::Relaxed);
+        Ok(())
+    }
+
+    pub fn controlled_zoom_magnification(&self) -> Option<f32> {
+        let magnification = f32::from_bits(self.controlled_zoom_bits.load(Ordering::Relaxed));
+        magnification.is_finite().then_some(magnification)
     }
 
     pub async fn set_pan_tilt_speed(&self, pan_direction: i8, tilt_direction: i8) -> Result<()> {
@@ -342,7 +349,7 @@ pub async fn start(config: CameraConfig, runtime: Runtime) -> Result<Option<Came
                     None
                 }
             };
-            let (handle, telemetry_rx) = spawn_worker(transport, &config);
+            let (handle, telemetry_rx) = spawn_worker(transport, &config, initial_zoom);
             let zoom_sample_at_ms = initial_zoom.map(|_| unix_ms());
             runtime
                 .update(|state| {
@@ -368,6 +375,7 @@ pub async fn start(config: CameraConfig, runtime: Runtime) -> Result<Option<Came
 fn spawn_worker<T: XuTransport + 'static>(
     transport: T,
     config: &CameraConfig,
+    initial_zoom: Option<f32>,
 ) -> (CameraHandle, tokio_mpsc::UnboundedReceiver<TelemetryUpdate>) {
     let (tx, rx) = sync_channel(COMMAND_QUEUE_CAPACITY);
     let (telemetry_tx, telemetry_rx) = tokio_mpsc::unbounded_channel();
@@ -392,6 +400,9 @@ fn spawn_worker<T: XuTransport + 'static>(
             power_transition: Arc::new(AtomicBool::new(false)),
             max_yaw_degrees: config.max_yaw_degrees,
             max_pitch_degrees: config.max_pitch_degrees,
+            controlled_zoom_bits: Arc::new(AtomicU32::new(
+                initial_zoom.unwrap_or(f32::NAN).to_bits(),
+            )),
         },
         telemetry_rx,
     )
@@ -759,6 +770,7 @@ fn spawn_mock(config: &CameraConfig) -> CameraHandle {
         power_transition: Arc::new(AtomicBool::new(false)),
         max_yaw_degrees: config.max_yaw_degrees,
         max_pitch_degrees: config.max_pitch_degrees,
+        controlled_zoom_bits: Arc::new(AtomicU32::new(1.0_f32.to_bits())),
     }
 }
 
@@ -1035,7 +1047,9 @@ mod tests {
         assert!(handle.move_to(20.0, -10.0, 0.0).await.is_ok());
         assert!(handle.set_zoom(0.9).await.is_err());
         assert!(handle.set_zoom(4.1).await.is_err());
+        assert_eq!(handle.controlled_zoom_magnification(), Some(1.0));
         assert!(handle.set_zoom(2.5).await.is_ok());
+        assert_eq!(handle.controlled_zoom_magnification(), Some(2.5));
     }
 
     #[test]

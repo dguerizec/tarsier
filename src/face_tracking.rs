@@ -18,6 +18,18 @@ const MAXIMUM_SPEED_FRACTION: f64 = 0.10;
 const ACCELERATION_STEP: f64 = 0.018;
 const DECELERATION_STEP: f64 = 0.02;
 const MAXIMUM_IMAGE_ERROR: f32 = 0.5;
+const MINIMUM_FACE_SIZE: f32 = 0.02;
+const FACE_SIZE_SMOOTHING_ALPHA: f32 = 0.35;
+const AUTO_ZOOM_START_THRESHOLD_FRACTION: f32 = 0.06;
+const AUTO_ZOOM_MAXIMUM_STEP: f32 = 0.16;
+const AUTO_ZOOM_MINIMUM_STEP: f32 = 0.03;
+const AUTO_ZOOM_RAMP_GAIN: f32 = 0.55;
+const AUTO_ZOOM_DESTINATION_TOLERANCE: f32 = 0.02;
+const AUTO_ZOOM_MINIMUM_INTERVAL_MS: u64 = 100;
+const AUTO_ZOOM_SETTLE_MS: u64 = 300;
+pub const MANUAL_ZOOM_SETTLE_MS: u64 = 600;
+const MINIMUM_ZOOM_MAGNIFICATION: f32 = 1.0;
+const MAXIMUM_ZOOM_MAGNIFICATION: f32 = 4.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct FaceTrackingMotion {
@@ -36,7 +48,18 @@ impl FaceTrackingMotion {
 pub struct FaceTarget {
     pub x: f32,
     pub y: f32,
+    pub size: Option<f32>,
     pub motion: FaceTrackingMotion,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct AutoZoomDecision {
+    pub enabled: bool,
+    pub calibrated: bool,
+    pub target_face_size: Option<f32>,
+    pub face_size: Option<f32>,
+    pub requested_magnification: Option<f32>,
+    pub at_limit: bool,
 }
 
 #[derive(Default)]
@@ -44,6 +67,13 @@ pub struct FaceTrackingController {
     enabled: bool,
     motion: FaceTrackingMotion,
     shoulder_face_y_offset: Option<f32>,
+    auto_zoom_enabled: bool,
+    auto_zoom_target_face_size: Option<f32>,
+    smoothed_face_size: Option<f32>,
+    recalibrate_auto_zoom_after_ms: Option<u64>,
+    last_auto_zoom_command_at_ms: Option<u64>,
+    auto_zoom_destination: Option<f32>,
+    auto_zoom_settle_until_ms: Option<u64>,
 }
 
 impl FaceTrackingController {
@@ -55,6 +85,35 @@ impl FaceTrackingController {
         self.enabled = enabled;
         self.motion = FaceTrackingMotion::default();
         self.shoulder_face_y_offset = None;
+        if !enabled {
+            self.set_auto_zoom_enabled(false, 0);
+        }
+    }
+
+    pub fn auto_zoom_enabled(&self) -> bool {
+        self.auto_zoom_enabled
+    }
+
+    pub fn set_auto_zoom_enabled(&mut self, enabled: bool, calibrate_after_ms: u64) {
+        self.auto_zoom_enabled = enabled;
+        self.auto_zoom_target_face_size = None;
+        self.smoothed_face_size = None;
+        self.recalibrate_auto_zoom_after_ms = enabled.then_some(calibrate_after_ms);
+        self.last_auto_zoom_command_at_ms = None;
+        self.auto_zoom_destination = None;
+        self.auto_zoom_settle_until_ms = None;
+    }
+
+    pub fn recalibrate_auto_zoom_after(&mut self, calibrate_after_ms: u64) {
+        if !self.auto_zoom_enabled {
+            return;
+        }
+        self.auto_zoom_target_face_size = None;
+        self.smoothed_face_size = None;
+        self.recalibrate_auto_zoom_after_ms = Some(calibrate_after_ms);
+        self.last_auto_zoom_command_at_ms = None;
+        self.auto_zoom_destination = None;
+        self.auto_zoom_settle_until_ms = None;
     }
 
     pub fn motion(&self) -> FaceTrackingMotion {
@@ -70,7 +129,7 @@ impl FaceTrackingController {
         face_landmarks: &[Landmark],
         pose_landmarks: &[Landmark],
     ) -> Option<FaceTarget> {
-        let (x, y) = face_center(face_landmarks)?;
+        let (x, y, size) = face_geometry(face_landmarks)?;
         if let Some((_, shoulder_y, _)) = shoulder_geometry(pose_landmarks) {
             let observed_offset = y - shoulder_y;
             self.shoulder_face_y_offset = Some(
@@ -80,7 +139,9 @@ impl FaceTrackingController {
                     }),
             );
         }
-        Some(self.target_at(x, y))
+        let mut target = self.target_at(x, y);
+        target.size = size;
+        Some(target)
     }
 
     pub fn shoulder_target(&self, landmarks: &[Landmark]) -> Option<FaceTarget> {
@@ -127,12 +188,131 @@ impl FaceTrackingController {
         FaceTarget {
             x,
             y,
+            size: None,
             motion: FaceTrackingMotion {
                 pan_direction,
                 tilt_direction,
                 speed_fraction,
             },
         }
+    }
+
+    pub fn auto_zoom(
+        &mut self,
+        face_size: Option<f32>,
+        zoom_magnification: Option<f32>,
+        captured_at_ms: u64,
+    ) -> AutoZoomDecision {
+        let mut decision = AutoZoomDecision {
+            enabled: self.auto_zoom_enabled,
+            calibrated: self.auto_zoom_target_face_size.is_some(),
+            target_face_size: self.auto_zoom_target_face_size,
+            ..AutoZoomDecision::default()
+        };
+        if !self.auto_zoom_enabled {
+            return decision;
+        }
+        let face_size = face_size.filter(|size| size.is_finite() && *size >= MINIMUM_FACE_SIZE);
+        decision.face_size = face_size;
+        let Some(face_size) = face_size else {
+            self.smoothed_face_size = None;
+            self.auto_zoom_destination = None;
+            self.auto_zoom_settle_until_ms = None;
+            self.last_auto_zoom_command_at_ms = None;
+            return decision;
+        };
+        if self
+            .recalibrate_auto_zoom_after_ms
+            .is_some_and(|minimum| captured_at_ms < minimum)
+        {
+            return decision;
+        }
+
+        if self.auto_zoom_target_face_size.is_none() {
+            self.auto_zoom_target_face_size = Some(face_size);
+            self.smoothed_face_size = Some(face_size);
+            self.recalibrate_auto_zoom_after_ms = None;
+            decision.calibrated = true;
+            decision.target_face_size = Some(face_size);
+            return decision;
+        }
+
+        let smoothed = self.smoothed_face_size.map_or(face_size, |previous| {
+            previous + FACE_SIZE_SMOOTHING_ALPHA * (face_size - previous)
+        });
+        self.smoothed_face_size = Some(smoothed);
+        decision.face_size = Some(smoothed);
+        let Some(current_zoom) = zoom_magnification.filter(|zoom| {
+            zoom.is_finite()
+                && (MINIMUM_ZOOM_MAGNIFICATION..=MAXIMUM_ZOOM_MAGNIFICATION).contains(zoom)
+        }) else {
+            return decision;
+        };
+
+        let mut current_size = smoothed;
+        if let Some(settle_until) = self.auto_zoom_settle_until_ms {
+            if captured_at_ms < settle_until {
+                return decision;
+            }
+            self.auto_zoom_settle_until_ms = None;
+            self.smoothed_face_size = Some(face_size);
+            current_size = face_size;
+            decision.face_size = Some(face_size);
+        }
+
+        let target = self.auto_zoom_target_face_size.unwrap_or(current_size);
+        let relative_error = target / current_size - 1.0;
+        if let Some(destination) = self.auto_zoom_destination {
+            let destination_direction = (destination - current_zoom).signum();
+            if relative_error.abs() >= AUTO_ZOOM_START_THRESHOLD_FRACTION
+                && relative_error.signum() != destination_direction
+            {
+                self.auto_zoom_destination = None;
+            }
+        }
+
+        if self.auto_zoom_destination.is_none() {
+            if relative_error.abs() < AUTO_ZOOM_START_THRESHOLD_FRACTION {
+                return decision;
+            }
+            let unconstrained = current_zoom * target / current_size;
+            let bounded =
+                unconstrained.clamp(MINIMUM_ZOOM_MAGNIFICATION, MAXIMUM_ZOOM_MAGNIFICATION);
+            decision.at_limit = (bounded - unconstrained).abs() > f32::EPSILON;
+            if (bounded - current_zoom).abs() < AUTO_ZOOM_MINIMUM_STEP {
+                return decision;
+            }
+            self.auto_zoom_destination = Some(bounded);
+        }
+
+        let destination = self.auto_zoom_destination.unwrap_or(current_zoom);
+        let remaining = destination - current_zoom;
+        if remaining.abs() <= AUTO_ZOOM_DESTINATION_TOLERANCE {
+            self.auto_zoom_destination = None;
+            self.auto_zoom_settle_until_ms =
+                Some(captured_at_ms.saturating_add(AUTO_ZOOM_SETTLE_MS));
+            return decision;
+        }
+        if self.last_auto_zoom_command_at_ms.is_some_and(|previous| {
+            captured_at_ms.saturating_sub(previous) < AUTO_ZOOM_MINIMUM_INTERVAL_MS
+        }) {
+            return decision;
+        }
+        let step = (remaining.abs() * AUTO_ZOOM_RAMP_GAIN)
+            .clamp(AUTO_ZOOM_MINIMUM_STEP, AUTO_ZOOM_MAXIMUM_STEP)
+            .min(remaining.abs());
+        let delta = remaining.signum() * step;
+        let requested = ((current_zoom + delta)
+            .clamp(MINIMUM_ZOOM_MAGNIFICATION, MAXIMUM_ZOOM_MAGNIFICATION)
+            * 100.0)
+            .round()
+            / 100.0;
+        if (requested - current_zoom).abs() < AUTO_ZOOM_DESTINATION_TOLERANCE {
+            return decision;
+        }
+        self.last_auto_zoom_command_at_ms = Some(captured_at_ms);
+        decision.requested_magnification = Some(requested);
+        decision
     }
 }
 
@@ -184,7 +364,7 @@ fn shoulder_geometry(landmarks: &[Landmark]) -> Option<(f32, f32, f32)> {
     Some((x, y, shoulder_width))
 }
 
-fn face_center(landmarks: &[Landmark]) -> Option<(f32, f32)> {
+fn face_geometry(landmarks: &[Landmark]) -> Option<(f32, f32, Option<f32>)> {
     if landmarks.len() != FACE_LANDMARK_COUNT {
         return None;
     }
@@ -201,7 +381,12 @@ fn face_center(landmarks: &[Landmark]) -> Option<(f32, f32)> {
         minimum_y = minimum_y.min(landmark.y);
         maximum_y = maximum_y.max(landmark.y);
     }
-    Some(((minimum_x + maximum_x) / 2.0, (minimum_y + maximum_y) / 2.0))
+    let size = maximum_x - minimum_x;
+    Some((
+        (minimum_x + maximum_x) / 2.0,
+        (minimum_y + maximum_y) / 2.0,
+        (size.is_finite() && size >= MINIMUM_FACE_SIZE).then_some(size),
+    ))
 }
 
 fn axis_direction(error: f32, previous: i8, start: f32, stop: f32) -> i8 {
@@ -237,6 +422,13 @@ mod tests {
         ]
     }
 
+    fn face_with_size(x: f32, y: f32, size: f32) -> Vec<Landmark> {
+        let mut face = face_at(x, y);
+        face[0].x = x - size / 2.0;
+        face[1].x = x + size / 2.0;
+        face
+    }
+
     #[test]
     fn centers_a_face_without_requesting_motion() {
         let mut controller = FaceTrackingController::default();
@@ -246,6 +438,16 @@ mod tests {
             (0, 0)
         );
         assert_eq!(target.motion.speed_fraction, 0.0);
+    }
+
+    #[test]
+    fn measures_face_size_from_the_horizontal_mesh_span() {
+        let mut controller = FaceTrackingController::default();
+        let target = controller
+            .face_target(&face_with_size(0.5, 0.5, 0.2), &[])
+            .unwrap();
+
+        assert!((target.size.unwrap() - 0.2).abs() < 1e-6);
     }
 
     #[test]
@@ -387,5 +589,153 @@ mod tests {
         let target = controller.face_target(&face_at(0.57, 0.5), &[]).unwrap();
         assert_eq!(target.motion.pan_direction, 1);
         assert!((target.motion.speed_fraction - 0.06).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn auto_zoom_calibrates_from_the_first_fresh_face() {
+        let mut controller = FaceTrackingController::default();
+        controller.set_enabled(true);
+        controller.set_auto_zoom_enabled(true, 1_000);
+
+        let stale = controller.auto_zoom(Some(0.2), Some(2.0), 999);
+        assert!(!stale.calibrated);
+        assert_eq!(stale.requested_magnification, None);
+
+        let fresh = controller.auto_zoom(Some(0.2), Some(2.0), 1_000);
+        assert!(fresh.calibrated);
+        assert_eq!(fresh.target_face_size, Some(0.2));
+        assert_eq!(fresh.requested_magnification, None);
+    }
+
+    #[test]
+    fn auto_zoom_corrects_size_changes_gradually_and_rate_limits_commands() {
+        let mut controller = FaceTrackingController::default();
+        controller.set_enabled(true);
+        controller.set_auto_zoom_enabled(true, 0);
+        controller.auto_zoom(Some(0.2), Some(2.0), 1_000);
+
+        let first = controller.auto_zoom(Some(0.1), Some(2.0), 1_100);
+        assert_eq!(first.requested_magnification, Some(2.16));
+
+        let rate_limited = controller.auto_zoom(Some(0.1), Some(2.16), 1_150);
+        assert_eq!(rate_limited.requested_magnification, None);
+
+        let next = controller.auto_zoom(Some(0.1), Some(2.16), 1_200);
+        assert_eq!(next.requested_magnification, Some(2.31));
+    }
+
+    #[test]
+    fn auto_zoom_ignores_small_face_size_changes() {
+        let mut controller = FaceTrackingController::default();
+        controller.set_enabled(true);
+        controller.set_auto_zoom_enabled(true, 0);
+        controller.auto_zoom(Some(0.2), Some(2.0), 1_000);
+
+        let decision = controller.auto_zoom(Some(0.19), Some(2.0), 2_000);
+
+        assert_eq!(decision.requested_magnification, None);
+        assert!(!decision.at_limit);
+    }
+
+    #[test]
+    fn auto_zoom_keeps_one_destination_while_the_camera_image_catches_up() {
+        let mut controller = FaceTrackingController::default();
+        controller.set_enabled(true);
+        controller.set_auto_zoom_enabled(true, 0);
+        controller.auto_zoom(Some(0.2), Some(2.0), 1_000);
+        let first = controller.auto_zoom(Some(0.1), Some(2.0), 1_100);
+        let destination = controller.auto_zoom_destination.unwrap();
+        assert_eq!(first.requested_magnification, Some(2.16));
+
+        let continuing = controller.auto_zoom(Some(0.1), Some(2.16), 1_200);
+        assert_eq!(continuing.requested_magnification, Some(2.31));
+        assert_eq!(controller.auto_zoom_destination, Some(destination));
+    }
+
+    #[test]
+    fn auto_zoom_reverses_when_the_observed_size_crosses_the_target() {
+        let mut controller = FaceTrackingController::default();
+        controller.set_enabled(true);
+        controller.set_auto_zoom_enabled(true, 0);
+        controller.auto_zoom(Some(0.2), Some(2.0), 1_000);
+
+        let zooming_in = controller.auto_zoom(Some(0.1), Some(2.0), 1_100);
+        assert_eq!(zooming_in.requested_magnification, Some(2.16));
+        assert!(controller.auto_zoom_destination.unwrap() > 2.16);
+
+        let reversing = controller.auto_zoom(Some(0.4), Some(2.16), 1_200);
+        assert!(reversing.requested_magnification.unwrap() < 2.16);
+        assert!(controller.auto_zoom_destination.unwrap() < 2.16);
+    }
+
+    #[test]
+    fn losing_the_face_mesh_cancels_zoom_until_a_valid_face_returns() {
+        let mut controller = FaceTrackingController::default();
+        controller.set_enabled(true);
+        controller.set_auto_zoom_enabled(true, 0);
+        controller.auto_zoom(Some(0.2), Some(2.0), 1_000);
+
+        let zooming_in = controller.auto_zoom(Some(0.1), Some(2.0), 1_100);
+        assert_eq!(zooming_in.requested_magnification, Some(2.16));
+        assert!(controller.auto_zoom_destination.is_some());
+
+        let face_lost = controller.auto_zoom(None, Some(2.16), 1_200);
+        assert_eq!(face_lost.requested_magnification, None);
+        assert_eq!(controller.auto_zoom_destination, None);
+        assert_eq!(controller.smoothed_face_size, None);
+        assert_eq!(controller.auto_zoom_settle_until_ms, None);
+        assert_eq!(controller.last_auto_zoom_command_at_ms, None);
+
+        let still_missing = controller.auto_zoom(None, Some(2.16), 1_300);
+        assert_eq!(still_missing.requested_magnification, None);
+
+        let face_returned = controller.auto_zoom(Some(0.2), Some(2.16), 1_400);
+        assert_eq!(face_returned.requested_magnification, None);
+        assert_eq!(controller.smoothed_face_size, Some(0.2));
+    }
+
+    #[test]
+    fn auto_zoom_step_scales_with_the_observed_size_change() {
+        let mut moderate = FaceTrackingController::default();
+        moderate.set_enabled(true);
+        moderate.set_auto_zoom_enabled(true, 0);
+        moderate.auto_zoom(Some(0.2), Some(2.0), 1_000);
+        moderate.smoothed_face_size = Some(0.2);
+        let moderate_step = moderate
+            .auto_zoom(Some(0.16), Some(2.0), 1_100)
+            .requested_magnification
+            .unwrap()
+            - 2.0;
+
+        let mut large = FaceTrackingController::default();
+        large.set_enabled(true);
+        large.set_auto_zoom_enabled(true, 0);
+        large.auto_zoom(Some(0.2), Some(2.0), 1_000);
+        large.smoothed_face_size = Some(0.2);
+        let large_step = large
+            .auto_zoom(Some(0.1), Some(2.0), 1_100)
+            .requested_magnification
+            .unwrap()
+            - 2.0;
+
+        assert!(moderate_step >= AUTO_ZOOM_MINIMUM_STEP);
+        assert!(large_step > moderate_step);
+        assert!(large_step <= AUTO_ZOOM_MAXIMUM_STEP + f32::EPSILON);
+    }
+
+    #[test]
+    fn manual_zoom_change_recalibrates_after_the_lens_settles() {
+        let mut controller = FaceTrackingController::default();
+        controller.set_enabled(true);
+        controller.set_auto_zoom_enabled(true, 0);
+        controller.auto_zoom(Some(0.2), Some(2.0), 1_000);
+        controller.recalibrate_auto_zoom_after(2_000);
+
+        let settling = controller.auto_zoom(Some(0.3), Some(3.0), 1_999);
+        assert!(!settling.calibrated);
+        let recalibrated = controller.auto_zoom(Some(0.3), Some(3.0), 2_000);
+        assert!(recalibrated.calibrated);
+        assert_eq!(recalibrated.target_face_size, Some(0.3));
+        assert_eq!(recalibrated.requested_magnification, None);
     }
 }
