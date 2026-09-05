@@ -2169,7 +2169,7 @@ mod tests {
             assert_eq!(tracking.target_x, Some(x));
             assert_eq!(tracking.target_y, Some(y));
             if expected_active {
-                assert!((tracking.speed_fraction - 0.012).abs() < f32::EPSILON);
+                assert!((tracking.speed_fraction - 0.018).abs() < f32::EPSILON);
             } else {
                 assert_eq!(tracking.speed_fraction, 0.0);
             }
@@ -2209,7 +2209,7 @@ mod tests {
         assert!((tracking.target_x.unwrap() - 0.7).abs() < f32::EPSILON);
         assert!((tracking.target_y.unwrap() - 0.3).abs() < f32::EPSILON);
         assert!(tracking.active);
-        assert!((tracking.speed_fraction - 0.012).abs() < f32::EPSILON);
+        assert!((tracking.speed_fraction - 0.018).abs() < f32::EPSILON);
     }
 
     #[tokio::test]

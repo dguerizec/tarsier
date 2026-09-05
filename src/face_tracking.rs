@@ -9,13 +9,13 @@ const ESTIMATED_FACE_OFFSET_IN_SHOULDER_WIDTHS: f32 = 0.5;
 const SHOULDER_CALIBRATION_ALPHA: f32 = 0.2;
 const TARGET_X: f32 = 0.5;
 const TARGET_Y: f32 = 0.5;
-const PAN_START_THRESHOLD: f32 = 0.10;
-const PAN_STOP_THRESHOLD: f32 = 0.05;
-const TILT_START_THRESHOLD: f32 = 0.12;
-const TILT_STOP_THRESHOLD: f32 = 0.06;
+const PAN_START_THRESHOLD: f32 = 0.08;
+const PAN_STOP_THRESHOLD: f32 = 0.04;
+const TILT_START_THRESHOLD: f32 = 0.09;
+const TILT_STOP_THRESHOLD: f32 = 0.045;
 const MINIMUM_SPEED_FRACTION: f64 = 0.01;
 const MAXIMUM_SPEED_FRACTION: f64 = 0.10;
-const ACCELERATION_STEP: f64 = 0.012;
+const ACCELERATION_STEP: f64 = 0.018;
 const DECELERATION_STEP: f64 = 0.02;
 const MAXIMUM_IMAGE_ERROR: f32 = 0.5;
 
@@ -356,7 +356,7 @@ mod tests {
     #[test]
     fn crossing_the_dead_zone_starts_with_a_low_ramped_speed() {
         let mut controller = FaceTrackingController::default();
-        let first = controller.face_target(&face_at(0.61, 0.5), &[]).unwrap();
+        let first = controller.face_target(&face_at(0.585, 0.5), &[]).unwrap();
         assert_eq!(first.motion.pan_direction, 1);
         assert!((first.motion.speed_fraction - ACCELERATION_STEP).abs() < f64::EPSILON);
 
@@ -365,6 +365,15 @@ mod tests {
         assert!(second.motion.speed_fraction > first.motion.speed_fraction);
         assert!(second.motion.speed_fraction <= first.motion.speed_fraction + ACCELERATION_STEP);
         assert!(second.motion.speed_fraction <= MAXIMUM_SPEED_FRACTION);
+    }
+
+    #[test]
+    fn narrowed_tilt_dead_zone_reacts_to_a_small_vertical_offset() {
+        let mut controller = FaceTrackingController::default();
+        let target = controller.face_target(&face_at(0.5, 0.595), &[]).unwrap();
+        assert_eq!(target.motion.tilt_direction, -1);
+        assert!(target.motion.speed_fraction > 0.0);
+        assert!(target.motion.speed_fraction <= ACCELERATION_STEP);
     }
 
     #[test]
