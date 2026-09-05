@@ -59,6 +59,7 @@ angle and never triggers an implicit device reset.
 | Zoom gesture | 2 | `0x04` | `0x3144` | one byte: `1` enabled, `0` disabled |
 | Dynamic-zoom gesture | 2 | `0x04` | `0x3344` | one byte: `1` enabled, `0` disabled |
 | Tracking | 6 | n/a | n/a | `16 02 02` enabled, `16 02 00` disabled, then zeros |
+| HDR/WDR | 6 | n/a | n/a | `01 01 01` enabled, `01 01 00` disabled, then zeros |
 
 `AI_GET_GIM_STATE` matches the Tiny 2 UVC path used by libdev's
 `aiGetGimbalStateR()`. Its response starts with nine signed little-endian
@@ -85,7 +86,7 @@ then replaces that accepted value with measured camera state on the next quick
 status read. Quick status runs at one fifth of the pose rate, with a minimum
 five-second interval, to limit selector-2 traffic.
 
-## Selector-6 tracking readback
+## Selector-6 camera status
 
 The fixed 60-byte selector-6 `GET_CUR` status block exposes the current AI mode
 at offset `0x18` and its sub-mode at `0x1c`. The tuple `(0, 0)` means tracking
@@ -96,7 +97,30 @@ misreported as a settled tracking state. An unknown sample preserves the last
 confirmed indicator. The same snapshot exposes the firmware's zoom position at
 offset `0x04` on a 0-to-100 scale. Tarsier maps it to x1 through x4 and uses it
 as the live zoom source because AI-driven reframing does not reliably update
-the standard V4L2 zoom control.
+the standard V4L2 zoom control. HDR is reported at offset `0x06`; zero means
+disabled and a non-zero value means enabled.
+
+HDR writes use libdev's raw selector-6 `[tag, length, value]` layout rather than
+the framed selector-2 mailbox. The SDK warns that switching HDR is expensive
+and recommends at least three seconds between transitions, which the camera
+owner enforces. On the tested camera, an enabled-to-disabled-to-enabled round
+trip was confirmed by readback without USB re-enumeration or a pipeline restart.
+The effective frame rate dipped during reconfiguration and returned to 30 FPS.
+
+## Available image and perception surfaces
+
+The tested Tiny 2 advertises standard V4L2 controls for automatic/manual
+exposure, exposure time, gain, exposure bias, continuous/manual focus, white
+balance auto mode, white-balance color temperature, red/blue balance,
+anti-flicker, brightness, contrast, saturation, hue, and sharpness. These are
+available for future Tarsier controls but are not yet exposed by its API.
+Face-priority exposure and face-priority autofocus are separate camera features
+whose state is present in the selector-6 block.
+
+The local MediaPipe worker currently reduces its face-detector result to a
+boolean. Its result already contains a bounding box, so Tarsier can expose and
+overlay a local face box in a later increment. The Tiny 2 selector-6 status
+reports the selected AI mode, not a live subject or face bounding box.
 
 ## Standard UVC pan/tilt movement
 
@@ -193,17 +217,18 @@ the next measured sample arrives.
 - These values are validated only for the device and firmware above.
 - Tarsier does not link, load, bundle, or redistribute a proprietary SDK.
 - The adapter does not yet discover compatible firmware capabilities.
-- Sleep, image controls, tracking modes, and firmware update operations are
-  deliberately unimplemented.
+- Sleep, image controls other than HDR and zoom, tracking modes, and firmware
+  update operations are deliberately unimplemented.
 - Built-in gesture state is measured through `AI_GET_QUICK_STATUS` when polling
   is enabled; immediately after a write it temporarily represents the accepted
   command until readback arrives.
 - The Tiny 2 status layout exposed by libdev contains no numeric device
   temperature. The SDK's numeric CPU and lens temperature fields belong to its
-  network-camera status path. Its public event enum defines normal/high-device-
-  temperature notifications, but does not document them as available on Tiny 2
-  and provides no value in degrees. V4L2 and Linux `hwmon` expose no device-
-  temperature control for the tested camera either.
+  network-camera status path. Its normal/high-temperature notification callback
+  is documented only for Tail Air, not Tiny 2, and provides no value in degrees.
+  V4L2 and Linux `hwmon` expose no device-temperature control for the tested
+  camera either. The V4L2 white-balance temperature is a color setting, not a
+  hardware temperature.
 - Requested absolute angles and final physical attitude can differ; calibration
   and settling semantics need further study.
 - The previous `0x0043` selector-2 polling path reset the camera during an

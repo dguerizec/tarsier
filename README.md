@@ -30,10 +30,10 @@ mischievous personality without tying its core to one camera vendor.
 - camera attitude is explicitly labelled `last-commanded`, `measured`,
   `simulated`, or `unavailable` rather than presenting an estimate as fact;
 - low-priority camera readback exposes motor and Euler angles, angular velocity,
-  zoom magnification, tracking, and the three built-in gesture switches;
+  zoom magnification, HDR, tracking, and the three built-in gesture switches;
 - bounded absolute gimbal moves, continuous held pan/tilt movement, x1-to-x4 zoom,
-  recentering, tracking, named presets, and separate Tiny 2 built-in gesture
-  controls are available over HTTP;
+  HDR, recentering, tracking, named presets, and separate Tiny 2 built-in
+  gesture controls are available over HTTP;
 - a supervised Python 3.12 worker performs local MediaPipe face and canned
   gesture recognition;
 - face presence and open-palm observations pass through dwell, release, and
@@ -204,6 +204,7 @@ The default server binds only to `127.0.0.1:8742`.
 | `POST` | `/api/v1/camera/move` | Bounded absolute yaw/pitch/roll target |
 | `POST` | `/api/v1/camera/nudge/{direction}` | Start or renew `left`, `right`, `up`, or `down` movement; `stop` ends it |
 | `POST` | `/api/v1/camera/zoom` | Set x1-to-x4 lens magnification |
+| `POST` | `/api/v1/camera/hdr` | Enable or disable HDR/WDR |
 | `POST` | `/api/v1/camera/tracking` | Enable or disable built-in tracking |
 | `POST` | `/api/v1/camera/built-in-gestures/{feature}` | Enable or disable `target-selection`, `zoom`, or `dynamic-zoom` gestures |
 | `POST` | `/api/v1/camera/actions/recenter` | Recenter the gimbal |
@@ -324,6 +325,9 @@ The first vertical slice was validated on 2026-09-05 with an OBSBOT Tiny 2
 - selector-6 AI zoom initially reported x1.99 and later x1.00 while the standard
   V4L2 zoom control remained at raw 23, confirming that AI zoom readback is
   distinct from the lens-control fallback;
+- HDR was switched from its measured enabled state to disabled and back to
+  enabled; both transitions were confirmed by selector-6 readback, the USB
+  address stayed stable, and the pipeline recovered to 30 FPS without a restart;
 - a generic GStreamer V4L2 reader consumed 90 frames from `/dev/video42` and
   exited successfully while preview, perception, and polling continued;
 - the camera kept the same USB bus address throughout the initial loopback,
@@ -357,7 +361,7 @@ The first vertical slice was validated on 2026-09-05 with an OBSBOT Tiny 2
 - after the repair restart, the real 720p30 pipeline remained healthy for more
   than six minutes on the camera's 480 Mbit/s fallback link, passing 11,000
   frames without another USB event or required restart;
-- all 47 daemon tests, 2 MCP tests, 6 Python tests, JavaScript syntax checks,
+- all 50 daemon tests, 2 MCP tests, 6 Python tests, JavaScript syntax checks,
   formatting, lint, configuration, protocol, and API checks passed.
 
 An extended run changed the camera result: after approximately six minutes of
