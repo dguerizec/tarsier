@@ -61,6 +61,10 @@ mischievous personality without tying its core to one camera vendor.
   preview and virtual-camera output. The **Video identity** control switches
   between the real camera and avatar, and a missing or stale avatar frame fails
   closed to black instead of revealing the camera;
+- an optional local Depth Anything V2 worker estimates relative monocular depth
+  on demand. Tarsier retains the original `float32` field for machine use and
+  independently colorizes it for the **Depth map** preview and virtual-camera
+  identity; a missing or stale estimate fails closed to black;
 - face presence and open-palm observations pass through dwell, release, and
   cooldown stabilization before becoming semantic events;
 - a responsive local web UI shows the preview, telemetry, perception state,
@@ -86,9 +90,11 @@ flowchart LR
     RawPreview --> Worker[MediaPipe worker]
     Worker -->|8-bit person mask| Mask[Internal video-mask channel]
     Worker -->|3D or LivePortrait BGRx frame| Avatar[Avatar channel]
+    Worker -->|float32 relative inverse depth| Depth[Depth channel]
     Pipeline --> Effects[Final-output effects]
     Mask --> Effects
     Avatar --> Effects
+    Depth --> Effects
     Effects -->|YUY2 720p30| Loopback[V4L2 loopback]
     Effects --> Preview[Final MJPEG preview]
     Preview --> UI[Local web UI]
@@ -105,7 +111,8 @@ flowchart LR
 The process-local bus uses Tokio primitives. External modules communicate
 through versioned HTTP schemas; they do not gain direct access to hardware or
 the bus. The Python worker receives only downscaled raw-camera JPEG frames and
-posts compact observations plus person masks back to the loopback-only API.
+posts compact observations, person masks, and optional relative-depth fields
+back to the loopback-only API.
 
 ## Requirements
 
@@ -141,13 +148,13 @@ a manual restart still finds the device after USB re-enumeration.
 
 ## Quick start
 
-Install the locked Python environment, local OpenGL renderer, and pinned
-MediaPipe model assets:
+Install the locked Python environment, local OpenGL renderer, depth runtime,
+and pinned MediaPipe and Depth Anything V2 model assets:
 
 ```sh
-uv sync --project worker --extra avatar --locked
-uv run --project worker --extra avatar --locked \
-  tarsier-perception models --download
+uv sync --project worker --extra avatar --extra depth --locked
+uv run --project worker --extra avatar --extra depth --locked \
+  tarsier-perception models --download --avatar --depth
 ```
 
 Validate the configuration, then start Tarsier:
@@ -182,19 +189,27 @@ obsolete intermediate positions. Embedded UI assets and the health response use
 daemon instance and reloads itself after a restart.
 
 The **Video identity** selector switches the complete final stream among
-**Camera**, **Stylized 3D**, and **LivePortrait**. Avatar engines load on demand
-and release their rendering resources when another identity is selected. A
-dedicated MediaPipe face tracker drives head rotation, eye blinks, jaw opening,
-smiles, and eyebrow motion for Stylized 3D. The local OpenGL renderer draws a
-cel-shaded head and bust in a simple virtual room at the output resolution. Its
-colors are editable in `assets/avatars/stylized-3d.json`; no camera pixels
-are used in the final avatar frame. Selecting either avatar replaces the whole
-image in both the web preview and `/dev/video42`. Background effects are
-disabled in the UI while an avatar is active because its decor is already
-rendered. A switch immediately clears the previous avatar frame, and Tarsier
-accepts new frames only from the selected engine. If initialization or
-animation takes more than 500 ms, it outputs black until a fresh matching frame
-arrives; it never falls back to the real camera.
+**Camera**, **Depth map**, **Stylized 3D**, and **LivePortrait**. Neural engines
+load on demand and release their GPU resources when another identity is
+selected. Depth map runs Depth Anything V2 Small against the same raw camera
+branch as perception. Its source values are retained as a two-dimensional
+little-endian `float32` relative inverse-depth field: larger values are nearer,
+but they are not distances in metres. A slowly stabilized percentile range is
+used only for the false-color video, so display contrast changes do not alter
+the machine-readable values available from `GET /api/v1/depth/frame`.
+
+A dedicated MediaPipe face tracker drives head rotation, eye blinks, jaw
+opening, smiles, and eyebrow motion for Stylized 3D. The local OpenGL renderer
+draws a cel-shaded head and bust in a simple virtual room at the output
+resolution. Its colors are editable in
+`assets/avatars/stylized-3d.json`; no camera pixels are used in the final
+avatar frame. Selecting an alternate identity replaces the whole image in both
+the web preview and `/dev/video42`. Background effects are disabled in the UI
+outside Camera because the alternate output is already complete. A switch
+immediately clears the previous generated frame, and Tarsier accepts new frames
+only for the selected identity. If initialization or inference takes more than
+500 ms, it outputs black until a fresh matching frame arrives; it never falls
+back to the real camera.
 
 LivePortrait remains an experimental fallback. The supervised worker installs
 both optional dependency groups and verifies the additional local weights at
@@ -255,6 +270,7 @@ configuration. It defines:
   limits;
 - worker supervision, independent landmark and person-mask rates, confidence,
   dwell, release, and cooldown thresholds;
+- optional relative-depth inference cadence and multiple-of-14 input height;
 - optional avatar engine, 3D color profile or LivePortrait source image,
   target cadence, and LivePortrait compilation;
 - bounded named camera presets;
@@ -298,9 +314,11 @@ The default server binds only to `127.0.0.1:8742`.
 | `POST` | `/api/v1/camera/hdr` | Enable or disable HDR/WDR |
 | `POST` | `/api/v1/camera/tracking` | Enable or disable built-in tracking |
 | `POST` | `/api/v1/camera/face-tracking` | Enable or disable Tarsier face tracking |
-| `POST` | `/api/v1/video/output-mode` | Select `camera` or the privacy-safe `comic-avatar` output |
+| `GET`, `POST` | `/api/v1/video/identity` | Read or select `camera`, `depth-map`, `stylized-3d`, or `liveportrait` |
+| `POST` | `/api/v1/video/output-mode` | Compatibility selector for the underlying output mode |
 | `POST` | `/api/v1/video/background` | Enable one final-output background effect with `{"enabled": bool, "effect": "green-screen" or "blur"}` |
 | `POST` | `/api/v1/video/green-screen` | Compatibility control that selects and enables or disables Green screen |
+| `GET` | `/api/v1/depth/frame` | Latest raw relative inverse-depth field as little-endian `float32`, with dimensions and provenance in headers |
 | `POST` | `/api/v1/camera/built-in-gestures/{feature}` | Enable or disable `target-selection`, `zoom`, or `dynamic-zoom` gestures |
 | `POST` | `/api/v1/camera/actions/recenter` | Recenter the gimbal |
 | `GET` | `/api/v1/camera/presets` | List configured presets |
@@ -313,9 +331,11 @@ The default server binds only to `127.0.0.1:8742`.
 | `WS` | `/api/v1/events` | Live event stream |
 
 `GET /api/v1/perception/input.mjpeg`, `POST /api/v1/perception/observations`,
-and `POST /api/v1/perception/mask` are local worker endpoints. The first keeps
-inference on the raw camera image, while the latter two publish semantic
-observations and a grayscale person mask. They are not operator controls.
+`POST /api/v1/perception/mask`, `POST /api/v1/avatar/frame`, and
+`POST /api/v1/depth/frame` are local worker endpoints. The first keeps
+inference on the raw camera image, while the others publish derived values and
+frames. They are not operator controls. The depth `GET` route is the public raw
+data view of the most recently accepted field.
 
 Examples:
 
@@ -491,6 +511,14 @@ The first vertical slice was validated on 2026-09-05 with an OBSBOT Tiny 2
 - the stylized 3D worker sustained 30.0 generated FPS end to end on the RTX
   3070; a 150-frame recorded driving sequence was tracked on every frame and
   sustained 36.1 FPS at 1280x720 including MediaPipe, rendering, and encoding;
+- Depth Anything V2 Small ran locally on the RTX 3070 in 14.7 ms for a
+  640x360 captured camera frame using a 252-pixel-high model input; a separate
+  synthetic daemon accepted and retained the 921,600-byte finite `float32`
+  field, exposed its dimensions and provenance through the raw depth API, and
+  returned the independently colorized 640x360 final-output snapshot;
+- a fully supervised synthetic-source run published depth at 29.2-29.6 FPS,
+  cleared the raw state when Camera was reselected, and released the CUDA model
+  after the identity change;
 - after the avatar worker stopped, the next snapshot was verified as entirely
   black once the 500 ms freshness window expired, confirming that the real
   camera cannot appear as an implicit fallback;
@@ -509,7 +537,7 @@ The first vertical slice was validated on 2026-09-05 with an OBSBOT Tiny 2
 - after the repair restart, the real 720p30 pipeline remained healthy for more
   than six minutes on the camera's 480 Mbit/s fallback link, passing 11,000
   frames without another USB event or required restart;
-- all 87 daemon tests, 2 MCP tests, 19 Python tests, JavaScript syntax checks,
+- all 93 daemon tests, 2 MCP tests, 24 Python tests, JavaScript syntax checks,
   formatting, lint, configuration, protocol, and API checks passed.
 
 An extended run changed the camera result: after approximately six minutes of
@@ -559,6 +587,10 @@ run before unattended use.
   end-to-end coverage; the stylized 3D renderer has visual pose coverage, but
   sustained physical-camera use, expression calibration, occlusions, and
   broader aesthetic review still need testing;
+- monocular depth is relative inverse depth, not calibrated metric distance;
+  routing, raw-value retention, colorization, and stale-frame fallback have
+  automated coverage, but sustained physical-camera motion and downstream 3D
+  use still need validation;
 - pipeline telemetry reports effective FPS, frame count, last frame, errors,
   and restart count, but not queue pressure or dropped-frame attribution;
 - configuration changes require a restart and runtime state is not persisted;

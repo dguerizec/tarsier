@@ -1,4 +1,4 @@
-use std::{convert::Infallible, sync::Arc, time::Instant};
+use std::{convert::Infallible, mem::size_of_val, sync::Arc, time::Instant};
 
 use axum::{
     Json, Router,
@@ -21,7 +21,7 @@ use tower_http::trace::TraceLayer;
 use crate::{
     camera::{CameraHandle, PAN_TILT_LEASE},
     config::{CameraPresetConfig, Config, ScenarioConfig},
-    effects::{AvatarFrame, MAX_AVATAR_FRAME_BYTES, VideoMask},
+    effects::{AvatarFrame, DepthFrame, MAX_AVATAR_FRAME_BYTES, MAX_DEPTH_FRAME_BYTES, VideoMask},
     face_tracking::FaceTrackingController,
     model::{
         AvatarEngine, BackgroundEffect, BuiltInGesture, CameraAttitudeSource, FaceTrackingState,
@@ -45,7 +45,7 @@ struct ApiState {
     camera_power_control: Arc<Mutex<()>>,
     pan_tilt_motion: Arc<Mutex<PanTiltMotion>>,
     face_tracking: Arc<Mutex<FaceTrackingController>>,
-    avatar_control: Arc<Mutex<()>>,
+    video_output_control: Arc<Mutex<()>>,
     shutdown: watch::Receiver<bool>,
 }
 
@@ -79,7 +79,7 @@ pub fn router_with_pipeline(
         camera_power_control: Arc::new(Mutex::new(())),
         pan_tilt_motion: Arc::new(Mutex::new(PanTiltMotion::default())),
         face_tracking: Arc::new(Mutex::new(FaceTrackingController::default())),
-        avatar_control: Arc::new(Mutex::new(())),
+        video_output_control: Arc::new(Mutex::new(())),
         shutdown,
     };
     Router::new()
@@ -119,6 +119,12 @@ pub fn router_with_pipeline(
         .route(
             "/api/v1/avatar/frame",
             post(avatar_frame).layer(DefaultBodyLimit::max(MAX_AVATAR_FRAME_BYTES)),
+        )
+        .route(
+            "/api/v1/depth/frame",
+            get(latest_depth)
+                .post(depth_frame)
+                .layer(DefaultBodyLimit::max(MAX_DEPTH_FRAME_BYTES)),
         )
         .route(
             "/api/v1/perception/input.mjpeg",
@@ -1044,14 +1050,24 @@ async fn set_identity(
     State(state): State<ApiState>,
     Json(request): Json<IdentityRequest>,
 ) -> Response {
-    if request.identity != VideoIdentity::Camera && !state.config.avatar.enabled {
-        return (
-            StatusCode::CONFLICT,
-            Json(json!({"error": "avatar output is disabled in the daemon configuration"})),
-        )
-            .into_response();
+    match request.identity {
+        VideoIdentity::Stylized3d | VideoIdentity::Liveportrait if !state.config.avatar.enabled => {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({"error": "avatar output is disabled in the daemon configuration"})),
+            )
+                .into_response();
+        }
+        VideoIdentity::DepthMap if !state.config.depth.enabled => {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({"error": "depth processing is disabled in the daemon configuration"})),
+            )
+                .into_response();
+        }
+        _ => {}
     }
-    let _guard = state.avatar_control.lock().await;
+    let _guard = state.video_output_control.lock().await;
     let (mode, engine) = match request.identity {
         VideoIdentity::Camera => (VideoOutputMode::Camera, None),
         VideoIdentity::Stylized3d => (VideoOutputMode::ComicAvatar, Some(AvatarEngine::Stylized3d)),
@@ -1059,8 +1075,10 @@ async fn set_identity(
             VideoOutputMode::ComicAvatar,
             Some(AvatarEngine::Liveportrait),
         ),
+        VideoIdentity::DepthMap => (VideoOutputMode::DepthMap, None),
     };
     state.preview.effects().clear_avatar();
+    state.preview.effects().clear_depth();
     state.preview.effects().set_output_mode(mode);
     state
         .runtime
@@ -1070,6 +1088,7 @@ async fn set_identity(
                 runtime.video_effects.avatar_engine = Some(engine);
             }
             clear_avatar_state(runtime);
+            clear_depth_state(runtime);
         })
         .await;
     state
@@ -1088,14 +1107,16 @@ async fn set_output_mode(
     State(state): State<ApiState>,
     Json(request): Json<OutputModeRequest>,
 ) -> Response {
-    let _guard = state.avatar_control.lock().await;
+    let _guard = state.video_output_control.lock().await;
     state.preview.effects().clear_avatar();
+    state.preview.effects().clear_depth();
     state.preview.effects().set_output_mode(request.mode);
     state
         .runtime
         .update(|runtime| {
             runtime.video_effects.output_mode = request.mode;
             clear_avatar_state(runtime);
+            clear_depth_state(runtime);
         })
         .await;
     state
@@ -1138,7 +1159,7 @@ async fn avatar_frame(State(state): State<ApiState>, headers: HeaderMap, body: B
         Ok(avatar) => avatar,
         Err(error) => return unprocessable_entity(error.to_string()),
     };
-    let _guard = state.avatar_control.lock().await;
+    let _guard = state.video_output_control.lock().await;
     let effects = state.runtime.state().await.video_effects;
     if effects.output_mode != VideoOutputMode::ComicAvatar || effects.avatar_engine != Some(engine)
     {
@@ -1168,6 +1189,7 @@ async fn avatar_frame(State(state): State<ApiState>, headers: HeaderMap, body: B
 fn video_identity(mode: VideoOutputMode, engine: Option<AvatarEngine>) -> VideoIdentity {
     match (mode, engine) {
         (VideoOutputMode::Camera, _) => VideoIdentity::Camera,
+        (VideoOutputMode::DepthMap, _) => VideoIdentity::DepthMap,
         (VideoOutputMode::ComicAvatar, Some(AvatarEngine::Liveportrait)) => {
             VideoIdentity::Liveportrait
         }
@@ -1182,6 +1204,108 @@ fn clear_avatar_state(runtime: &mut crate::model::RuntimeState) {
     runtime.video_effects.avatar_height = None;
     runtime.video_effects.avatar_captured_at_ms = None;
     runtime.video_effects.avatar_published_at_ms = None;
+}
+
+fn clear_depth_state(runtime: &mut crate::model::RuntimeState) {
+    runtime.video_effects.depth_available = false;
+    runtime.video_effects.depth_frame_id = None;
+    runtime.video_effects.depth_width = None;
+    runtime.video_effects.depth_height = None;
+    runtime.video_effects.depth_far = None;
+    runtime.video_effects.depth_near = None;
+    runtime.video_effects.depth_captured_at_ms = None;
+    runtime.video_effects.depth_published_at_ms = None;
+}
+
+async fn depth_frame(State(state): State<ApiState>, headers: HeaderMap, body: Bytes) -> Response {
+    if let Some(response) = reject_stale_worker_update(&state).await {
+        return response;
+    }
+    if let Err(error) = required_exact_header(
+        &headers,
+        "x-tarsier-depth-representation",
+        "relative-inverse-depth-f32le",
+    ) {
+        return unprocessable_entity(error);
+    }
+    let frame_id = match required_u64_header(&headers, "x-tarsier-frame-id") {
+        Ok(value) => value,
+        Err(error) => return unprocessable_entity(error),
+    };
+    let captured_at_ms = match required_u64_header(&headers, "x-tarsier-captured-at-ms") {
+        Ok(value) => value,
+        Err(error) => return unprocessable_entity(error),
+    };
+    let width = match required_u32_header(&headers, "x-tarsier-depth-width") {
+        Ok(value) => value,
+        Err(error) => return unprocessable_entity(error),
+    };
+    let height = match required_u32_header(&headers, "x-tarsier-depth-height") {
+        Ok(value) => value,
+        Err(error) => return unprocessable_entity(error),
+    };
+    let far = match required_f32_header(&headers, "x-tarsier-depth-far") {
+        Ok(value) => value,
+        Err(error) => return unprocessable_entity(error),
+    };
+    let near = match required_f32_header(&headers, "x-tarsier-depth-near") {
+        Ok(value) => value,
+        Err(error) => return unprocessable_entity(error),
+    };
+    let depth = match DepthFrame::new(frame_id, captured_at_ms, width, height, far, near, &body) {
+        Ok(depth) => depth,
+        Err(error) => return unprocessable_entity(error.to_string()),
+    };
+    let _guard = state.video_output_control.lock().await;
+    if state.runtime.state().await.video_effects.output_mode != VideoOutputMode::DepthMap {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "depth frame does not match the selected video identity"})),
+        )
+            .into_response();
+    }
+    let published_at_ms = depth.published_at_ms;
+    state.preview.effects().publish_depth(depth);
+    state
+        .runtime
+        .update(|runtime| {
+            runtime.video_effects.depth_available = true;
+            runtime.video_effects.depth_frame_id = Some(frame_id);
+            runtime.video_effects.depth_width = Some(width);
+            runtime.video_effects.depth_height = Some(height);
+            runtime.video_effects.depth_far = Some(far);
+            runtime.video_effects.depth_near = Some(near);
+            runtime.video_effects.depth_captured_at_ms = Some(captured_at_ms);
+            runtime.video_effects.depth_published_at_ms = Some(published_at_ms);
+        })
+        .await;
+    StatusCode::NO_CONTENT.into_response()
+}
+
+async fn latest_depth(State(state): State<ApiState>) -> Response {
+    let Some(depth) = state.preview.effects().latest_depth() else {
+        return (StatusCode::NOT_FOUND, "no depth frame is available").into_response();
+    };
+    let mut bytes = Vec::with_capacity(size_of_val(depth.values()));
+    for value in depth.values() {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header(
+            "x-tarsier-depth-representation",
+            "relative-inverse-depth-f32le",
+        )
+        .header("x-tarsier-frame-id", depth.frame_id)
+        .header("x-tarsier-captured-at-ms", depth.captured_at_ms)
+        .header("x-tarsier-published-at-ms", depth.published_at_ms)
+        .header("x-tarsier-depth-width", depth.width)
+        .header("x-tarsier-depth-height", depth.height)
+        .header("x-tarsier-depth-far", depth.far.to_string())
+        .header("x-tarsier-depth-near", depth.near.to_string())
+        .body(Body::from(bytes))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 async fn perception_mask(
@@ -1230,6 +1354,26 @@ fn required_u64_header(headers: &HeaderMap, name: &'static str) -> Result<u64, S
 
 fn required_u32_header(headers: &HeaderMap, name: &'static str) -> Result<u32, String> {
     required_header(headers, name)
+}
+
+fn required_f32_header(headers: &HeaderMap, name: &'static str) -> Result<f32, String> {
+    required_header(headers, name)
+}
+
+fn required_exact_header(
+    headers: &HeaderMap,
+    name: &'static str,
+    expected: &'static str,
+) -> Result<(), String> {
+    let value = headers
+        .get(name)
+        .ok_or_else(|| format!("missing {name} header"))?
+        .to_str()
+        .map_err(|_| format!("invalid {name} header"))?;
+    if value != expected {
+        return Err(format!("unsupported {name} header value {value:?}"));
+    }
+    Ok(())
 }
 
 fn required_avatar_engine_header(headers: &HeaderMap) -> Result<AvatarEngine, String> {
@@ -2115,6 +2259,114 @@ mod tests {
         let events = runtime.recent_events().await;
         assert_eq!(events[0].kind, "video.identity");
         assert_eq!(events[0].data["identity"], "liveportrait");
+    }
+
+    #[tokio::test]
+    async fn depth_identity_retains_raw_values_and_exposes_the_visualization_bounds() {
+        let mut config = Config::default();
+        config.perception.enabled = false;
+        config.depth.enabled = true;
+        let runtime = Runtime::new();
+        let preview = PreviewHub::new();
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = router(config, runtime.clone(), preview.clone(), None, shutdown_rx);
+        let captured_at_ms = unix_ms();
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/video/identity")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"identity":"depth-map"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+        let values = [0.25_f32, 1.5, 2.75, 4.0];
+        let bytes = values
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect::<Vec<_>>();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/depth/frame")
+                    .header("content-type", "application/octet-stream")
+                    .header("x-tarsier-frame-id", "42")
+                    .header("x-tarsier-captured-at-ms", captured_at_ms.to_string())
+                    .header("x-tarsier-depth-width", "2")
+                    .header("x-tarsier-depth-height", "2")
+                    .header("x-tarsier-depth-far", "0.25")
+                    .header("x-tarsier-depth-near", "4.0")
+                    .header(
+                        "x-tarsier-depth-representation",
+                        "relative-inverse-depth-f32le",
+                    )
+                    .body(Body::from(bytes.clone()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+        let response = app
+            .oneshot(
+                Request::get("/api/v1/depth/frame")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()["x-tarsier-depth-representation"],
+            "relative-inverse-depth-f32le"
+        );
+        assert_eq!(response.headers()["x-tarsier-depth-width"], "2");
+        assert_eq!(response.headers()["x-tarsier-depth-height"], "2");
+        assert_eq!(
+            to_bytes(response.into_body(), MAX_DEPTH_FRAME_BYTES)
+                .await
+                .unwrap(),
+            Bytes::from(bytes)
+        );
+
+        let effects = runtime.state().await.video_effects;
+        assert_eq!(effects.output_mode, VideoOutputMode::DepthMap);
+        assert!(effects.depth_available);
+        assert_eq!(effects.depth_frame_id, Some(42));
+        assert_eq!(
+            (effects.depth_width, effects.depth_height),
+            (Some(2), Some(2))
+        );
+        assert_eq!(
+            (effects.depth_far, effects.depth_near),
+            (Some(0.25), Some(4.0))
+        );
+    }
+
+    #[tokio::test]
+    async fn depth_identity_is_rejected_when_processing_is_disabled() {
+        let mut config = Config::default();
+        config.perception.enabled = false;
+        let runtime = Runtime::new();
+        let preview = PreviewHub::new();
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = router(config, runtime, preview, None, shutdown_rx);
+
+        let response = app
+            .oneshot(
+                Request::post("/api/v1/video/identity")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"identity":"depth-map"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
     }
 
     #[tokio::test]

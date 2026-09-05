@@ -73,17 +73,42 @@ AVATAR_MODEL_ASSETS = (
     ),
 )
 
+DEPTH_MODEL_ASSETS = (
+    ModelAsset(
+        "depth-anything-v2-small/config.json",
+        "https://huggingface.co/depth-anything/Depth-Anything-V2-Small-hf/resolve/"
+        "5426e4f0f36572d16453bbda7a8389317b1bef99/config.json",
+        "c56698d3643dde1f83ea2212759e6b31a22b8f827246a36dd007ee8a22b3ff75",
+    ),
+    ModelAsset(
+        "depth-anything-v2-small/preprocessor_config.json",
+        "https://huggingface.co/depth-anything/Depth-Anything-V2-Small-hf/resolve/"
+        "5426e4f0f36572d16453bbda7a8389317b1bef99/preprocessor_config.json",
+        "d41175c0d889477ca8fc67191e540faef14baf6275157b3fdecf78469e6bbf84",
+    ),
+    ModelAsset(
+        "depth-anything-v2-small/model.safetensors",
+        "https://huggingface.co/depth-anything/Depth-Anything-V2-Small-hf/resolve/"
+        "5426e4f0f36572d16453bbda7a8389317b1bef99/model.safetensors",
+        "3152477ce0d8d6978d76b995120de97cb5b928701fd0f817769f59e249a16b70",
+    ),
+)
+
 
 def default_model_dir() -> Path:
     return Path.home() / ".cache" / "tarsier" / "models"
 
 
 def download_models(
-    model_dir: Path, *, force: bool = False, include_avatar: bool = False
+    model_dir: Path,
+    *,
+    force: bool = False,
+    include_avatar: bool = False,
+    include_depth: bool = False,
 ) -> list[Path]:
     model_dir.mkdir(parents=True, exist_ok=True)
     paths: list[Path] = []
-    for asset in _model_assets(include_avatar):
+    for asset in _model_assets(include_avatar, include_depth):
         destination = model_dir / asset.filename
         if destination.is_file() and _sha256(destination) == asset.sha256 and not force:
             paths.append(destination)
@@ -110,10 +135,13 @@ def download_models(
 
 
 def describe_models(
-    model_dir: Path, *, include_avatar: bool = False
+    model_dir: Path,
+    *,
+    include_avatar: bool = False,
+    include_depth: bool = False,
 ) -> list[dict[str, str | int | bool]]:
     descriptions = []
-    for asset in _model_assets(include_avatar):
+    for asset in _model_assets(include_avatar, include_depth):
         path = model_dir / asset.filename
         exists = path.is_file()
         descriptions.append(
@@ -129,8 +157,12 @@ def describe_models(
     return descriptions
 
 
-def _model_assets(include_avatar: bool) -> tuple[ModelAsset, ...]:
-    return MODEL_ASSETS + (AVATAR_MODEL_ASSETS if include_avatar else ())
+def _model_assets(include_avatar: bool, include_depth: bool) -> tuple[ModelAsset, ...]:
+    return (
+        MODEL_ASSETS
+        + (AVATAR_MODEL_ASSETS if include_avatar else ())
+        + (DEPTH_MODEL_ASSETS if include_depth else ())
+    )
 
 
 def _sha256(path: Path) -> str:

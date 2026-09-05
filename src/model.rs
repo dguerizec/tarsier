@@ -42,6 +42,7 @@ pub enum VideoOutputMode {
     #[default]
     Camera,
     ComicAvatar,
+    DepthMap,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -61,6 +62,7 @@ pub enum VideoIdentity {
     #[serde(rename = "stylized-3d")]
     Stylized3d,
     Liveportrait,
+    DepthMap,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -83,6 +85,14 @@ pub struct VideoEffectsState {
     pub avatar_height: Option<u32>,
     pub avatar_captured_at_ms: Option<u64>,
     pub avatar_published_at_ms: Option<u64>,
+    pub depth_available: bool,
+    pub depth_frame_id: Option<u64>,
+    pub depth_width: Option<u32>,
+    pub depth_height: Option<u32>,
+    pub depth_far: Option<f32>,
+    pub depth_near: Option<f32>,
+    pub depth_captured_at_ms: Option<u64>,
+    pub depth_published_at_ms: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]

@@ -117,6 +117,7 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
     let perception = perception::PerceptionSupervisor::start(
         config.perception.clone(),
         config.avatar.clone(),
+        config.depth.clone(),
         config.video.clone(),
         config.server.bind,
         runtime,

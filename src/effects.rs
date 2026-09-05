@@ -10,8 +10,10 @@ use crate::model::{BackgroundEffect, VideoOutputMode, unix_ms};
 
 pub const MASK_MAX_AGE_MS: u64 = 200;
 pub const AVATAR_MAX_AGE_MS: u64 = 500;
+pub const DEPTH_MAX_AGE_MS: u64 = 500;
 const MAX_MASK_PIXELS: usize = 1920 * 1080;
 pub const MAX_AVATAR_FRAME_BYTES: usize = 1920 * 1080 * 4;
+pub const MAX_DEPTH_FRAME_BYTES: usize = 1920 * 1080 * size_of::<f32>();
 const BLUR_DOWNSAMPLE: usize = 8;
 const BLUR_RADIUS: usize = 3;
 
@@ -97,6 +99,71 @@ impl AvatarFrame {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct DepthFrame {
+    pub frame_id: u64,
+    pub captured_at_ms: u64,
+    pub published_at_ms: u64,
+    pub width: u32,
+    pub height: u32,
+    pub far: f32,
+    pub near: f32,
+    values: Arc<[f32]>,
+}
+
+impl DepthFrame {
+    pub fn new(
+        frame_id: u64,
+        captured_at_ms: u64,
+        width: u32,
+        height: u32,
+        far: f32,
+        near: f32,
+        bytes: &[u8],
+    ) -> Result<Self> {
+        let expected_values = mask_len(width, height)?;
+        let expected_bytes = expected_values
+            .checked_mul(size_of::<f32>())
+            .filter(|length| *length <= MAX_DEPTH_FRAME_BYTES)
+            .ok_or_else(|| anyhow::anyhow!("depth frame exceeds the maximum supported size"))?;
+        if bytes.len() != expected_bytes {
+            bail!(
+                "depth frame contains {} bytes, expected {expected_bytes}",
+                bytes.len()
+            );
+        }
+        if !far.is_finite() || !near.is_finite() || near <= far {
+            bail!("depth visualization bounds must be finite and near must exceed far");
+        }
+        let values = bytes
+            .chunks_exact(size_of::<f32>())
+            .map(|chunk| f32::from_le_bytes(chunk.try_into().expect("four-byte depth chunk")))
+            .collect::<Vec<_>>();
+        if values.iter().any(|value| !value.is_finite()) {
+            bail!("depth frame values must be finite");
+        }
+        Ok(Self {
+            frame_id,
+            captured_at_ms,
+            published_at_ms: unix_ms(),
+            width,
+            height,
+            far,
+            near,
+            values: values.into(),
+        })
+    }
+
+    pub fn values(&self) -> &[f32] {
+        &self.values
+    }
+
+    fn is_fresh(&self, now_ms: u64) -> bool {
+        now_ms.saturating_sub(self.published_at_ms) <= DEPTH_MAX_AGE_MS
+            && now_ms.saturating_sub(self.captured_at_ms) <= DEPTH_MAX_AGE_MS
+    }
+}
+
 fn avatar_frame_len(width: u32, height: u32) -> Result<usize> {
     let pixel_count = mask_len(width, height)?;
     pixel_count
@@ -125,6 +192,7 @@ pub struct VideoEffects {
     background_effect: Arc<AtomicU8>,
     mask_tx: watch::Sender<Option<Arc<VideoMask>>>,
     avatar_tx: watch::Sender<Option<Arc<AvatarFrame>>>,
+    depth_tx: watch::Sender<Option<Arc<DepthFrame>>>,
     scratch: Arc<Mutex<EffectScratch>>,
 }
 
@@ -138,12 +206,14 @@ impl VideoEffects {
     pub fn new() -> Self {
         let (mask_tx, _) = watch::channel(None);
         let (avatar_tx, _) = watch::channel(None);
+        let (depth_tx, _) = watch::channel(None);
         Self {
             output_mode: Arc::new(AtomicU8::new(output_mode_code(VideoOutputMode::Camera))),
             background_enabled: Arc::new(AtomicBool::new(false)),
             background_effect: Arc::new(AtomicU8::new(effect_code(BackgroundEffect::GreenScreen))),
             mask_tx,
             avatar_tx,
+            depth_tx,
             scratch: Arc::new(Mutex::new(EffectScratch::default())),
         }
     }
@@ -158,7 +228,7 @@ impl VideoEffects {
     }
 
     pub fn processing_enabled(&self) -> bool {
-        self.output_mode() == VideoOutputMode::ComicAvatar || self.background_enabled()
+        self.output_mode() != VideoOutputMode::Camera || self.background_enabled()
     }
 
     pub fn background_enabled(&self) -> bool {
@@ -208,6 +278,18 @@ impl VideoEffects {
         self.avatar_tx.send_replace(None);
     }
 
+    pub fn publish_depth(&self, frame: DepthFrame) {
+        self.depth_tx.send_replace(Some(Arc::new(frame)));
+    }
+
+    pub fn latest_depth(&self) -> Option<Arc<DepthFrame>> {
+        self.depth_tx.borrow().clone()
+    }
+
+    pub fn clear_depth(&self) {
+        self.depth_tx.send_replace(None);
+    }
+
     pub fn apply_output(&self, frame: &mut [u8], width: u32, height: u32, now_ms: u64) -> bool {
         match self.output_mode() {
             VideoOutputMode::Camera => self.apply_background(frame, width, height, now_ms),
@@ -219,6 +301,17 @@ impl VideoEffects {
                 match (expected_len, avatar) {
                     (Some(expected_len), Some(avatar)) if frame.len() >= expected_len => {
                         frame[..expected_len].copy_from_slice(&avatar.pixels);
+                    }
+                    _ => frame.fill(0),
+                }
+                true
+            }
+            VideoOutputMode::DepthMap => {
+                let expected_len = avatar_frame_len(width, height).ok();
+                let depth = self.latest_depth().filter(|depth| depth.is_fresh(now_ms));
+                match (expected_len, depth) {
+                    (Some(expected_len), Some(depth)) if frame.len() >= expected_len => {
+                        render_depth_map(&mut frame[..expected_len], width, height, &depth);
                     }
                     _ => frame.fill(0),
                 }
@@ -294,14 +387,61 @@ fn output_mode_code(mode: VideoOutputMode) -> u8 {
     match mode {
         VideoOutputMode::Camera => 0,
         VideoOutputMode::ComicAvatar => 1,
+        VideoOutputMode::DepthMap => 2,
     }
 }
 
 fn output_mode_from_code(code: u8) -> VideoOutputMode {
     match code {
         1 => VideoOutputMode::ComicAvatar,
+        2 => VideoOutputMode::DepthMap,
         _ => VideoOutputMode::Camera,
     }
+}
+
+fn render_depth_map(frame: &mut [u8], width: u32, height: u32, depth: &DepthFrame) {
+    let width = width as usize;
+    let height = height as usize;
+    let depth_width = depth.width as usize;
+    let depth_height = depth.height as usize;
+    let range = depth.near - depth.far;
+    for y in 0..height {
+        let depth_y = y * depth_height / height;
+        for x in 0..width {
+            let depth_x = x * depth_width / width;
+            let proximity = ((depth.values[depth_y * depth_width + depth_x] - depth.far) / range)
+                .clamp(0.0, 1.0);
+            let [blue, green, red] = depth_color(proximity);
+            let offset = (y * width + x) * 4;
+            frame[offset] = blue;
+            frame[offset + 1] = green;
+            frame[offset + 2] = red;
+            frame[offset + 3] = 255;
+        }
+    }
+}
+
+fn depth_color(proximity: f32) -> [u8; 3] {
+    // BGR anchors form a monotonic far-to-near progression suitable for video.
+    const COLORS: [[u8; 3]; 6] = [
+        [72, 16, 24],
+        [196, 52, 35],
+        [216, 180, 36],
+        [58, 232, 134],
+        [16, 158, 245],
+        [20, 28, 166],
+    ];
+    let position = proximity.clamp(0.0, 1.0) * (COLORS.len() - 1) as f32;
+    let left = (position.floor() as usize).min(COLORS.len() - 1);
+    let right = (left + 1).min(COLORS.len() - 1);
+    let fraction = position - left as f32;
+    let mut color = [0; 3];
+    for channel in 0..3 {
+        color[channel] = (COLORS[left][channel] as f32 * (1.0 - fraction)
+            + COLORS[right][channel] as f32 * fraction)
+            .round() as u8;
+    }
+    color
 }
 
 fn apply_green_screen(frame: &mut [u8], width: usize, height: usize, mask: &VideoMask) {
@@ -519,6 +659,23 @@ mod tests {
     }
 
     #[test]
+    fn validates_and_preserves_relative_depth_values() {
+        let bytes = [0.25_f32, 1.5, 2.75, 4.0]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect::<Vec<_>>();
+        let depth = DepthFrame::new(7, 100, 2, 2, 0.25, 4.0, &bytes).unwrap();
+
+        assert_eq!(depth.values(), &[0.25, 1.5, 2.75, 4.0]);
+        assert!(DepthFrame::new(7, 100, 2, 2, 0.25, 4.0, &bytes[..12]).is_err());
+        assert!(DepthFrame::new(7, 100, 2, 2, 4.0, 0.25, &bytes).is_err());
+
+        let mut invalid = bytes;
+        invalid[..4].copy_from_slice(&f32::NAN.to_le_bytes());
+        assert!(DepthFrame::new(7, 100, 2, 2, 0.25, 4.0, &invalid).is_err());
+    }
+
+    #[test]
     fn comic_avatar_replaces_the_entire_camera_frame() {
         let effects = VideoEffects::new();
         effects.set_output_mode(VideoOutputMode::ComicAvatar);
@@ -549,6 +706,30 @@ mod tests {
         let mut stale = [255; 4];
         assert!(effects.apply_output(&mut stale, 1, 1, published_at_ms + AVATAR_MAX_AGE_MS + 1,));
         assert_eq!(stale, [0; 4]);
+    }
+
+    #[test]
+    fn depth_map_colorizes_relative_values_and_fails_closed_when_stale() {
+        let effects = VideoEffects::new();
+        effects.set_output_mode(VideoOutputMode::DepthMap);
+        let captured_at_ms = unix_ms();
+        let bytes = [0.0_f32, 1.0]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect::<Vec<_>>();
+        let depth = DepthFrame::new(8, captured_at_ms, 2, 1, 0.0, 1.0, &bytes).unwrap();
+        let published_at_ms = depth.published_at_ms;
+        effects.publish_depth(depth);
+
+        let mut frame = [0; 8];
+        assert!(effects.apply_output(&mut frame, 2, 1, published_at_ms));
+        assert_ne!(&frame[..3], &frame[4..7]);
+        assert_eq!(frame[3], 255);
+        assert_eq!(frame[7], 255);
+
+        let mut stale = [255; 8];
+        assert!(effects.apply_output(&mut stale, 2, 1, published_at_ms + DEPTH_MAX_AGE_MS + 1,));
+        assert_eq!(stale, [0; 8]);
     }
 
     #[test]

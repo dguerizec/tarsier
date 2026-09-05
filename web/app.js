@@ -144,7 +144,7 @@ function drawSkeletons(
   }
   overlayContext.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
   overlayContext.clearRect(0, 0, bounds.width, bounds.height);
-  if (!skeletonEnabled || state?.video_effects?.output_mode === "comic-avatar") return;
+  if (!skeletonEnabled || state?.video_effects?.output_mode !== "camera") return;
 
   const sourceWidth = preview.naturalWidth || 16;
   const sourceHeight = preview.naturalHeight || 9;
@@ -409,6 +409,7 @@ function backgroundState(videoEffects) {
 function renderOutputMode(videoEffects) {
   const configuredIdentity = videoEffects.output_mode === "comic-avatar"
     ? (videoEffects.avatar_engine || "stylized-3d")
+    : videoEffects.output_mode === "depth-map" ? "depth-map"
     : "camera";
   const identity = outputModeDraft || configuredIdentity;
   const publishedFresh = videoEffects.avatar_published_at_ms != null
@@ -416,6 +417,11 @@ function renderOutputMode(videoEffects) {
   const capturedFresh = videoEffects.avatar_captured_at_ms != null
     && Date.now() - videoEffects.avatar_captured_at_ms <= 500;
   const avatarFresh = videoEffects.avatar_available && publishedFresh && capturedFresh;
+  const depthPublishedFresh = videoEffects.depth_published_at_ms != null
+    && Date.now() - videoEffects.depth_published_at_ms <= 500;
+  const depthCapturedFresh = videoEffects.depth_captured_at_ms != null
+    && Date.now() - videoEffects.depth_captured_at_ms <= 500;
+  const depthFresh = videoEffects.depth_available && depthPublishedFresh && depthCapturedFresh;
   for (const input of outputModeInputs) {
     input.disabled = outputModePending;
     input.checked = input.value === identity;
@@ -425,6 +431,7 @@ function renderOutputMode(videoEffects) {
     ? "Change failed"
     : outputModePending ? "Switching…"
     : identity === "camera" ? "Real camera"
+    : identity === "depth-map" ? (depthFresh ? "Relative depth active" : "Privacy fallback · waiting for depth")
     : avatarFresh ? (identity === "stylized-3d" ? "Stylized 3D active" : "LivePortrait active")
     : `Privacy fallback · waiting for ${identity === "stylized-3d" ? "3D renderer" : "LivePortrait"}`;
   $("#output-status").textContent = status;
@@ -439,18 +446,18 @@ function renderBackground(videoEffects) {
   const capturedFresh = videoEffects.mask_captured_at_ms != null
     && Date.now() - videoEffects.mask_captured_at_ms <= 200;
   const maskFresh = publishedFresh && capturedFresh;
-  const avatarActive = videoEffects.output_mode === "comic-avatar";
-  backgroundToggle.disabled = backgroundPending || avatarActive;
+  const alternateOutputActive = videoEffects.output_mode !== "camera";
+  backgroundToggle.disabled = backgroundPending || alternateOutputActive;
   backgroundToggle.checked = current.enabled;
   for (const input of backgroundEffectInputs) {
-    input.disabled = backgroundPending || avatarActive;
+    input.disabled = backgroundPending || alternateOutputActive;
     input.checked = input.value === current.effect;
   }
 
   const effectLabel = current.effect === "blur" ? "Blur" : "Green screen";
   const status = backgroundError
     ? "Change failed"
-    : (avatarActive ? "Included in the avatar scene"
+    : (alternateOutputActive ? "Available only for the real camera"
       : backgroundPending ? `Applying ${effectLabel.toLowerCase()}…`
       : !current.enabled ? "Off"
       : !maskFresh ? "Privacy fallback · waiting for a fresh mask"
@@ -642,8 +649,16 @@ async function setOutputMode(identity) {
       const payload = await response.json().catch(() => ({}));
       throw new Error(payload.error || `Output mode failed (${response.status})`);
     }
-    state.video_effects.output_mode = identity === "camera" ? "camera" : "comic-avatar";
-    if (identity !== "camera") {
+    state.video_effects.output_mode = identity === "camera"
+      ? "camera"
+      : identity === "depth-map" ? "depth-map"
+      : "comic-avatar";
+    if (identity === "depth-map") {
+      state.video_effects.depth_available = false;
+      state.video_effects.depth_frame_id = null;
+      state.video_effects.depth_captured_at_ms = null;
+      state.video_effects.depth_published_at_ms = null;
+    } else if (identity !== "camera") {
       state.video_effects.avatar_engine = identity;
       state.video_effects.avatar_available = false;
       state.video_effects.avatar_frame_id = null;

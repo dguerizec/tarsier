@@ -70,6 +70,7 @@ impl PreviewHub {
         self.perception_tx.send_replace(None);
         self.effects.clear_mask();
         self.effects.clear_avatar();
+        self.effects.clear_depth();
     }
 }
 
@@ -627,6 +628,14 @@ fn clear_runtime_effect_frames(state: &mut crate::model::RuntimeState) {
     state.video_effects.mask_height = None;
     state.video_effects.mask_captured_at_ms = None;
     state.video_effects.mask_published_at_ms = None;
+    state.video_effects.depth_available = false;
+    state.video_effects.depth_frame_id = None;
+    state.video_effects.depth_width = None;
+    state.video_effects.depth_height = None;
+    state.video_effects.depth_far = None;
+    state.video_effects.depth_near = None;
+    state.video_effects.depth_captured_at_ms = None;
+    state.video_effects.depth_published_at_ms = None;
 }
 
 fn wait_for_retry(running: &AtomicBool, desired_running: &AtomicBool, delay: Duration) -> bool {

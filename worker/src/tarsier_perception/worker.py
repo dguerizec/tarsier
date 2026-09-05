@@ -18,6 +18,7 @@ import mediapipe as mp
 import numpy as np
 
 from .avatar import AvatarInputFrame, AvatarProcessor
+from .depth import DepthInputFrame, DepthProcessor
 
 LOGGER = logging.getLogger(__name__)
 POSE_CONSTRAINT_RADIUS = 32
@@ -441,20 +442,26 @@ def run_worker(
     avatar_width: int = 1280,
     avatar_height: int = 720,
     avatar_compile: bool = False,
+    depth_enabled: bool = False,
+    depth_fps: float = 30.0,
+    depth_input_height: int = 252,
 ) -> None:
     publisher = ObservationPublisher(daemon_url)
     pose_constraints = PoseConstraintStore()
     observation_interval = 1.0 / fps
     mask_interval = 1.0 / mask_fps
     avatar_interval = 1.0 / avatar_fps
+    depth_interval = 1.0 / depth_fps
     next_observation_at = time.monotonic()
     next_mask_at = next_observation_at
     next_avatar_at = next_observation_at
+    next_depth_at = next_observation_at
     started_at = time.monotonic()
     metrics_started_at = started_at
     masks_published = 0
     previous_observations_published = 0
     previous_avatars_published = 0
+    previous_depths_published = 0
     with ExitStack() as stack:
         segmenter = stack.enter_context(MediaPipeSegmenter(model_dir, pose_constraints))
         observation_processor = stack.enter_context(
@@ -481,17 +488,27 @@ def run_worker(
             if avatar_engine is not None
             else None
         )
+        depth_processor = (
+            stack.enter_context(DepthProcessor(daemon_url, model_dir, depth_input_height))
+            if depth_enabled
+            else None
+        )
         for frame_id, frame in enumerate(capture_frames(source, width, height), start=1):
             observation_processor.raise_if_failed()
             if avatar_processor is not None:
                 avatar_processor.raise_if_failed()
+            if depth_processor is not None:
+                depth_processor.raise_if_failed()
             now = time.monotonic()
             mask_due = rate_is_due(now, next_mask_at, mask_interval)
             observation_due = rate_is_due(now, next_observation_at, observation_interval)
             avatar_due = avatar_processor is not None and rate_is_due(
                 now, next_avatar_at, avatar_interval
             )
-            if not mask_due and not observation_due and not avatar_due:
+            depth_due = depth_processor is not None and rate_is_due(
+                now, next_depth_at, depth_interval
+            )
+            if not mask_due and not observation_due and not avatar_due and not depth_due:
                 continue
             timestamp_ms = max(0, int((now - started_at) * 1000))
             captured_at_ms = time.time_ns() // 1_000_000
@@ -515,22 +532,31 @@ def run_worker(
                 avatar_processor.submit(
                     AvatarInputFrame(frame_id, captured_at_ms, timestamp_ms, frame)
                 )
+            if depth_due and depth_processor is not None:
+                next_depth_at = advance_deadline(next_depth_at, now, depth_interval)
+                depth_processor.submit(DepthInputFrame(frame_id, captured_at_ms, frame))
             metrics_elapsed = now - metrics_started_at
             if metrics_elapsed >= 10.0:
                 observations_published = observation_processor.published_count
                 avatars_published = (
                     avatar_processor.published_count if avatar_processor is not None else 0
                 )
+                depths_published = (
+                    depth_processor.published_count if depth_processor is not None else 0
+                )
                 LOGGER.info(
-                    "worker cadence: masks %.1f FPS, observations %.1f FPS, avatars %.1f FPS",
+                    "worker cadence: masks %.1f FPS, observations %.1f FPS, avatars %.1f FPS, "
+                    "depth %.1f FPS",
                     masks_published / metrics_elapsed,
                     (observations_published - previous_observations_published) / metrics_elapsed,
                     (avatars_published - previous_avatars_published) / metrics_elapsed,
+                    (depths_published - previous_depths_published) / metrics_elapsed,
                 )
                 metrics_started_at = now
                 masks_published = 0
                 previous_observations_published = observations_published
                 previous_avatars_published = avatars_published
+                previous_depths_published = depths_published
 
 
 def run_mock(daemon_url: str, fps: float, open_palm: bool) -> None:

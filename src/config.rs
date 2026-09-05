@@ -17,6 +17,7 @@ pub struct Config {
     pub camera: CameraConfig,
     pub perception: PerceptionConfig,
     pub avatar: AvatarConfig,
+    pub depth: DepthConfig,
     pub presets: Vec<CameraPresetConfig>,
     pub scenarios: Vec<ScenarioConfig>,
 }
@@ -29,6 +30,7 @@ impl Default for Config {
             camera: CameraConfig::default(),
             perception: PerceptionConfig::default(),
             avatar: AvatarConfig::default(),
+            depth: DepthConfig::default(),
             presets: Vec::new(),
             scenarios: vec![ScenarioConfig::default()],
         }
@@ -74,6 +76,15 @@ impl Config {
         }
         if self.avatar.fps == 0 {
             bail!("avatar fps must be greater than zero");
+        }
+        if self.depth.fps == 0 {
+            bail!("depth fps must be greater than zero");
+        }
+        if self.depth.input_height == 0 || !self.depth.input_height.is_multiple_of(14) {
+            bail!("depth input_height must be a nonzero multiple of 14");
+        }
+        if self.video.output_mode == VideoOutputMode::DepthMap && !self.depth.enabled {
+            bail!("depth output mode requires depth processing to be enabled");
         }
         if self.avatar.enabled {
             if self.avatar.profile.as_os_str().is_empty() {
@@ -215,6 +226,24 @@ impl Default for AvatarConfig {
             source_image: "assets/avatars/liveportrait-source.png".into(),
             fps: 15,
             compile: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
+pub struct DepthConfig {
+    pub enabled: bool,
+    pub fps: u32,
+    pub input_height: u32,
+}
+
+impl Default for DepthConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            fps: 30,
+            input_height: 252,
         }
     }
 }
@@ -414,6 +443,24 @@ mod tests {
         config.perception.fps = 10;
         config.perception.mask_fps = 0;
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validates_depth_rate_geometry_and_output_dependency() {
+        let mut config = Config::default();
+        config.depth.fps = 0;
+        assert!(config.validate().is_err());
+
+        config.depth.fps = 30;
+        config.depth.input_height = 250;
+        assert!(config.validate().is_err());
+
+        config.depth.input_height = 252;
+        config.video.output_mode = VideoOutputMode::DepthMap;
+        assert!(config.validate().is_err());
+
+        config.depth.enabled = true;
+        config.validate().unwrap();
     }
 
     #[test]

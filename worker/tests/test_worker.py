@@ -7,10 +7,17 @@ from pathlib import Path
 import pytest
 
 from tarsier_perception.avatar import (
-    AvatarIdentityClient,
     AvatarPublisher,
+    VideoIdentityClient,
     compose_avatar_frame,
     crop_face_square,
+)
+from tarsier_perception.depth import (
+    DEPTH_REPRESENTATION,
+    DepthEstimate,
+    DepthPublisher,
+    TemporalDepthScale,
+    depth_input_width,
 )
 from tarsier_perception.models import describe_models
 from tarsier_perception.stylized3d import (
@@ -189,6 +196,12 @@ def test_avatar_models_are_opt_in(tmp_path: Path) -> None:
     assert any(model["name"].endswith("motion_extractor.pth") for model in descriptions)
 
 
+def test_depth_models_are_opt_in(tmp_path: Path) -> None:
+    descriptions = describe_models(tmp_path, include_depth=True)
+    assert len(descriptions) == 7
+    assert any(model["name"].endswith("model.safetensors") for model in descriptions)
+
+
 def test_face_crop_is_square_and_pads_at_frame_edges() -> None:
     import numpy as np
 
@@ -217,9 +230,27 @@ def test_avatar_identity_client_reads_the_selected_engine(monkeypatch) -> None: 
 
     monkeypatch.setattr("urllib.request.urlopen", respond)
 
-    identity = AvatarIdentityClient("http://127.0.0.1:8742")
+    identity = VideoIdentityClient("http://127.0.0.1:8742")
 
-    assert identity.selected_engine() == "liveportrait"
+    assert identity.selected_avatar_engine() == "liveportrait"
+
+
+def test_video_identity_client_keeps_depth_distinct_and_can_refresh_immediately(
+    monkeypatch,  # noqa: ANN001
+) -> None:
+    responses = iter((b'{"identity":"depth-map"}', b'{"identity":"camera"}'))
+
+    def respond(*_: object, **__: object) -> HttpResponse:
+        return HttpResponse(next(responses))
+
+    monkeypatch.setattr("urllib.request.urlopen", respond)
+
+    identity = VideoIdentityClient("http://127.0.0.1:8742")
+
+    assert identity.selected_identity() == "depth-map"
+    assert identity.selected_avatar_engine() is None
+    identity.invalidate()
+    assert identity.selected_identity() == "camera"
 
 
 def test_avatar_publisher_tags_frames_with_the_rendering_engine(monkeypatch) -> None:  # noqa: ANN001
@@ -237,6 +268,47 @@ def test_avatar_publisher_tags_frames_with_the_rendering_engine(monkeypatch) -> 
     AvatarPublisher("http://127.0.0.1:8742").publish("stylized-3d", 42, 1234, frame)
 
     assert published[0].get_header("X-tarsier-avatar-engine") == "stylized-3d"
+
+
+def test_depth_scale_stabilizes_bounds_across_frames() -> None:
+    import numpy as np
+
+    scale = TemporalDepthScale(smoothing=0.25)
+    first = np.arange(100, dtype=np.float32).reshape(10, 10)
+    second = first + 100
+
+    first_far, first_near = scale.update(first)
+    second_far, second_near = scale.update(second)
+
+    assert first_far < second_far < first_far + 100
+    assert first_near < second_near < first_near + 100
+
+
+def test_depth_input_width_preserves_aspect_ratio_and_model_patch_size() -> None:
+    assert depth_input_width(640, 360, 252) == 448
+    assert depth_input_width(1280, 720, 350) == 630
+
+
+def test_depth_publisher_posts_raw_float32_values(monkeypatch) -> None:  # noqa: ANN001
+    import numpy as np
+
+    published = []
+
+    def respond(request, **_: object) -> HttpResponse:  # noqa: ANN001
+        published.append(request)
+        return HttpResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", respond)
+    values = np.array([[0.25, 1.5], [2.75, 4.0]], dtype=np.float32)
+    estimate = DepthEstimate(42, 1234, values, 0.25, 4.0)
+
+    DepthPublisher("http://127.0.0.1:8742").publish(estimate)
+
+    request = published[0]
+    assert request.get_header("X-tarsier-depth-representation") == DEPTH_REPRESENTATION
+    assert request.get_header("X-tarsier-depth-width") == "2"
+    assert request.get_header("X-tarsier-depth-height") == "2"
+    assert np.frombuffer(request.data, dtype="<f4").reshape(2, 2).tolist() == values.tolist()
 
 
 def test_avatar_motion_maps_mediapipe_expressions() -> None:

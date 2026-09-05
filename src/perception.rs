@@ -9,7 +9,7 @@ use serde_json::json;
 use tokio::{process::Command, sync::watch, task::JoinHandle, time::sleep};
 
 use crate::{
-    config::{AvatarConfig, PerceptionConfig, PerceptionSource, VideoConfig},
+    config::{AvatarConfig, DepthConfig, PerceptionConfig, PerceptionSource, VideoConfig},
     model::AvatarEngine,
     runtime::Runtime,
 };
@@ -23,6 +23,7 @@ impl PerceptionSupervisor {
     pub fn start(
         config: PerceptionConfig,
         avatar: AvatarConfig,
+        depth: DepthConfig,
         video: VideoConfig,
         server_address: SocketAddr,
         runtime: Runtime,
@@ -34,6 +35,7 @@ impl PerceptionSupervisor {
         let task = tokio::spawn(supervise(
             config,
             avatar,
+            depth,
             video,
             server_address,
             runtime,
@@ -51,6 +53,7 @@ impl PerceptionSupervisor {
 async fn supervise(
     config: PerceptionConfig,
     avatar: AvatarConfig,
+    depth: DepthConfig,
     video: VideoConfig,
     server_address: SocketAddr,
     runtime: Runtime,
@@ -79,7 +82,13 @@ async fn supervise(
         }
         let mut command = Command::new("uv");
         command
-            .args(worker_arguments(&config, &avatar, &video, &daemon_url))
+            .args(worker_arguments(
+                &config,
+                &avatar,
+                &depth,
+                &video,
+                &daemon_url,
+            ))
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
@@ -174,6 +183,7 @@ async fn mark_worker_paused(runtime: &Runtime) {
             state.camera.face_tracking.target_x = None;
             state.camera.face_tracking.target_y = None;
             state.video_effects.avatar_available = false;
+            state.video_effects.depth_available = false;
         })
         .await;
     runtime
@@ -197,6 +207,7 @@ async fn mark_worker_offline(runtime: &Runtime, message: String) {
             state.camera.face_tracking.target_x = None;
             state.camera.face_tracking.target_y = None;
             state.video_effects.avatar_available = false;
+            state.video_effects.depth_available = false;
         })
         .await;
     runtime
@@ -220,6 +231,7 @@ fn worker_daemon_url(address: SocketAddr) -> String {
 fn worker_arguments(
     config: &PerceptionConfig,
     avatar: &AvatarConfig,
+    depth: &DepthConfig,
     video: &VideoConfig,
     daemon_url: &str,
 ) -> Vec<String> {
@@ -241,6 +253,9 @@ fn worker_arguments(
             "--extra".into(),
             "liveportrait".into(),
         ]);
+    }
+    if depth.enabled {
+        arguments.extend(["--extra".into(), "depth".into()]);
     }
     arguments.extend([
         "tarsier-perception".into(),
@@ -285,6 +300,15 @@ fn worker_arguments(
         if avatar.compile {
             arguments.push("--avatar-compile".into());
         }
+    }
+    if depth.enabled {
+        arguments.extend([
+            "--depth-enabled".into(),
+            "--depth-fps".into(),
+            depth.fps.to_string(),
+            "--depth-input-height".into(),
+            depth.input_height.to_string(),
+        ]);
     }
     arguments
 }
@@ -360,6 +384,7 @@ mod tests {
         let args = worker_arguments(
             &config,
             &AvatarConfig::default(),
+            &DepthConfig::default(),
             &VideoConfig::default(),
             "http://127.0.0.1:8742",
         );
@@ -383,6 +408,7 @@ mod tests {
         let args = worker_arguments(
             &config,
             &AvatarConfig::default(),
+            &DepthConfig::default(),
             &VideoConfig::default(),
             "http://127.0.0.1:8742",
         );
@@ -410,6 +436,7 @@ mod tests {
         let args = worker_arguments(
             &PerceptionConfig::default(),
             &avatar,
+            &DepthConfig::default(),
             &video,
             "http://127.0.0.1:8742",
         );
@@ -448,6 +475,7 @@ mod tests {
         let args = worker_arguments(
             &PerceptionConfig::default(),
             &avatar,
+            &DepthConfig::default(),
             &VideoConfig::default(),
             "http://127.0.0.1:8742",
         );
@@ -471,6 +499,30 @@ mod tests {
                     && pair[1].ends_with("liveportrait-source.png"))
         );
         assert!(args.iter().any(|argument| argument == "--avatar-compile"));
+    }
+
+    #[test]
+    fn enabled_depth_adds_the_lazy_runtime_and_inference_geometry() {
+        let depth = DepthConfig {
+            enabled: true,
+            fps: 30,
+            input_height: 252,
+        };
+        let args = worker_arguments(
+            &PerceptionConfig::default(),
+            &AvatarConfig::default(),
+            &depth,
+            &VideoConfig::default(),
+            "http://127.0.0.1:8742",
+        );
+
+        assert!(args.windows(2).any(|pair| pair == ["--extra", "depth"]));
+        assert!(args.iter().any(|argument| argument == "--depth-enabled"));
+        assert!(args.windows(2).any(|pair| pair == ["--depth-fps", "30"]));
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--depth-input-height", "252"])
+        );
     }
 
     #[test]

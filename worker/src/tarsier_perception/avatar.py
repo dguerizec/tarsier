@@ -185,7 +185,7 @@ class AvatarPublisher:
             raise RuntimeError(f"failed to publish avatar frame: {error.reason}") from error
 
 
-class AvatarIdentityClient:
+class VideoIdentityClient:
     def __init__(
         self,
         daemon_url: str,
@@ -198,11 +198,18 @@ class AvatarIdentityClient:
         self._identity = "camera"
         self._next_refresh = 0.0
 
-    def selected_engine(self) -> str | None:
+    def selected_identity(self) -> str:
         now = time.monotonic()
         if now >= self._next_refresh:
             self._refresh(now)
-        return None if self._identity == "camera" else self._identity
+        return self._identity
+
+    def selected_avatar_engine(self) -> str | None:
+        identity = self.selected_identity()
+        return identity if identity in {"stylized-3d", "liveportrait"} else None
+
+    def invalidate(self) -> None:
+        self._next_refresh = 0.0
 
     def _refresh(self, now: float) -> None:
         self._next_refresh = now + self._refresh_seconds
@@ -211,7 +218,7 @@ class AvatarIdentityClient:
             with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:  # noqa: S310
                 payload = json.load(response)
             identity = payload.get("identity")
-            if identity not in {"camera", "stylized-3d", "liveportrait"}:
+            if identity not in {"camera", "stylized-3d", "liveportrait", "depth-map"}:
                 raise ValueError(f"invalid video identity: {identity!r}")
             self._identity = identity
         except (OSError, ValueError, urllib.error.URLError) as error:
@@ -299,7 +306,7 @@ class AvatarProcessor:
 
     def _run_switchable(self) -> None:
         publisher = AvatarPublisher(self._daemon_url)
-        identity = AvatarIdentityClient(self._daemon_url)
+        identity = VideoIdentityClient(self._daemon_url)
         active_engine: str | None = None
         resources = ExitStack()
         render: Callable[[AvatarInputFrame], np.ndarray | None] | None = None
@@ -307,7 +314,7 @@ class AvatarProcessor:
         retry_at = 0.0
         try:
             while (frame := self._frames.get()) is not None:
-                selected_engine = identity.selected_engine()
+                selected_engine = identity.selected_avatar_engine()
                 if selected_engine != active_engine:
                     resources.close()
                     resources = ExitStack()

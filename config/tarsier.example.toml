@@ -56,6 +56,13 @@ source_image = "assets/avatars/liveportrait-source.png"
 fps = 30
 compile = false
 
+[depth]
+enabled = true
+fps = 30
+# Depth Anything V2 uses 14-pixel patches. At the 16:9 perception aspect
+# ratio, 252 produces a 448x252 tensor and leaves real-time headroom.
+input_height = 252
+
 [[scenarios]]
 id = "open-palm-demo"
 enabled = true

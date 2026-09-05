@@ -55,7 +55,7 @@ main { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(17rem, .85
 .output-heading > strong { font-size: .8rem; }
 .output-heading > span, .background-heading > span { color: var(--muted); font-size: .7rem; text-align: right; }
 .output-mode-list, .background-effect-list { display: grid; gap: .55rem; }
-.output-mode-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.output-mode-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .background-effect-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .output-mode-option, .background-effect-option { position: relative; cursor: pointer; }
 .output-mode-option input, .background-effect-option input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
