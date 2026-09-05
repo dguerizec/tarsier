@@ -30,6 +30,19 @@
           <canvas id="hand-overlay" aria-hidden="true"></canvas>
           <div id="preview-placeholder">Waiting for video</div>
         </div>
+        <div class="pan-tilt-bar">
+          <div class="pan-tilt-copy">
+            <strong>Pan / tilt</strong>
+            <span id="pan-tilt-status">Hold a button or use the arrow keys</span>
+          </div>
+          <div class="direction-pad" role="group" aria-label="Pan and tilt camera">
+            <button class="secondary direction-up" type="button" data-pan-tilt="up" aria-label="Tilt up" title="Tilt up · Arrow Up">↑</button>
+            <button class="secondary direction-left" type="button" data-pan-tilt="left" aria-label="Pan left" title="Pan left · Arrow Left">←</button>
+            <button class="secondary direction-center" type="button" data-action="recenter" aria-label="Recenter camera" title="Recenter camera">●</button>
+            <button class="secondary direction-right" type="button" data-pan-tilt="right" aria-label="Pan right" title="Pan right · Arrow Right">→</button>
+            <button class="secondary direction-down" type="button" data-pan-tilt="down" aria-label="Tilt down" title="Tilt down · Arrow Down">↓</button>
+          </div>
+        </div>
       </section>
 
       <section class="telemetry panel">

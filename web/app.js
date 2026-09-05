@@ -7,6 +7,7 @@ const overlayContext = overlay.getContext("2d");
 const skeletonToggle = $("#skeleton-toggle");
 const zoomSlider = $("#zoom-slider");
 const zoomReset = $("#zoom-reset");
+const panTiltButtons = [...document.querySelectorAll("[data-pan-tilt]")];
 let state = null;
 let skeletonEnabled = localStorage.getItem("tarsier.handSkeleton") === "true";
 let socketConnected = false;
@@ -19,6 +20,9 @@ let zoomDraft = null;
 let zoomPending = false;
 let queuedZoom = null;
 let zoomSendTimer = null;
+let nudgePending = false;
+let nudgeRepeatTimer = null;
+let heldDirections = [];
 const pendingGestureFeatures = new Set();
 const zoomUpdateIntervalMs = 100;
 
@@ -193,6 +197,21 @@ function renderZoom(camera) {
   zoomReset.disabled = !camera.available || zoomPending;
 }
 
+function activeDirection() {
+  return heldDirections.at(-1) ?? null;
+}
+
+function renderPanTilt(camera) {
+  const direction = activeDirection();
+  for (const button of panTiltButtons) {
+    button.disabled = !camera.available;
+    button.setAttribute("aria-pressed", String(heldDirections.includes(button.dataset.panTilt)));
+  }
+  $("#pan-tilt-status").textContent = nudgePending && direction
+    ? `Moving ${direction}`
+    : "Hold a button or use the arrow keys";
+}
+
 function render(next) {
   observeDaemon(next.started_at_ms);
   state = next;
@@ -207,6 +226,7 @@ function render(next) {
     ? attitudeLabel(camera.attitude_source)
     : `${attitudeLabel(camera.attitude_source)} · ${age(camera.sample_at_ms)}`;
   renderZoom(camera);
+  renderPanTilt(camera);
   renderBuiltInGestures(camera);
   $("#pipeline-summary").textContent = pipeline.running
     ? `${pipeline.width}×${pipeline.height} · ${pipeline.fps.toFixed(1)} fps · ${pipeline.frame_count} frames`
@@ -299,8 +319,113 @@ new ResizeObserver(() => drawHandSkeleton()).observe($(".preview-stage"));
 
 document.querySelectorAll("[data-action]").forEach((button) => {
   button.addEventListener("click", async () => {
+    clearHeldDirections();
     await fetch(`/api/v1/camera/actions/${button.dataset.action}`, { method: "POST" });
   });
+});
+
+function clearHeldDirections() {
+  heldDirections = [];
+  if (nudgeRepeatTimer != null) {
+    clearTimeout(nudgeRepeatTimer);
+    nudgeRepeatTimer = null;
+  }
+  if (state) render(state);
+}
+
+function holdDirection(direction) {
+  heldDirections = heldDirections.filter((held) => held !== direction);
+  heldDirections.push(direction);
+  if (state) render(state);
+  sendNudge();
+}
+
+function releaseDirection(direction) {
+  heldDirections = heldDirections.filter((held) => held !== direction);
+  if (heldDirections.length === 0 && nudgeRepeatTimer != null) {
+    clearTimeout(nudgeRepeatTimer);
+    nudgeRepeatTimer = null;
+  }
+  if (state) render(state);
+}
+
+async function sendNudge() {
+  const direction = activeDirection();
+  if (nudgePending || direction == null || !state?.camera.available) return;
+  nudgePending = true;
+  cameraControlError = null;
+  if (state) render(state);
+  try {
+    const response = await fetch(`/api/v1/camera/nudge/${direction}`, { method: "POST" });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.error || `Camera command failed (${response.status})`);
+    }
+  } catch (error) {
+    cameraControlError = error instanceof Error ? error.message : String(error);
+    clearHeldDirections();
+  } finally {
+    nudgePending = false;
+    if (activeDirection() != null) {
+      nudgeRepeatTimer = setTimeout(() => {
+        nudgeRepeatTimer = null;
+        sendNudge();
+      }, 40);
+    }
+    if (state) render(state);
+  }
+}
+
+for (const button of panTiltButtons) {
+  const direction = button.dataset.panTilt;
+  button.addEventListener("pointerdown", (event) => {
+    if (button.disabled) return;
+    event.preventDefault();
+    button.setPointerCapture(event.pointerId);
+    holdDirection(direction);
+  });
+  for (const eventName of ["pointerup", "pointercancel", "lostpointercapture"]) {
+    button.addEventListener(eventName, () => releaseDirection(direction));
+  }
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    if (event.detail !== 0 || button.disabled) return;
+    holdDirection(direction);
+    releaseDirection(direction);
+  });
+}
+
+const arrowDirections = {
+  ArrowLeft: "left",
+  ArrowRight: "right",
+  ArrowUp: "up",
+  ArrowDown: "down",
+};
+
+function blocksArrowControl(target) {
+  return target instanceof HTMLInputElement
+    || target instanceof HTMLTextAreaElement
+    || target instanceof HTMLSelectElement
+    || target?.isContentEditable;
+}
+
+document.addEventListener("keydown", (event) => {
+  const direction = arrowDirections[event.key];
+  if (!direction || event.altKey || event.ctrlKey || event.metaKey || blocksArrowControl(event.target)) return;
+  event.preventDefault();
+  if (!heldDirections.includes(direction)) holdDirection(direction);
+});
+
+document.addEventListener("keyup", (event) => {
+  const direction = arrowDirections[event.key];
+  if (!direction) return;
+  event.preventDefault();
+  releaseDirection(direction);
+});
+
+window.addEventListener("blur", clearHeldDirections);
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) clearHeldDirections();
 });
 
 document.querySelectorAll("[data-gesture-feature]").forEach((button) => {
