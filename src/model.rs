@@ -73,9 +73,18 @@ pub struct FaceTrackingState {
     pub enabled: bool,
     pub active: bool,
     pub target_visible: bool,
+    #[serde(default)]
+    pub target_source: Option<FaceTrackingTarget>,
     pub target_x: Option<f32>,
     pub target_y: Option<f32>,
     pub error: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum FaceTrackingTarget {
+    Face,
+    Shoulders,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]

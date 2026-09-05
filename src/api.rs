@@ -23,8 +23,8 @@ use crate::{
     config::{CameraPresetConfig, Config, ScenarioConfig},
     face_tracking::FaceTrackingController,
     model::{
-        BuiltInGesture, CameraAttitudeSource, FaceTrackingState, Landmark, PerceptionObservation,
-        ScenarioActivation, unix_ms,
+        BuiltInGesture, CameraAttitudeSource, FaceTrackingState, FaceTrackingTarget, Landmark,
+        PerceptionObservation, ScenarioActivation, unix_ms,
     },
     pipeline::PreviewHub,
     runtime::Runtime,
@@ -901,7 +901,12 @@ async fn perception_observation(
     } else {
         &[]
     };
-    drive_face_tracking(&state, tracking_landmarks).await;
+    let tracking_pose_landmarks = if observation.pose_detected {
+        observation.pose_landmarks.as_slice()
+    } else {
+        &[]
+    };
+    drive_face_tracking(&state, tracking_landmarks, tracking_pose_landmarks).await;
 
     let presence_change = state
         .face_presence
@@ -954,7 +959,11 @@ async fn perception_observation(
     StatusCode::NO_CONTENT.into_response()
 }
 
-async fn drive_face_tracking(state: &ApiState, landmarks: &[Landmark]) {
+async fn drive_face_tracking(
+    state: &ApiState,
+    face_landmarks: &[Landmark],
+    pose_landmarks: &[Landmark],
+) {
     let Some(camera) = state.camera.clone() else {
         return;
     };
@@ -988,10 +997,17 @@ async fn drive_face_tracking(state: &ApiState, landmarks: &[Landmark]) {
         return;
     }
 
-    let target = controller.target(landmarks);
+    let target = controller
+        .face_target(face_landmarks)
+        .map(|target| (target, FaceTrackingTarget::Face))
+        .or_else(|| {
+            controller
+                .shoulder_target(pose_landmarks)
+                .map(|target| (target, FaceTrackingTarget::Shoulders))
+        });
     let desired_motion = target
         .as_ref()
-        .map(|target| (target.pan_direction, target.tilt_direction))
+        .map(|(target, _)| (target.pan_direction, target.tilt_direction))
         .unwrap_or((0, 0));
     let should_command = desired_motion != controller.motion() || desired_motion != (0, 0);
     let command_error = if should_command {
@@ -1014,8 +1030,9 @@ async fn drive_face_tracking(state: &ApiState, landmarks: &[Landmark]) {
                 enabled: true,
                 active: motion != (0, 0),
                 target_visible: target.is_some(),
-                target_x: target.as_ref().map(|target| target.x),
-                target_y: target.as_ref().map(|target| target.y),
+                target_source: target.as_ref().map(|(_, source)| *source),
+                target_x: target.as_ref().map(|(target, _)| target.x),
+                target_y: target.as_ref().map(|(target, _)| target.y),
                 error: command_error,
             };
         })
@@ -1484,10 +1501,46 @@ mod tests {
             let tracking = runtime.state().await.camera.face_tracking;
             assert!(tracking.enabled);
             assert!(tracking.target_visible);
+            assert_eq!(tracking.target_source, Some(FaceTrackingTarget::Face));
             assert_eq!(tracking.active, expected_active);
             assert_eq!(tracking.target_x, Some(x));
             assert_eq!(tracking.target_y, Some(y));
         }
+
+        let mut pose_landmarks = (0..33)
+            .map(|_| json!({"x": 0.5, "y": 0.5, "z": 0.0, "visibility": 0.9}))
+            .collect::<Vec<_>>();
+        pose_landmarks[11] = json!({"x": 0.6, "y": 0.4, "z": 0.0, "visibility": 0.9});
+        pose_landmarks[12] = json!({"x": 0.8, "y": 0.4, "z": 0.0, "visibility": 0.9});
+        let response = app
+            .oneshot(
+                Request::post("/api/v1/perception/observations")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "frame_id": 3,
+                            "captured_at_ms": 1300,
+                            "face_detected": false,
+                            "hand_detected": false,
+                            "pose_detected": true,
+                            "pose_landmarks": pose_landmarks,
+                            "gesture": null,
+                            "confidence": 0.0,
+                            "latency_ms": 10.0
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let tracking = runtime.state().await.camera.face_tracking;
+        assert!(tracking.target_visible);
+        assert_eq!(tracking.target_source, Some(FaceTrackingTarget::Shoulders));
+        assert!((tracking.target_x.unwrap() - 0.7).abs() < f32::EPSILON);
+        assert!((tracking.target_y.unwrap() - 0.3).abs() < f32::EPSILON);
+        assert!(tracking.active);
     }
 
     #[tokio::test]

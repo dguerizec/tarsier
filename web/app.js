@@ -338,6 +338,7 @@ function faceTrackingActive(camera = state?.camera) {
 
 function renderFaceTracking(camera) {
   const tracking = camera.face_tracking || {};
+  const targetName = tracking.target_source === "shoulders" ? "shoulders" : "face";
   faceTrackingToggle.disabled = !camera.available || faceTrackingPending || trackingPending;
   faceTrackingToggle.setAttribute("aria-pressed", String(tracking.enabled === true));
   faceTrackingToggle.textContent = faceTrackingPending
@@ -345,8 +346,8 @@ function renderFaceTracking(camera) {
     : tracking.enabled ? "Stop face tracking" : "Face tracking";
   faceTrackingToggle.title = tracking.error
     || (tracking.enabled
-      ? tracking.target_visible ? "Tracking the detected face" : "Waiting for a face"
-      : "Track the detected face with the gimbal");
+      ? tracking.target_visible ? `Tracking from detected ${targetName}` : "Waiting for a face or shoulders"
+      : "Track the detected face, with shoulders as a fallback");
 }
 
 function activeDirection() {
@@ -361,12 +362,13 @@ function renderPanTilt(camera) {
     button.setAttribute("aria-pressed", String(heldDirections.includes(button.dataset.panTilt)));
   }
   const faceTracking = camera.face_tracking || {};
+  const trackingTarget = faceTracking.target_source === "shoulders" ? "shoulders" : "face";
   $("#pan-tilt-status").textContent = trackingPending || faceTrackingPending
     ? "Switching tracking…"
     : camera.tracking === true ? "Camera tracking controls the gimbal"
-    : faceTracking.enabled && !faceTracking.target_visible ? "Face tracking · searching"
-    : faceTracking.enabled && faceTracking.active ? "Face tracking · centering"
-    : faceTracking.enabled ? "Face tracking · centered"
+    : faceTracking.enabled && !faceTracking.target_visible ? "Face tracking · searching for face or shoulders"
+    : faceTracking.enabled && faceTracking.active ? `Face tracking · ${trackingTarget} · centering`
+    : faceTracking.enabled ? `Face tracking · ${trackingTarget} · centered`
     : direction ? `Moving ${direction}`
     : panTiltPending ? "Stopping…" : "Hold a button or use the arrow keys";
 }

@@ -35,8 +35,9 @@ mischievous personality without tying its core to one camera vendor.
   HDR, recentering, tracking, named presets, and separate Tiny 2 built-in
   gesture controls are available over HTTP;
 - optional Tarsier face tracking follows the detected face with slower,
-  dead-zone-stabilized gimbal movement and switches exclusively with the
-  camera's built-in tracking;
+  dead-zone-stabilized gimbal movement, falls back to visible shoulders when
+  the face mesh disappears, and switches exclusively with the camera's built-in
+  tracking;
 - a supervised Python 3.12 worker performs local MediaPipe face and body-pose
   landmarking plus canned gesture recognition for up to two hands;
 - face presence and open-palm observations pass through dwell, release, and
@@ -143,7 +144,9 @@ a direction remains held and stops the motor on release. If the page or network
 disappears, the daemon expires the lease and stops the motor automatically.
 The **Face tracking** control below the preview uses the same movement lease at
 a slower speed. Enabling it first disables the camera's built-in tracking;
-enabling built-in tracking stops Tarsier face tracking. Manual pan, tilt,
+enabling built-in tracking stops Tarsier face tracking. The detected face is
+the preferred target; when it is unavailable, visible pose shoulders estimate
+the head position so tracking can continue at a distance. Manual pan, tilt,
 recenter, and preset controls stop built-in camera tracking before moving. They
 remain unavailable while Tarsier face tracking is active.
 

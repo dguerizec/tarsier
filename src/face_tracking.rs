@@ -1,6 +1,11 @@
 use crate::model::Landmark;
 
 const FACE_LANDMARK_COUNT: usize = 478;
+const POSE_LANDMARK_COUNT: usize = 33;
+const LEFT_SHOULDER_INDEX: usize = 11;
+const RIGHT_SHOULDER_INDEX: usize = 12;
+const MINIMUM_SHOULDER_VISIBILITY: f32 = 0.5;
+const ESTIMATED_FACE_OFFSET_IN_SHOULDER_WIDTHS: f32 = 0.5;
 const TARGET_X: f32 = 0.5;
 const TARGET_Y: f32 = 0.5;
 const PAN_START_THRESHOLD: f32 = 0.10;
@@ -40,8 +45,17 @@ impl FaceTrackingController {
         self.motion = motion;
     }
 
-    pub fn target(&self, landmarks: &[Landmark]) -> Option<FaceTarget> {
+    pub fn face_target(&self, landmarks: &[Landmark]) -> Option<FaceTarget> {
         let (x, y) = face_center(landmarks)?;
+        Some(self.target_at(x, y))
+    }
+
+    pub fn shoulder_target(&self, landmarks: &[Landmark]) -> Option<FaceTarget> {
+        let (x, y) = shoulder_face_estimate(landmarks)?;
+        Some(self.target_at(x, y))
+    }
+
+    fn target_at(&self, x: f32, y: f32) -> FaceTarget {
         let pan_direction = axis_direction(
             x - TARGET_X,
             self.motion.0,
@@ -54,13 +68,35 @@ impl FaceTrackingController {
             TILT_START_THRESHOLD,
             TILT_STOP_THRESHOLD,
         );
-        Some(FaceTarget {
+        FaceTarget {
             x,
             y,
             pan_direction,
             tilt_direction: -image_tilt_direction,
-        })
+        }
     }
+}
+
+fn shoulder_face_estimate(landmarks: &[Landmark]) -> Option<(f32, f32)> {
+    if landmarks.len() != POSE_LANDMARK_COUNT {
+        return None;
+    }
+    let left = &landmarks[LEFT_SHOULDER_INDEX];
+    let right = &landmarks[RIGHT_SHOULDER_INDEX];
+    if !left.x.is_finite()
+        || !left.y.is_finite()
+        || !right.x.is_finite()
+        || !right.y.is_finite()
+        || left.visibility.unwrap_or(1.0) < MINIMUM_SHOULDER_VISIBILITY
+        || right.visibility.unwrap_or(1.0) < MINIMUM_SHOULDER_VISIBILITY
+    {
+        return None;
+    }
+    let shoulder_width = (right.x - left.x).hypot(right.y - left.y);
+    let x = (left.x + right.x) / 2.0;
+    let y = ((left.y + right.y) / 2.0 - shoulder_width * ESTIMATED_FACE_OFFSET_IN_SHOULDER_WIDTHS)
+        .clamp(0.0, 1.0);
+    Some((x, y))
 }
 
 fn face_center(landmarks: &[Landmark]) -> Option<(f32, f32)> {
@@ -119,14 +155,14 @@ mod tests {
     #[test]
     fn centers_a_face_without_requesting_motion() {
         let controller = FaceTrackingController::default();
-        let target = controller.target(&face_at(0.5, 0.5)).unwrap();
+        let target = controller.face_target(&face_at(0.5, 0.5)).unwrap();
         assert_eq!((target.pan_direction, target.tilt_direction), (0, 0));
     }
 
     #[test]
     fn follows_horizontal_and_vertical_image_error() {
         let controller = FaceTrackingController::default();
-        let target = controller.target(&face_at(0.75, 0.25)).unwrap();
+        let target = controller.face_target(&face_at(0.75, 0.25)).unwrap();
         assert_eq!((target.pan_direction, target.tilt_direction), (1, 1));
     }
 
@@ -136,14 +172,14 @@ mod tests {
         controller.record_motion((1, 0));
         assert_eq!(
             controller
-                .target(&face_at(0.57, 0.5))
+                .face_target(&face_at(0.57, 0.5))
                 .unwrap()
                 .pan_direction,
             1
         );
         assert_eq!(
             controller
-                .target(&face_at(0.53, 0.5))
+                .face_target(&face_at(0.53, 0.5))
                 .unwrap()
                 .pan_direction,
             0
@@ -153,7 +189,38 @@ mod tests {
     #[test]
     fn refuses_incomplete_or_non_finite_face_meshes() {
         let controller = FaceTrackingController::default();
-        assert!(controller.target(&[]).is_none());
-        assert!(controller.target(&face_at(f32::NAN, 0.5)).is_none());
+        assert!(controller.face_target(&[]).is_none());
+        assert!(controller.face_target(&face_at(f32::NAN, 0.5)).is_none());
+    }
+
+    #[test]
+    fn estimates_a_face_target_from_visible_shoulders() {
+        let mut pose = vec![
+            Landmark {
+                x: 0.5,
+                y: 0.5,
+                z: 0.0,
+                visibility: Some(0.9),
+            };
+            POSE_LANDMARK_COUNT
+        ];
+        pose[LEFT_SHOULDER_INDEX].x = 0.6;
+        pose[LEFT_SHOULDER_INDEX].y = 0.4;
+        pose[RIGHT_SHOULDER_INDEX].x = 0.8;
+        pose[RIGHT_SHOULDER_INDEX].y = 0.4;
+
+        let target = FaceTrackingController::default()
+            .shoulder_target(&pose)
+            .unwrap();
+        assert!((target.x - 0.7).abs() < f32::EPSILON);
+        assert!((target.y - 0.3).abs() < f32::EPSILON);
+        assert_eq!((target.pan_direction, target.tilt_direction), (1, 1));
+
+        pose[RIGHT_SHOULDER_INDEX].visibility = Some(0.49);
+        assert!(
+            FaceTrackingController::default()
+                .shoulder_target(&pose)
+                .is_none()
+        );
     }
 }
