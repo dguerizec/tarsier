@@ -199,6 +199,10 @@ pub fn router_with_controls(
         )
         .route("/api/v1/video/recording/stop", post(stop_recording))
         .route("/api/v1/video/recordings/{filename}", get(saved_recording))
+        .route(
+            "/api/v1/video/recordings/{filename}/open",
+            post(open_saved_recording),
+        )
         .route("/api/v1/video/resolution", post(set_resolution))
         .route("/api/v1/video/background", post(set_background))
         .route(
@@ -1427,6 +1431,10 @@ async fn open_saved_photo(
         )
             .into_response();
     };
+    open_local_media(path).await
+}
+
+async fn open_local_media(path: std::path::PathBuf) -> Response {
     let mut command = tokio::process::Command::new("xdg-open");
     command
         .arg(path)
@@ -1438,7 +1446,9 @@ async fn open_saved_photo(
         Err(error) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("Could not launch the photo viewer: {error}")})),
+                Json(
+                    json!({"error": format!("Could not launch the default application: {error}")}),
+                ),
             )
                 .into_response();
         }
@@ -1446,10 +1456,10 @@ async fn open_saved_photo(
     match tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await {
         Ok(Ok(status)) if status.success() => StatusCode::ACCEPTED.into_response(),
         Ok(result) => {
-            tracing::warn!(?result, "photo viewer launch failed");
+            tracing::warn!(?result, "default application launch failed");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Could not open the photo with the default application"})),
+                Json(json!({"error": "Could not open the file with the default application"})),
             )
                 .into_response()
         }
@@ -1732,6 +1742,32 @@ async fn saved_recording(
         Ok(response) => response.into_response(),
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
+}
+
+async fn open_saved_recording(
+    axum::extract::Path(filename): axum::extract::Path<String>,
+    Json(_request): Json<Value>,
+) -> Response {
+    let checked = async {
+        if !crate::recording::valid_filename(&filename) {
+            return None;
+        }
+        let path = crate::recording::directory().ok()?.join(filename);
+        tokio::fs::symlink_metadata(&path)
+            .await
+            .ok()?
+            .is_file()
+            .then_some(path)
+    }
+    .await;
+    let Some(path) = checked else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "Video not found"})),
+        )
+            .into_response();
+    };
+    open_local_media(path).await
 }
 
 fn effects_unavailable_in_4k() -> Response {

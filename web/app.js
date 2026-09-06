@@ -1591,31 +1591,7 @@ takePhoto.addEventListener("click", async () => {
     photoLink.textContent = payload.path;
     photoLink.target = "_blank";
     photoLink.rel = "noopener";
-    const fileLink = document.createElement("button");
-    fileLink.type = "button";
-    fileLink.className = "photo-file-link";
-    fileLink.append(createElement(FolderOpen, { width: 18, height: 18, "aria-hidden": "true", focusable: "false" }));
-    fileLink.title = "Open photo with the default application";
-    fileLink.setAttribute("aria-label", "Open photo with the default application");
-    const openStatus = document.createElement("span");
-    fileLink.addEventListener("click", async () => {
-      fileLink.disabled = true;
-      openStatus.textContent = " Opening…";
-      try {
-        const response = await fetch(`${payload.url}/open`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: "{}",
-        });
-        if (!response.ok) throw new Error((await response.json()).error || "Could not open photo");
-        openStatus.textContent = "";
-      } catch (error) {
-        openStatus.textContent = ` ${error.message}`;
-      } finally {
-        fileLink.disabled = false;
-      }
-    });
-    photoStatus.replaceChildren("Saved: ", photoLink, " ", fileLink, openStatus);
+    photoStatus.replaceChildren("Saved: ", photoLink, " ", ...localMediaOpenControls(payload.url, "photo"));
   } catch (error) {
     photoStatus.classList.add("error");
     photoStatus.textContent = error instanceof Error ? error.message : String(error);
@@ -1711,7 +1687,7 @@ function renderRecording() {
     link.textContent = recordingState.path;
     link.target = "_blank";
     link.rel = "noopener";
-    recordingStatus.replaceChildren("Saved video: ", link);
+    recordingStatus.replaceChildren("Saved video: ", link, " ", ...localMediaOpenControls(recordingState.url, "video"));
     recordingStatus.hidden = false;
     recordingStatusKey = recordingState.url;
   }
@@ -1752,3 +1728,31 @@ recordVideo.addEventListener("click", async () => {
   }
 });
 void pollRecording();
+
+function localMediaOpenControls(url, mediaName) {
+  const fileLink = document.createElement("button");
+  fileLink.type = "button";
+  fileLink.className = "photo-file-link";
+  fileLink.append(createElement(FolderOpen, { width: 18, height: 18, "aria-hidden": "true", focusable: "false" }));
+  fileLink.title = `Open ${mediaName} with the default application`;
+  fileLink.setAttribute("aria-label", `Open ${mediaName} with the default application`);
+  const openStatus = document.createElement("span");
+  fileLink.addEventListener("click", async () => {
+    fileLink.disabled = true;
+    openStatus.textContent = " Opening…";
+    try {
+      const response = await fetch(`${url}/open`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      if (!response.ok) throw new Error((await response.json()).error || `Could not open ${mediaName}`);
+      openStatus.textContent = "";
+    } catch (error) {
+      openStatus.textContent = ` ${error.message}`;
+    } finally {
+      fileLink.disabled = false;
+    }
+  });
+  return [fileLink, openStatus];
+}

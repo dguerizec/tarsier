@@ -790,3 +790,6 @@ prioritizes capture speed, so 4K recordings can be large.
 - `POST /api/v1/video/recording` with `{}`: start recording.
 - `POST /api/v1/video/recording/stop` with `{}`: finalize recording.
 - `GET /api/v1/video/recordings/{filename}`: stream a saved MP4 with range support.
+
+The folder icon beside a saved video opens it with the desktop default application
+through `POST /api/v1/video/recordings/{filename}/open` with `{}`, like saved photos.
