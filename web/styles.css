@@ -50,8 +50,10 @@ main { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(17rem, .85
 .pan-tilt-copy strong { font-size: .8rem; }
 .pan-tilt-copy span { color: var(--muted); font-size: .7rem; }
 .pan-tilt-controls { display: flex; align-items: center; gap: .75rem; }
-.tracking-mode-controls { display: grid; gap: .45rem; min-width: 8.5rem; }
-#face-tracking-toggle, #hands-tracking-toggle { min-width: 8.5rem; }
+.tracking-mode-controls { position: absolute; bottom: .5rem; left: .5rem; z-index: 3; display: flex; align-items: center; gap: .4rem; max-width: calc(100% - 3.375rem); padding: .4rem; border: 1px solid #ffffff30; border-radius: .5rem; background: #111713d9; backdrop-filter: blur(8px); opacity: 0; pointer-events: none; transition: opacity .15s; }
+.preview-stage:hover .tracking-mode-controls, .tracking-mode-controls:focus-within { opacity: 1; pointer-events: auto; }
+@media (hover: none) { .tracking-mode-controls { opacity: 1; pointer-events: auto; } }
+#face-tracking-toggle, #hands-tracking-toggle { min-width: 0; white-space: nowrap; }
 .tracking-auto-zoom-switch { justify-content: space-between; padding: 0 .2rem; color: #f2f5ef; }
 .tracking-auto-zoom-switch strong { font-size: .72rem; white-space: nowrap; }
 .direction-pad { display: grid; grid-template: repeat(3, 2rem) / repeat(3, 2rem); gap: .25rem; }
