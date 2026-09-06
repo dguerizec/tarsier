@@ -889,13 +889,16 @@ browser metadata may identify the browser without naming the tab or website.
 continues in shared mode. Turning an input **Off** alone does not release it:
 keeping the reservation requires an active capture stream, whose samples are not
 routed to the virtual output or shown in meters while Off. A released input stays
-released even after reconnecting, until **Unlocked** is clicked or the daemon restarts.
+released even after reconnecting, until **Unlocked** is clicked, the last external
+client leaves a shared input, or the daemon restarts.
 
 Released inputs automatically switch from **Unlocked** to **Shared** while another
-application is connected, and back when the last external capture disconnects.
+application is connected. When the last external capture disconnects, Tarsier
+automatically requests exclusivity again and shows **Locked** once acquired.
 Tarsier's own capture processes are excluded. A `pw-link --monitor` listener
 coalesces connection changes over 200 ms, with a five-second fallback scan; only
-changed occupancy is broadcast to viewers. This does not re-enable exclusivity.
+changed occupancy is broadcast to viewers. Releasing an idle input keeps it
+**Unlocked** until it is used or explicitly locked again.
 
 A reservation is marked **Locked** only after the exclusive stream
 receives samples. Busy or unavailable inputs show **Shared** and retry;

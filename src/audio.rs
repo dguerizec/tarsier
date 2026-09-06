@@ -822,7 +822,12 @@ async fn refresh_connections(runtime: &Runtime) -> Result<()> {
     let busy = busy_sources(&graph);
     if runtime.state().await.audio_busy_sources != busy {
         runtime
-            .update(|state| state.audio_busy_sources = busy)
+            .update(|state| {
+                state.audio_released_sources.retain(|source| {
+                    !state.audio_busy_sources.contains(source) || busy.contains(source)
+                });
+                state.audio_busy_sources = busy;
+            })
             .await;
     }
     Ok(())
