@@ -15,6 +15,7 @@ mod recording;
 mod runtime;
 mod scenario;
 mod settings;
+mod video_clients;
 mod video_transform;
 
 use std::path::PathBuf;

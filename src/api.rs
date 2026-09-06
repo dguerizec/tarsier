@@ -37,6 +37,7 @@ use crate::{
 
 #[derive(Clone)]
 struct ApiState {
+    video_applications: crate::video_clients::Monitor,
     auth: Option<crate::auth::Auth>,
     recorder: crate::recording::Recorder,
     audio: Option<crate::audio::AudioHub>,
@@ -93,6 +94,18 @@ pub struct ApiOptions {
     pub hands_tracking_enabled: bool,
 }
 
+async fn video_applications(State(state): State<ApiState>) -> Response {
+    let device = if state.config.video.loopback_enabled {
+        state.config.video.output_device.clone()
+    } else {
+        String::new()
+    };
+    match state.video_applications.applications(device).await {
+        Ok(snapshot) => Json(snapshot).into_response(),
+        Err(error) => command_error(error),
+    }
+}
+
 #[cfg(test)]
 pub fn router(
     config: Config,
@@ -144,6 +157,7 @@ pub fn router_with_controls(
         daemon_restart: options.daemon_restart,
         user_settings: options.user_settings,
         audio_settings_control: Arc::new(Mutex::new(())),
+        video_applications: crate::video_clients::Monitor::default(),
         shutdown,
     };
     let router = Router::new()
@@ -164,6 +178,16 @@ pub fn router_with_controls(
                 (
                     [(header::CONTENT_TYPE, "text/javascript")],
                     include_str!("../web/audio.js"),
+                )
+            }),
+        )
+        .route("/api/v1/video/applications", get(video_applications))
+        .route(
+            "/assets/video-applications.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/javascript")],
+                    include_str!("../web/video-applications.js"),
                 )
             }),
         )

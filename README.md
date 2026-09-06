@@ -498,6 +498,7 @@ requests must be same-origin. Login attempts are throttled to one per second.
 | `POST` | `/api/v1/daemon/restart` | Gracefully exit for restart by the active service supervisor |
 | `POST` | `/api/v1/video/resolution` | Persist `{ "width": 3840, "height": 2160 }` (also 720p/1080p) and restart under supervision; 4K disables effects |
 | `GET` | `/api/v1/state` | Complete runtime state |
+| `GET` | `/api/v1/video/applications` | Local processes with the virtual camera open; cached for two seconds |
 | `GET` | `/api/v1/config` | Effective configuration |
 | `GET` | `/api/v1/camera/state` | Camera availability, attitude, and typed image-setting readback |
 | `POST` | `/api/v1/camera/power` | Wake or sleep the physical camera while keeping the daemon available |

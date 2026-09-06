@@ -712,6 +712,7 @@ mod tests {
             "/api/v1/state",
             "/api/v1/health",
             "/api/v1/config",
+            "/api/v1/video/applications",
             "/api/v1/events",
             "/api/v1/preview.mjpeg",
             "/api/v1/camera/snapshot",
