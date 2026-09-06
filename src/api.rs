@@ -38,6 +38,7 @@ use crate::{
 #[derive(Clone)]
 struct ApiState {
     recorder: crate::recording::Recorder,
+    audio: Option<crate::audio::AudioHub>,
     config: Config,
     runtime: Runtime,
     stabilizer: Arc<Mutex<OpenPalmStabilizer>>,
@@ -79,6 +80,7 @@ impl DaemonRestart {
 
 #[derive(Default)]
 pub struct ApiOptions {
+    pub audio: Option<crate::audio::AudioHub>,
     pub recorder: crate::recording::Recorder,
     pub pipeline: Option<VideoPipelineControl>,
     pub daemon_restart: Option<DaemonRestart>,
@@ -121,6 +123,7 @@ pub fn router_with_controls(
     hands_tracking.set_enabled(options.hands_tracking_enabled);
     let state = ApiState {
         recorder: options.recorder,
+        audio: options.audio,
         stabilizer: Arc::new(Mutex::new(OpenPalmStabilizer::new(&config.perception))),
         face_presence: Arc::new(Mutex::new(FacePresenceStabilizer::new(&config.perception))),
         config,
@@ -158,6 +161,10 @@ pub fn router_with_controls(
         .route("/api/v1/audio/sources", get(audio_sources))
         .route("/api/v1/audio/meter", get(audio_meter))
         .route("/api/v1/audio/capture", post(set_audio_capture))
+        .route(
+            "/api/v1/audio/virtual",
+            get(virtual_audio).post(set_virtual_audio),
+        )
         .route("/assets/lucide.js", get(lucide_js))
         .route("/assets/styles.css", get(styles_css))
         .route("/api/v1/health", get(health))
@@ -2917,20 +2924,76 @@ async fn audio_meter(
     let Some(source) = query.get("source") else {
         return StatusCode::BAD_REQUEST.into_response();
     };
-    match crate::audio::sources().await {
-        Ok(sources) if sources.iter().any(|item| &item.id == source) => {
-            let source = source.clone();
-            let states = state.runtime.subscribe_state();
-            if !states.borrow().audio_capture_sources.contains(&source) {
-                return StatusCode::CONFLICT.into_response();
-            }
-            websocket.on_upgrade(move |socket| {
-                crate::audio::stream(socket, source, state.shutdown, states)
-            })
-        }
-        Ok(_) => StatusCode::NOT_FOUND.into_response(),
-        Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    let Some(audio) = state.audio else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let states = state.runtime.subscribe_state();
+    let enabled = if source == crate::audio::VIRTUAL_SOURCE {
+        states.borrow().audio_virtual.enabled
+    } else {
+        states.borrow().audio_capture_sources.contains(source)
+    };
+    if !enabled {
+        return StatusCode::CONFLICT.into_response();
     }
+    let source = source.clone();
+    websocket.on_upgrade(move |socket| async move {
+        audio.stream(socket, source, state.shutdown, states).await;
+    })
+}
+
+async fn virtual_audio(State(state): State<ApiState>) -> Json<crate::audio::VirtualMicrophone> {
+    Json(state.runtime.state().await.audio_virtual)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VirtualAudioRequest {
+    enabled: Option<bool>,
+    source: Option<String>,
+    muted: Option<bool>,
+}
+
+async fn set_virtual_audio(
+    State(state): State<ApiState>,
+    Json(request): Json<VirtualAudioRequest>,
+) -> Response {
+    if let Some(source) = &request.source {
+        match crate::audio::sources().await {
+            Ok(sources) if sources.iter().any(|s| &s.id == source) => {}
+            Ok(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": "Select an available input microphone"})),
+                )
+                    .into_response();
+            }
+            Err(e) => return command_error(e),
+        }
+    }
+    state
+        .runtime
+        .update(|s| {
+            if let Some(source) = &request.source {
+                s.audio_virtual.source = Some(source.clone());
+            }
+            if let Some(enabled) = request.enabled {
+                s.audio_virtual.enabled = enabled;
+            }
+            if let Some(muted) = request.muted {
+                s.audio_virtual.muted = muted;
+            }
+            if s.audio_virtual.enabled
+                && (request.enabled == Some(true) || request.source.is_some())
+                && let Some(source) = &s.audio_virtual.source
+                && !s.audio_capture_sources.contains(source)
+            {
+                s.audio_capture_sources.push(source.clone());
+                s.audio_capture_sources.sort();
+            }
+        })
+        .await;
+    Json(state.runtime.state().await.audio_virtual).into_response()
 }
 
 async fn events_socket(
@@ -3023,6 +3086,49 @@ mod tests {
 
     use super::*;
     use crate::{camera, config::CameraAdapter, settings::UserSettings};
+
+    #[tokio::test]
+    async fn virtual_microphone_mute_is_shared_without_stopping_input_capture() {
+        let runtime = Runtime::new();
+        runtime
+            .update(|s| {
+                s.audio_capture_sources = vec!["mic".into()];
+                s.audio_virtual = crate::audio::VirtualMicrophone {
+                    enabled: true,
+                    source: Some("mic".into()),
+                    running: true,
+                    ..Default::default()
+                };
+            })
+            .await;
+        let mut client = runtime.subscribe_state();
+        let (_stop, shutdown) = watch::channel(false);
+        let app = router(
+            Config::default(),
+            runtime.clone(),
+            PreviewHub::new(),
+            None,
+            shutdown,
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/audio/virtual")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"muted":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        client.changed().await.unwrap();
+        let state = client.borrow_and_update();
+        assert!(state.audio_virtual.muted);
+        assert!(state.audio_virtual.enabled);
+        assert_eq!(state.audio_capture_sources, vec!["mic"]);
+        assert_eq!(state.audio_virtual.source.as_deref(), Some("mic"));
+    }
 
     #[tokio::test]
     async fn disabling_disconnected_audio_updates_all_clients_and_reconnects() {

@@ -2,20 +2,86 @@ const tracks = new Map();
 const container = document.querySelector('#audio-tracks');
 const status = document.querySelector('#audio-status');
 let enabledSources = null;
+const virtualId = 'tarsier_microphone';
+const outputSource = document.querySelector('#audio-output-source');
+const outputStatus = document.querySelector('#audio-output-status');
+const outputError = document.querySelector('#audio-output-error');
+let virtualState = { enabled: false, muted: false, source: null, running: false };
+let virtualPending = false;
+let availableSources = [];
 
-export function syncAudioCapture(sources) {
+function renderOutput() {
+  const selected = virtualState.source || '';
+  if (selected && ![...outputSource.options].some((option) => option.value === selected)) {
+    outputSource.add(new Option('Disconnected microphone', selected));
+  }
+  outputSource.value = selected;
+  outputSource.disabled = virtualPending;
+  document.querySelectorAll('[data-audio-output]').forEach((button) => {
+    const on = button.dataset.audioOutput === 'true';
+    button.setAttribute('aria-pressed', String(virtualState.enabled === on));
+    button.disabled = virtualPending || (on && !selected);
+  });
+  document.querySelectorAll('[data-audio-mute]').forEach((button) => {
+    button.setAttribute('aria-pressed', String(virtualState.muted === (button.dataset.audioMute === 'true')));
+    button.disabled = virtualPending;
+  });
+  outputStatus.textContent = !virtualState.enabled ? 'Virtual microphone off'
+    : virtualState.error ? virtualState.error
+    : !virtualState.running ? 'Starting virtual microphone…'
+    : virtualState.muted ? 'Output muted · Sending silence'
+    : !availableSources.some((s) => s.id === selected) ? 'Input disconnected · Sending silence'
+    : !enabledSources?.has(selected) ? 'Input capture off · Sending silence'
+    : 'Tarsier Microphone is ready';
+  const track = tracks.get(virtualId);
+  if (track) syncTrack(track);
+}
+
+async function updateOutput(patch) {
+  if (virtualPending) return;
+  virtualPending = true;
+  outputError.hidden = true;
+  renderOutput();
+  try {
+    const response = await fetch('/api/v1/audio/virtual', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
+    });
+    if (!response.ok) {
+      const body = await response.json();
+      throw new Error(body.error || 'Could not update virtual microphone');
+    }
+    // Shared runtime events update all clients, including this one.
+  } catch (error) {
+    outputError.textContent = error.message;
+    outputError.hidden = false;
+  } finally {
+    virtualPending = false;
+    renderOutput();
+  }
+}
+outputSource.onchange = () => { if (outputSource.value) void updateOutput({ source: outputSource.value }); };
+document.querySelectorAll('[data-audio-output]').forEach((button) => {
+  button.onclick = () => void updateOutput({ enabled: button.dataset.audioOutput === 'true' });
+});
+document.querySelectorAll('[data-audio-mute]').forEach((button) => {
+  button.onclick = () => void updateOutput({ muted: button.dataset.audioMute === 'true' });
+});
+
+export function syncAudioCapture(sources, output) {
+  if (output) virtualState = output;
   enabledSources = new Set(sources);
   for (const track of tracks.values()) syncTrack(track);
+  renderOutput();
 }
 
 function syncTrack(track) {
-  track.enabled = enabledSources?.has(track.id) ?? track.enabled;
+  track.enabled = track.id === virtualId ? virtualState.enabled : enabledSources?.has(track.id) ?? track.enabled;
   track.buttons.forEach((button, index) => {
     button.setAttribute('aria-pressed', String(index === (track.enabled ? 0 : 1)));
     button.disabled = track.pending || (index === 0 && track.unavailable);
   });
   if (!track.enabled) {
-    stop(track);
+    stop(track, track.unavailable ? 'Disconnected' : 'Capture off');
   } else if (!track.socket && Date.now() >= track.retryAt && !track.unavailable) {
     start(track);
   }
@@ -67,7 +133,7 @@ function start(track) {
     const now = performance.now();
     track.level = { ...level, time: now };
     track.history.push(track.level);
-    if (track.history.length > 200) track.history.splice(0, track.history.length - 200);
+    if (track.history.length > 500) track.history.splice(0, track.history.length - 500);
     if (level.clipped) track.clipUntil = now + 1500;
     track.label.textContent = track.muted ? 'Source muted' : 'Capturing';
   };
@@ -88,6 +154,7 @@ function create(source) {
     <div><span>L</span><meter min="-60" max="0" low="-18" high="-6" optimum="-24" value="-60"></meter></div>
     <div><span>R</span><meter min="-60" max="0" low="-18" high="-6" optimum="-24" value="-60"></meter></div>
     <span class="audio-peak">−∞ dBFS</span></div></div>`;
+  row.querySelector('strong').textContent = source.name;
   const track = {
     id: source.id, row, history: [], level: null, socket: null, clipUntil: 0,
     enabled: source.enabled === true, pending: false, unavailable: false, retryAt: 0,
@@ -101,7 +168,12 @@ function create(source) {
   track.buttons[0].onclick = () => void setCapture(track, true);
   track.buttons[1].onclick = () => void setCapture(track, false);
   stop(track);
-  container.append(row);
+  if (source.id === virtualId) {
+    row.querySelector('[role="group"]').hidden = true;
+    document.querySelector('#audio-output-track').append(row);
+  } else {
+    container.append(row);
+  }
   tracks.set(source.id, track);
   return track;
 }
@@ -113,6 +185,10 @@ async function refresh() {
     if (!response.ok) throw new Error(sources.error || 'Audio discovery unavailable');
     status.textContent = sources.length ? '' : 'No microphones detected. Connect an audio input to get started.';
     status.hidden = sources.length > 0;
+    availableSources = sources;
+    outputSource.replaceChildren(new Option('Select a microphone', ''));
+    for (const source of sources) outputSource.add(new Option(source.name, source.id));
+    renderOutput();
     for (const source of sources) {
       const track = tracks.get(source.id) || create(source);
       track.row.querySelector('strong').textContent = source.name;
@@ -122,7 +198,7 @@ async function refresh() {
       syncTrack(track);
     }
     for (const [id, track] of tracks) {
-      if (!sources.some((source) => source.id === id)) {
+      if (id !== virtualId && !sources.some((source) => source.id === id)) {
         track.unavailable = true;
         stop(track, 'Disconnected');
         syncTrack(track);
@@ -156,7 +232,7 @@ function draw(now) {
       const x = width * (1 - (now - level.time) / 10000);
       context.fillStyle = level.clipped ? '#f37878' : '#94dba7';
       context.fillRect(x, height / 2 - level.max * height * 0.46,
-        Math.max(devicePixelRatio, width / 200), Math.max(devicePixelRatio, (level.max - level.min) * height * 0.46));
+        Math.max(devicePixelRatio, width / 500), Math.max(devicePixelRatio, (level.max - level.min) * height * 0.46));
     }
     const live = track.level && now - track.level.time < 500 ? track.level : null;
     const db = (value) => value > 0 ? Math.max(-60, 20 * Math.log10(value)) : -60;
@@ -169,6 +245,7 @@ function draw(now) {
   requestAnimationFrame(draw);
 }
 
+create({ id: virtualId, name: 'Tarsier Microphone · Output' });
 refresh();
 const refreshTimer = setInterval(refresh, 5000);
 requestAnimationFrame(draw);

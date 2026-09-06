@@ -185,12 +185,14 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
         (None, None)
     };
     let recorder = recording::Recorder::default();
+    let (audio, audio_task) = audio::AudioHub::start(runtime.clone(), shutdown_rx.clone());
     let app = api::router_with_controls(
         config.clone(),
         runtime.clone(),
         preview,
         camera,
         api::ApiOptions {
+            audio: Some(audio),
             recorder: recorder.clone(),
             pipeline: Some(pipeline_control),
             daemon_restart,
@@ -227,6 +229,7 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
             }
             recorder.shutdown().await;
             let _ = shutdown_tx.send(true);
+            let _ = audio_task.await;
             if let Some(perception) = perception {
                 // Stop the worker before Axum drains any remaining requests.
                 perception.shutdown().await;

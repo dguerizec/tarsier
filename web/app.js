@@ -771,7 +771,7 @@ function renderBackground(videoEffects) {
 function render(next) {
   observeDaemon(next.started_at_ms);
   state = next;
-  syncAudioCapture(next.audio_capture_sources || []);
+  syncAudioCapture(next.audio_capture_sources || [], next.audio_virtual);
   if (next.last_photo) renderSavedPhoto(next.last_photo);
   renderVideoTransform();
   const camera = next.camera;

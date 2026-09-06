@@ -853,27 +853,51 @@ ffprobe -v error -show_entries format_tags=tarsier_settings -of json video.mp4
 ```
 
 
-### Audio level panel
+### Audio levels and virtual microphone
 
-The panel below the preview lists the daemon host's microphone sources by name.
-Enable each source with **On** to see a scrolling ten-second amplitude envelope,
-left/right peak meters in dBFS, and a full-scale clipping indicator. **Off** stops
-that panel's capture; it does not mute the system microphone or other applications.
-Sources start off when opening or reloading the page. Closing the page releases
-its capture streams. Device discovery refreshes every five seconds and excludes
-speaker monitor sources. Stereo channels share an envelope without phase cancellation;
-mono sources are converted to stereo for the display.
+The panel below the preview lists the daemon host's microphones by name. Enable
+an input with **On** to start shared daemon capture. All viewers see the same
+controls and receive the same ten-second waveform history window and stereo peak
+levels. Closing a page does not stop capture; **Off** stops the input for every
+viewer and silences a virtual output using it. History itself is local to each
+viewer. Speaker monitors and Tarsier's own output are excluded from input selection.
 
-The daemon requires `pactl` and `parec` from the PulseAudio utilities package and
-access to the user's PulseAudio-compatible server (including PipeWire-Pulse).
-Capture uses 48 kHz stereo PCM and sends only 50 ms amplitude summaries to the UI.
-Raw audio is neither sent to the browser nor saved. Existing video recordings
-remain video-only; virtual microphone output and agent audio are future work.
+Select **Virtual microphone input**, then turn **Virtual microphone On** to publish
+**Tarsier Microphone** as an audio input in KDE, browsers, and call applications.
+Enabling the virtual microphone or switching its input enables capture of that
+selected source. The audio is passed through as 48 kHz, 16-bit stereo PCM, without
+denoising or gain processing. Mono sources are converted to stereo. **Mute output**
+sends silence while preserving input capture. An unavailable, disabled, or stale
+input also produces silence; no other microphone is selected as a fallback.
+Reconnecting the same source lets capture retry automatically.
 
-- `GET /api/v1/audio/sources`: available source IDs, descriptions, and mute state.
-- `WS /api/v1/audio/meter?source=<encoded-source-id>`: on-demand amplitude summaries
-  (`min`, `max`, stereo `peak` and `rms`, `clipped`); closes on capture failure.
+The output waveform meters the published virtual source, including any mute or
+volume applied in the system mixer. Select **Tarsier Microphone** separately from
+the camera in your call app. Tarsier does not change the system's default input.
+Turning virtual output **Off** removes that virtual device; input capture controls
+remain independent. These settings are shared across browser clients but reset to
+off on daemon restart. Recordings remain video-only; agent audio is future work.
 
-Each open meter owns a capture stream, released on disconnect or daemon shutdown.
-Multiple enabled microphones can be displayed simultaneously. With LAN access
-enabled, this panel follows the same access boundary as the camera preview.
+Dependencies: `pactl` and `parec` (PulseAudio utilities), `pw-cli` and
+`libpipewire-module-pipe-tunnel` (PipeWire), a working user PipeWire/PulseAudio
+session, and `XDG_RUNTIME_DIR`. The virtual source uses PipeWire's
+[Unix pipe tunnel](https://docs.pipewire.org/page_module_pipe_tunnel.html), hosted
+in a daemon-owned child process with a private runtime FIFO. Stopping the child
+removes the source; no permanent PipeWire configuration or kernel module is needed.
+Audio failures do not stop video. Each physical source has one capture process,
+regardless of the number of viewers. The UI receives only amplitude summaries;
+raw audio stays on the daemon host and is neither saved nor played on speakers.
+
+- `GET /api/v1/audio/sources`: source IDs, names, mute state, and capture enablement.
+- `POST /api/v1/audio/capture`: `{ "source": "<id>", "enabled": true }`.
+- `GET /api/v1/audio/virtual`: desired settings and actual running/error status.
+- `POST /api/v1/audio/virtual`: partial update of `source`, `enabled`, or `muted`.
+- `WS /api/v1/audio/meter?source=<encoded-id>`: shared 20 ms summaries (`min`,
+  `max`, stereo `peak`/`rms`, `clipped`), or a capture error. Use
+  `source=tarsier_microphone` to observe the published output while enabled.
+
+With LAN access enabled, these controls follow the same access boundary as the
+camera preview. FIFO and capture queues are bounded; delayed samples are discarded
+and replaced by silence rather than replayed later. Existing call applications may
+need their microphone selected again after turning virtual output off or restarting
+the daemon, since those actions remove the device.

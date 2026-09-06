@@ -233,3 +233,10 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .audio-meters meter { width: 85px; height: 13px; }
 .audio-meters .audio-peak { display: block; text-align: right; font-variant-numeric: tabular-nums; margin-top: .25rem; }
 .audio-meters .clipping { color: #f37878; }
+
+.audio-output-controls { margin-top: 1rem; padding-top: .8rem; border-top: 1px solid var(--panel-edge); display: flex; align-items: center; gap: .6rem 1rem; flex-wrap: wrap; }
+.audio-output-controls > label, .audio-output-switch > span { font-size: .75rem; color: var(--muted); }
+.audio-output-controls select { min-width: 0; max-width: 100%; flex: 1 1 200px; padding: .4rem; background: var(--panel); color: inherit; border: 1px solid var(--panel-edge); border-radius: .4rem; }
+.audio-output-switch { display: flex; align-items: center; gap: .5rem; }
+.audio-output-controls > p, #audio-output-track { flex: 0 0 100%; }
+.audio-track-header [hidden] { display: none; }

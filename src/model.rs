@@ -15,6 +15,8 @@ pub struct RuntimeState {
     #[serde(default)]
     pub audio_capture_sources: Vec<String>,
     #[serde(default)]
+    pub audio_virtual: crate::audio::VirtualMicrophone,
+    #[serde(default)]
     pub last_photo: Option<Value>,
 }
 
@@ -29,6 +31,7 @@ impl Default for RuntimeState {
             perception: PerceptionState::default(),
             last_scenario: None,
             audio_capture_sources: Vec::new(),
+            audio_virtual: Default::default(),
             last_photo: None,
         }
     }
