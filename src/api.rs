@@ -149,6 +149,7 @@ pub fn router_with_controls(
             get(network_settings).post(set_network_settings),
         )
         .route("/assets/app.js", get(app_js))
+        .route("/assets/preview-drag.js", get(preview_drag_js))
         .route(
             "/assets/audio.js",
             get(|| async {
@@ -322,6 +323,16 @@ async fn app_js() -> impl IntoResponse {
             (header::CACHE_CONTROL, "no-store"),
         ],
         include_str!("../web/app.js"),
+    )
+}
+
+async fn preview_drag_js() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        include_str!("../web/preview-drag.js"),
     )
 }
 
@@ -593,6 +604,10 @@ struct IdentityResponse {
 #[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 enum PanTiltDirection {
+    UpLeft,
+    UpRight,
+    DownLeft,
+    DownRight,
     Left,
     Right,
     Up,
@@ -609,6 +624,10 @@ struct PanTiltMotion {
 impl PanTiltDirection {
     fn vector(self) -> (i8, i8) {
         match self {
+            Self::UpLeft => (-1, 1),
+            Self::UpRight => (1, 1),
+            Self::DownLeft => (-1, -1),
+            Self::DownRight => (1, -1),
             Self::Left => (-1, 0),
             Self::Right => (1, 0),
             Self::Up => (0, 1),
@@ -619,6 +638,10 @@ impl PanTiltDirection {
 
     fn as_str(self) -> &'static str {
         match self {
+            Self::UpLeft => "up-left",
+            Self::UpRight => "up-right",
+            Self::DownLeft => "down-left",
+            Self::DownRight => "down-right",
             Self::Left => "left",
             Self::Right => "right",
             Self::Up => "up",
@@ -3258,6 +3281,16 @@ mod tests {
         assert_eq!(PanTiltDirection::Up.vector(), (0, 1));
         assert_eq!(PanTiltDirection::Down.vector(), (0, -1));
         assert_eq!(PanTiltDirection::Stop.vector(), (0, 0));
+        for (name, vector) in [
+            ("up-left", (-1, 1)),
+            ("up-right", (1, 1)),
+            ("down-left", (-1, -1)),
+            ("down-right", (1, -1)),
+        ] {
+            let direction: PanTiltDirection = serde_json::from_value(json!(name)).unwrap();
+            assert_eq!(direction.vector(), vector);
+            assert_eq!(direction.as_str(), name);
+        }
     }
 
     #[tokio::test]
@@ -3304,6 +3337,7 @@ mod tests {
             "/assets/app.js",
             "/assets/styles.css",
             "/assets/lucide.js",
+            "/assets/preview-drag.js",
             "/settings",
             "/assets/settings.js",
         ] {

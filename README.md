@@ -901,3 +901,17 @@ camera preview. FIFO and capture queues are bounded; delayed samples are discard
 and replaced by silence rather than replayed later. Existing call applications may
 need their microphone selected again after turning virtual output off or restarting
 the daemon, since those actions remove the device.
+
+### Dragging the camera preview
+
+Press and drag the video to pan and tilt, including diagonal movement. A move
+cursor appears while pressed. Dragging pulls the image with the pointer by moving
+the camera in the opposite direction. The controls follow the displayed orientation,
+including preview mirroring and output rotation. Dragging uses the same manual
+camera commands as the direction buttons and disables automatic tracking.
+Motion stops on release, pointer cancellation, focus loss, or after 150 ms
+without pointer movement; the camera owner's existing lease remains the final
+stop fallback. The overlay buttons do not start a drag.
+
+Run the pointer lifecycle and direction-mapping tests with `npm test --prefix web`.
+The nudge endpoint also accepts `up-left`, `up-right`, `down-left`, and `down-right`.

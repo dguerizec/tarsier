@@ -1,3 +1,4 @@
+import { installPreviewDrag, sourcePanTiltDirection } from "/assets/preview-drag.js";
 import { syncAudioCapture } from "/assets/audio.js";
 import { createElement, FolderOpen, FlipHorizontal2, Bone } from "/assets/lucide.js";
 
@@ -72,6 +73,7 @@ let panTiltPending = false;
 let panTiltSyncQueued = false;
 let panTiltKeepaliveTimer = null;
 let heldDirections = [];
+let previewDrag = null;
 const pendingGestureFeatures = new Set();
 const pendingImageSettings = new Set();
 const imageSettingDrafts = new Map();
@@ -652,7 +654,15 @@ function activeDirection() {
   return heldDirections.at(-1) ?? null;
 }
 
+function canDragPreview() {
+  return socketConnected && state?.pipeline.running && !videoTransformPending
+    && !faceTrackingPending && !handsTrackingPending && !trackingPending
+    && cameraControlsAvailable(state?.camera || {});
+}
+
 function renderPanTilt(camera) {
+  preview.classList.toggle("pan-tilt-ready", !!canDragPreview());
+  if (!canDragPreview()) previewDrag?.cancel();
   const direction = activeDirection();
   const trackingLocked = faceTrackingPending || handsTrackingPending || trackingPending;
   for (const button of panTiltButtons) {
@@ -677,7 +687,7 @@ function renderPanTilt(camera) {
     : faceTracking.enabled && faceTracking.active ? `Face tracking · ${trackingTarget} · centering`
     : faceTracking.enabled ? `Face tracking · ${trackingTarget} · centered`
     : direction ? `Moving ${direction}`
-    : panTiltPending ? "Stopping…" : "Hold a button or use the arrow keys";
+    : panTiltPending ? "Stopping…" : "Drag the preview, hold a button, or use arrow keys";
 }
 
 function renderCameraPower(camera) {
@@ -909,6 +919,7 @@ function connect() {
     if (message.type === "event") appendEvent(message.data);
   });
   socket.addEventListener("close", () => {
+    clearHeldDirections();
     socketConnected = false;
     recordingState = null;
     renderRecording();
@@ -1053,6 +1064,7 @@ async function setCameraPower(enabled) {
   cameraPowerPending = true;
   cameraPowerError = null;
   cameraPowerDraft = enabled;
+  previewDrag?.cancel(false);
   heldDirections = [];
   updatePanTiltKeepalive();
   render(state);
@@ -1105,6 +1117,7 @@ document.querySelectorAll("[data-action]").forEach((button) => {
 });
 
 function clearHeldDirections() {
+  previewDrag?.cancel(false);
   const previous = activeDirection();
   heldDirections = [];
   updatePanTiltKeepalive();
@@ -1165,6 +1178,7 @@ async function syncPanTiltMotion() {
   } catch (error) {
     failed = true;
     cameraControlError = error instanceof Error ? error.message : String(error);
+    previewDrag?.cancel(false);
     heldDirections = [];
     updatePanTiltKeepalive();
   } finally {
@@ -1176,11 +1190,22 @@ async function syncPanTiltMotion() {
   }
 }
 
+previewDrag = installPreviewDrag(preview, {
+  canControl: canDragPreview,
+  onDirection(direction) {
+    if (activeDirection() === direction) return;
+    heldDirections = [];
+    holdDirection(direction);
+  },
+  onStop() { releaseDirection(activeDirection()); },
+});
+
 for (const button of panTiltButtons) {
   const direction = button.dataset.panTilt;
   button.addEventListener("pointerdown", (event) => {
     if (button.disabled) return;
     event.preventDefault();
+    previewDrag.cancel();
     button.setPointerCapture(event.pointerId);
     holdDirection(direction);
   });
@@ -1215,6 +1240,7 @@ document.addEventListener("keydown", (event) => {
     || faceTrackingPending || handsTrackingPending || trackingPending
     || !cameraControlsAvailable(state?.camera || {})) return;
   event.preventDefault();
+  previewDrag?.cancel();
   if (!heldDirections.includes(direction)) holdDirection(direction);
 });
 
@@ -1522,12 +1548,8 @@ function setPreviewMirror(enabled) {
 }
 
 function sourceDirection(direction) {
-  if (direction == null) return null;
   const { rotation, mirror } = videoTransform();
-  if (mirror !== previewMirrorEnabled && direction === "left") direction = "right";
-  else if (mirror !== previewMirrorEnabled && direction === "right") direction = "left";
-  const directions = ["right", "down", "left", "up"];
-  return directions[(directions.indexOf(direction) - rotation / 90 + 4) % 4];
+  return sourcePanTiltDirection(direction, rotation, mirror !== previewMirrorEnabled);
 }
 
 function renderVideoTransform() {
