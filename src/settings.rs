@@ -79,6 +79,8 @@ impl AudioSettings {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct UserSettings {
     #[serde(default)]
+    pub camera_device: Option<String>,
+    #[serde(default)]
     pub audio: AudioSettings,
     #[serde(default)]
     pub network_lan_access: Option<bool>,
@@ -100,6 +102,7 @@ pub struct UserSettings {
 impl UserSettings {
     pub fn from_config(config: &Config) -> Self {
         Self {
+            camera_device: None,
             audio: AudioSettings::default(),
             version: SETTINGS_VERSION,
             network_lan_access: None,
@@ -227,6 +230,19 @@ impl UserSettingsStore {
         self.replace(|settings| {
             settings.background_enabled = enabled;
             settings.background_effect = effect;
+        })
+        .await
+    }
+
+    pub async fn set_devices(&self, camera: String, audio: AudioSettings) -> Result<()> {
+        self.replace(|settings| {
+            if settings.camera_device.as_ref() != Some(&camera) {
+                settings.face_tracking_enabled = false;
+                settings.auto_zoom_enabled = false;
+                settings.hands_tracking_enabled = false;
+            }
+            settings.camera_device = Some(camera);
+            settings.audio = audio;
         })
         .await
     }
@@ -397,6 +413,32 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    #[tokio::test]
+    async fn device_selection_restores_stable_camera_and_microphones_together() {
+        let path = test_path("devices");
+        let defaults = UserSettings::from_config(&Config::default());
+        let (store, _) = UserSettingsStore::load(path.clone(), defaults.clone())
+            .await
+            .unwrap();
+        let camera = "/dev/v4l/by-id/usb-camera-video-index0".to_owned();
+        let audio = AudioSettings {
+            capture_sources: vec!["usb-microphone".into()],
+            output_source: Some("usb-microphone".into()),
+            output_muted: true,
+            ..Default::default()
+        };
+        store
+            .set_devices(camera.clone(), audio.clone())
+            .await
+            .unwrap();
+        let (_, restored) = UserSettingsStore::load(path.clone(), defaults)
+            .await
+            .unwrap();
+        assert_eq!(restored.camera_device, Some(camera));
+        assert_eq!(restored.audio, audio);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[tokio::test]

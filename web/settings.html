@@ -13,6 +13,18 @@
       <a class="settings-link" href="/">Back to preview</a>
     </header>
     <main class="settings-page">
+      <section class="panel" aria-labelledby="devices-heading">
+        <h2 id="devices-heading">Camera and microphones</h2>
+        <form id="devices-form">
+          <p><label>Camera <select id="device-camera" disabled></select></label></p>
+          <fieldset id="device-microphones" disabled><legend>Microphones to capture</legend><div id="device-microphone-list"></div></fieldset>
+          <p><label>Microphone for output <select id="device-output" disabled></select></label></p>
+          <p>Devices are remembered across restarts. Reconnecting a camera keeps its selection when a stable device identifier is available. Saving briefly interrupts capture.</p>
+          <button id="devices-refresh" type="button">Refresh devices</button>
+          <button id="devices-save" type="submit" disabled>Save and restart</button>
+          <p id="devices-status" role="status" aria-live="polite">Loading devices…</p>
+        </form>
+      </section>
       <section class="panel" aria-labelledby="security-heading">
         <h2 id="security-heading">Access protection</h2>
         <p id="auth-summary">Loading access settings…</p>

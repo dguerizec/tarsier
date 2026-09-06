@@ -4,6 +4,7 @@ mod audio_gain;
 mod auth;
 mod camera;
 mod config;
+mod devices;
 mod effects;
 mod face_tracking;
 mod hands_tracking;
@@ -140,6 +141,10 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
         settings::UserSettings::from_config(&config),
     )
     .await?;
+    if let Some(camera) = &user_settings.camera_device {
+        devices::apply_camera(&mut config, camera);
+        config.audio.capture_selected_only = true;
+    }
     if let Some(lan_access) = user_settings.network_lan_access {
         config.server.bind.set_ip(if lan_access {
             std::net::Ipv4Addr::UNSPECIFIED.into()
