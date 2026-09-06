@@ -197,9 +197,9 @@ function renderOutput() {
   sourceLabel.textContent = selected ? `${input?.name || selected}${input?.unavailable ? ' · Disconnected' : ''}` : 'No input selected';
   sourceLabel.title = sourceLabel.textContent;
   for (const track of tracks.values()) {
-    if (track.outputRadio) {
-      track.outputRadio.checked = track.id === selected;
-      track.outputRadio.disabled = virtualPending || track.unavailable;
+    if (track.sourceButton) {
+      track.sourceButton.setAttribute('aria-pressed', String(track.id === selected));
+      track.sourceButton.disabled = virtualPending || track.unavailable;
     }
   }
   document.querySelectorAll('[data-audio-output]').forEach((button) => {
@@ -260,9 +260,9 @@ export function syncAudioCapture(sources, output, currentReservations, released,
 
 function syncTrack(track) {
   renderReservation(track);
-  if (track.outputRadio) {
-    track.outputRadio.checked = virtualState.source === track.id;
-    track.outputRadio.disabled = virtualPending || track.unavailable;
+  if (track.sourceButton) {
+    track.sourceButton.setAttribute('aria-pressed', String(virtualState.source === track.id));
+    track.sourceButton.disabled = virtualPending || track.unavailable;
   }
   track.enabled = track.id === virtualId ? virtualState.enabled : enabledSources?.has(track.id) ?? track.enabled;
   track.buttons.forEach((button) => {
@@ -370,18 +370,17 @@ function create(source) {
   track.buttons[0].onclick = () => void setCapture(track, !track.enabled);
   stop(track);
   if (source.id !== virtualId) {
-    const radioLabel = document.createElement('label');
-    radioLabel.className = 'audio-source-choice';
-    radioLabel.title = `Use ${source.name} for the virtual microphone`;
-    const radio = document.createElement('input');
-    radio.type = 'radio';
-    radio.name = 'audio-output-source';
-    radio.value = source.id;
-    radio.setAttribute('aria-label', `Use ${source.name} for the virtual microphone`);
-    radio.onchange = () => { if (radio.checked) void updateOutput({ source: source.id }); };
-    radioLabel.append(radio);
-    row.querySelector('.audio-track-overlay').prepend(radioLabel);
-    track.outputRadio = radio;
+    const choose = document.createElement('button');
+    choose.type = 'button';
+    choose.className = 'audio-source-choice';
+    choose.title = `Use ${source.name} for the virtual microphone`;
+    choose.setAttribute('aria-label', choose.title);
+    choose.setAttribute('aria-pressed', 'false');
+    choose.onclick = () => {
+      if (virtualState.source !== source.id) void updateOutput({ source: source.id });
+    };
+    row.querySelector('.audio-waveform').append(choose);
+    track.sourceButton = choose;
     const reservation = document.createElement('div');
     reservation.className = 'audio-reservation';
     reservation.innerHTML = '<button type="button" class="audio-reservation-status secondary compact"></button><span class="error" role="status" hidden></span>';
