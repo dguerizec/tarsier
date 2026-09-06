@@ -17,6 +17,10 @@ pub struct RuntimeState {
     #[serde(default)]
     pub audio_virtual: crate::audio::VirtualMicrophone,
     #[serde(default)]
+    pub audio_released_sources: Vec<String>,
+    #[serde(default)]
+    pub audio_reservations: std::collections::BTreeMap<String, crate::audio::Reservation>,
+    #[serde(default)]
     pub last_photo: Option<Value>,
 }
 
@@ -32,6 +36,8 @@ impl Default for RuntimeState {
             last_scenario: None,
             audio_capture_sources: Vec::new(),
             audio_virtual: Default::default(),
+            audio_released_sources: Vec::new(),
+            audio_reservations: Default::default(),
             last_photo: None,
         }
     }

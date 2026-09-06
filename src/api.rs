@@ -162,6 +162,7 @@ pub fn router_with_controls(
         .route("/api/v1/audio/sources", get(audio_sources))
         .route("/api/v1/audio/meter", get(audio_meter))
         .route("/api/v1/audio/capture", post(set_audio_capture))
+        .route("/api/v1/audio/exclusive", post(set_audio_exclusive))
         .route(
             "/api/v1/audio/virtual",
             get(virtual_audio).post(set_virtual_audio),
@@ -2908,6 +2909,48 @@ async fn audio_sources(State(state): State<ApiState>) -> Response {
 }
 
 #[derive(Deserialize)]
+struct AudioExclusiveRequest {
+    source: String,
+    exclusive: bool,
+}
+
+async fn set_audio_exclusive(
+    State(state): State<ApiState>,
+    Json(request): Json<AudioExclusiveRequest>,
+) -> Response {
+    if request.source == crate::audio::VIRTUAL_SOURCE {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "Tarsier Microphone must stay shared"})),
+        )
+            .into_response();
+    }
+    if !state
+        .runtime
+        .state()
+        .await
+        .audio_reservations
+        .contains_key(&request.source)
+    {
+        match crate::audio::sources().await {
+            Ok(sources) if sources.iter().any(|s| s.id == request.source) => {}
+            Ok(_) => return StatusCode::NOT_FOUND.into_response(),
+            Err(e) => return command_error(e),
+        }
+    }
+    state
+        .runtime
+        .update(|s| {
+            s.audio_released_sources.retain(|id| id != &request.source);
+            if !request.exclusive {
+                s.audio_released_sources.push(request.source.clone());
+            }
+        })
+        .await;
+    Json(json!({"source": request.source, "exclusive": request.exclusive})).into_response()
+}
+
+#[derive(Deserialize)]
 struct AudioCaptureRequest {
     source: String,
     enabled: bool,
@@ -3109,6 +3152,66 @@ mod tests {
 
     use super::*;
     use crate::{camera, config::CameraAdapter, settings::UserSettings};
+
+    #[tokio::test]
+    async fn release_preserves_capture_and_virtual_output_and_never_reserves_own_output() {
+        let runtime = Runtime::new();
+        runtime
+            .update(|s| {
+                s.audio_capture_sources = vec!["mic".into()];
+                s.audio_reservations
+                    .insert("mic".into(), crate::audio::Reservation::default());
+                s.audio_virtual.enabled = true;
+                s.audio_virtual.source = Some("mic".into());
+            })
+            .await;
+        let (_stop, shutdown) = watch::channel(false);
+        let app = router(
+            Config::default(),
+            runtime.clone(),
+            PreviewHub::new(),
+            None,
+            shutdown,
+        );
+        for exclusive in [false, true] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/v1/audio/exclusive")
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            json!({"source":"mic", "exclusive":exclusive}).to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let state = runtime.state().await;
+            assert_eq!(
+                state.audio_released_sources.contains(&"mic".into()),
+                !exclusive
+            );
+            assert_eq!(state.audio_capture_sources, vec!["mic"]);
+            assert!(state.audio_virtual.enabled);
+        }
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/audio/exclusive")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"source":"tarsier_microphone","exclusive":true}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
 
     #[tokio::test]
     async fn virtual_microphone_mute_is_shared_without_stopping_input_capture() {

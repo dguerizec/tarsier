@@ -246,3 +246,6 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 #preview.pan-tilt-dragging { cursor: move; }
 
 #camera-power-toggle { display: grid; place-items: center; width: 2rem; height: 2rem; flex: 0 0 auto; padding: 0; }
+
+.audio-reservation { display: flex; align-items: center; justify-content: space-between; gap: .7rem; margin-top: .45rem; font-size: .72rem; color: var(--muted); }
+.audio-reservation .reservation-warning { color: var(--amber); }

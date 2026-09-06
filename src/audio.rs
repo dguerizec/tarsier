@@ -1,6 +1,6 @@
 //! Shared daemon capture and a process-owned PipeWire virtual microphone.
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     io::Write,
     os::unix::fs::{DirBuilderExt, OpenOptionsExt},
     path::PathBuf,
@@ -15,7 +15,7 @@ use axum::extract::ws::{Message, WebSocket};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::{
-    io::AsyncReadExt,
+    io::{AsyncBufReadExt, AsyncReadExt, BufReader},
     process::Command,
     sync::{broadcast, oneshot, watch},
     task::JoinHandle,
@@ -35,7 +35,24 @@ pub struct VirtualMicrophone {
     pub error: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReservationStatus {
+    #[default]
+    Pending,
+    Held,
+    Released,
+    Unavailable,
+    Disconnected,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct Reservation {
+    pub status: ReservationStatus,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Source {
     pub id: String,
     pub name: String,
@@ -111,7 +128,11 @@ impl AudioHub {
     }
 
     async fn supervise(self, runtime: Runtime, mut shutdown: watch::Receiver<bool>) {
-        let mut captures: HashMap<String, (oneshot::Sender<()>, JoinHandle<()>)> = HashMap::new();
+        let mut captures: HashMap<String, (bool, oneshot::Sender<()>, JoinHandle<()>)> =
+            HashMap::new();
+        let (inventory_tx, inventory) = watch::channel(None);
+        let discovery = tokio::spawn(discover(inventory_tx, shutdown.clone()));
+        let mut last_inventory = Vec::new();
         let mut output: Option<(oneshot::Sender<()>, JoinHandle<()>)> = None;
         let mut tick = interval(Duration::from_millis(100));
         tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -120,11 +141,25 @@ impl AudioHub {
                 _ = shutdown.changed() => break,
                 _ = tick.tick() => {}
             }
+            let discovered = inventory.borrow().clone();
+            if let Some(sources) = discovered
+                && sources != last_inventory
+            {
+                reconcile_reservations(&runtime, &sources).await;
+                last_inventory = sources;
+            }
             let state = runtime.state().await;
-            let mut wanted: HashSet<String> = state.audio_capture_sources.into_iter().collect();
+            let mut wanted: HashMap<String, bool> = last_inventory
+                .iter()
+                .filter_map(|source| {
+                    let exclusive = !state.audio_released_sources.contains(&source.id);
+                    (exclusive || state.audio_capture_sources.contains(&source.id))
+                        .then(|| (source.id.clone(), exclusive))
+                })
+                .collect();
             if state.audio_virtual.enabled {
                 // Meter the published source, including system-side mute/volume.
-                wanted.insert(VIRTUAL_SOURCE.into());
+                wanted.insert(VIRTUAL_SOURCE.into(), false);
                 if output.is_none() {
                     let (stop, stopped) = oneshot::channel();
                     let hub = self.clone();
@@ -142,31 +177,58 @@ impl AudioHub {
             }
             let removed: Vec<_> = captures
                 .keys()
-                .filter(|id| !wanted.contains(*id))
+                .filter(|id| wanted.get(*id) != captures.get(*id).map(|entry| &entry.0))
                 .cloned()
                 .collect();
             for id in removed {
-                let (stop, task) = captures.remove(&id).unwrap();
+                let (_, stop, task) = captures.remove(&id).unwrap();
                 let _ = stop.send(());
                 let _ = task.await;
-                let _ = self.channel(&id).send(Packet::Error("Capture off".into()));
+                let _ = self
+                    .channel(&id)
+                    .send(Packet::Error("Input changed".into()));
+                if id != VIRTUAL_SOURCE && state.audio_released_sources.contains(&id) {
+                    set_reservation(&runtime, &id, ReservationStatus::Released, None).await;
+                }
             }
-            for id in wanted {
-                captures.entry(id.clone()).or_insert_with(|| {
-                    let (stop, stopped) = oneshot::channel();
-                    let sender = self.channel(&id);
-                    (stop, tokio::spawn(capture(id, sender, stopped)))
-                });
+            for (id, exclusive) in wanted {
+                if captures.contains_key(&id) {
+                    continue;
+                }
+                if id != VIRTUAL_SOURCE {
+                    set_reservation(
+                        &runtime,
+                        &id,
+                        if exclusive {
+                            ReservationStatus::Pending
+                        } else {
+                            ReservationStatus::Released
+                        },
+                        None,
+                    )
+                    .await;
+                }
+                let (stop, stopped) = oneshot::channel();
+                let sender = self.channel(&id);
+                let task = tokio::spawn(capture(
+                    id.clone(),
+                    sender,
+                    stopped,
+                    exclusive,
+                    runtime.clone(),
+                ));
+                captures.insert(id, (exclusive, stop, task));
             }
         }
         if let Some((stop, task)) = output {
             let _ = stop.send(());
             let _ = task.await;
         }
-        for (_, (stop, task)) in captures {
+        for (_, (_, stop, task)) in captures {
             let _ = stop.send(());
             let _ = task.await;
         }
+        let _ = discovery.await;
     }
 
     async fn virtual_output(self, runtime: Runtime, mut stop: oneshot::Receiver<()>) {
@@ -363,12 +425,18 @@ async fn capture(
     source: String,
     sender: broadcast::Sender<Packet>,
     mut stop: oneshot::Receiver<()>,
+    exclusive: bool,
+    runtime: Runtime,
 ) {
     loop {
         let result = tokio::select! {
             _ = &mut stop => return,
-            result = capture_once(&source, &sender) => result,
+            result = capture_once(&source, &sender, exclusive, &runtime) => result,
         };
+        if exclusive {
+            set_reservation(&runtime, &source, ReservationStatus::Unavailable,
+                Some("Exclusive access unavailable; another application may be using this input. Retrying.".into())).await;
+        }
         let _ = sender.send(Packet::Error(
             result
                 .err()
@@ -378,40 +446,148 @@ async fn capture(
     }
 }
 
-async fn capture_once(source: &str, sender: &broadcast::Sender<Packet>) -> Result<()> {
+async fn capture_once(
+    source: &str,
+    sender: &broadcast::Sender<Packet>,
+    exclusive: bool,
+    runtime: &Runtime,
+) -> Result<()> {
     if !all_sources().await?.iter().any(|s| s.id == source) {
         bail!("Source disconnected · Waiting for the same microphone");
     }
-    let mut child = Command::new("parec")
-        .args([
-            "--raw",
-            "--format=s16le",
-            "--rate=48000",
-            "--channels=2",
-            "--latency-msec=20",
-            "--client-name=Tarsier shared audio",
-            "--property=node.dont-reconnect=true",
-            "--property=node.dont-fallback=true",
-            "--device",
-            source,
-        ])
+    let mut command = Command::new("parec");
+    command.args([
+        "--raw",
+        "--format=s16le",
+        "--rate=48000",
+        "--channels=2",
+        "--latency-msec=20",
+        "--client-name=Tarsier shared audio",
+        "--property=node.dont-reconnect=true",
+        "--property=node.dont-fallback=true",
+        "--device",
+        source,
+    ]);
+    if exclusive {
+        command.arg("--property=node.exclusive=true");
+    }
+    let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true)
         .spawn()
         .context("Audio capture unavailable: install parec")?;
     let mut stdout = child.stdout.take().expect("piped audio output");
+    let mut acquired = false;
     loop {
         let mut pcm = vec![0; BLOCK_BYTES];
         timeout(Duration::from_secs(2), stdout.read_exact(&mut pcm))
             .await
             .context("Audio source stopped responding")??;
+        if exclusive && !acquired {
+            set_reservation(runtime, source, ReservationStatus::Held, None).await;
+            acquired = true;
+        }
         let _ = sender.send(Packet::Audio(Frame {
             captured: Instant::now(),
             pcm: Arc::new(pcm),
         }));
     }
 }
+async fn set_reservation(
+    runtime: &Runtime,
+    source: &str,
+    status: ReservationStatus,
+    error: Option<String>,
+) {
+    let reservation = Reservation { status, error };
+    if runtime.state().await.audio_reservations.get(source) == Some(&reservation) {
+        return;
+    }
+    runtime
+        .update(|s| {
+            s.audio_reservations.insert(source.to_owned(), reservation);
+        })
+        .await;
+}
+
+fn reservation_inventory(
+    current: &BTreeMap<String, Reservation>,
+    sources: &[Source],
+    released: &[String],
+) -> BTreeMap<String, Reservation> {
+    let present: HashSet<_> = sources.iter().map(|s| s.id.as_str()).collect();
+    let mut next = current.clone();
+    for (id, reservation) in &mut next {
+        if !present.contains(id.as_str()) {
+            *reservation = Reservation {
+                status: ReservationStatus::Disconnected,
+                error: None,
+            };
+        }
+    }
+    for source in sources {
+        let reservation = next.entry(source.id.clone()).or_default();
+        if released.contains(&source.id) && reservation.status != ReservationStatus::Held {
+            *reservation = Reservation {
+                status: ReservationStatus::Released,
+                error: None,
+            };
+        } else if reservation.status == ReservationStatus::Disconnected {
+            *reservation = Reservation::default();
+        }
+    }
+    next
+}
+
+async fn reconcile_reservations(runtime: &Runtime, sources: &[Source]) {
+    runtime
+        .update(|s| {
+            s.audio_reservations =
+                reservation_inventory(&s.audio_reservations, sources, &s.audio_released_sources);
+        })
+        .await;
+}
+
+async fn discover(
+    inventory: watch::Sender<Option<Vec<Source>>>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    loop {
+        if *shutdown.borrow() {
+            return;
+        }
+        let mut command = Command::new("pactl");
+        let child = command
+            .arg("subscribe")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn();
+        if let Ok(mut child) = child {
+            let mut lines =
+                BufReader::new(child.stdout.take().expect("piped subscription")).lines();
+            let mut poll = interval(Duration::from_secs(5));
+            poll.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = shutdown.changed() => return,
+                    _ = poll.tick() => {},
+                    line = lines.next_line() => match line {
+                        Ok(Some(line)) if line.contains("on source #") && (line.contains("'new'") || line.contains("'remove'")) => {},
+                        Ok(Some(_)) => continue,
+                        _ => break,
+                    }
+                }
+                if let Ok(sources) = sources().await {
+                    inventory.send_replace(Some(sources));
+                }
+            }
+        }
+        tokio::select! { _ = shutdown.changed() => return, _ = sleep(Duration::from_secs(1)) => {} }
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 struct Level {
     min: f32,
@@ -450,6 +626,44 @@ fn measure(bytes: &[u8]) -> Level {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_inputs_are_reserved_and_release_survives_reconnection() {
+        let source = Source {
+            id: "mic".into(),
+            name: "Microphone".into(),
+            muted: false,
+        };
+        let initial = reservation_inventory(&BTreeMap::new(), std::slice::from_ref(&source), &[]);
+        assert_eq!(initial["mic"].status, ReservationStatus::Pending);
+        let released = vec!["mic".to_owned()];
+        let shared = reservation_inventory(&initial, std::slice::from_ref(&source), &released);
+        assert_eq!(shared["mic"].status, ReservationStatus::Released);
+        let absent = reservation_inventory(&shared, &[], &released);
+        assert_eq!(absent["mic"].status, ReservationStatus::Disconnected);
+        let returned = reservation_inventory(&absent, std::slice::from_ref(&source), &released);
+        assert_eq!(returned["mic"].status, ReservationStatus::Released);
+        let next_boot = reservation_inventory(&BTreeMap::new(), &[source], &[]);
+        assert_eq!(next_boot["mic"].status, ReservationStatus::Pending);
+    }
+
+    #[test]
+    fn inventory_does_not_claim_release_before_the_holder_stops() {
+        let source = Source {
+            id: "mic".into(),
+            name: "Microphone".into(),
+            muted: false,
+        };
+        let current = BTreeMap::from([(
+            "mic".into(),
+            Reservation {
+                status: ReservationStatus::Held,
+                error: None,
+            },
+        )]);
+        let next = reservation_inventory(&current, &[source], &["mic".into()]);
+        assert_eq!(next["mic"].status, ReservationStatus::Held);
+    }
 
     #[test]
     fn output_is_silent_when_muted_missing_or_stale() {

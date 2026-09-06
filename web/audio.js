@@ -2,6 +2,47 @@ const tracks = new Map();
 const container = document.querySelector('#audio-tracks');
 const status = document.querySelector('#audio-status');
 let enabledSources = null;
+let reservations = {};
+let releasedSources = new Set();
+
+function renderReservation(track) {
+  if (track.id === virtualId) return;
+  const released = releasedSources.has(track.id);
+  const reservation = reservations[track.id];
+  track.reserveButton.textContent = released ? 'Reserve' : 'Release';
+  track.reserveButton.disabled = track.reservationPending;
+  track.reserveButton.setAttribute('aria-label', `${released ? 'Reserve' : 'Release'} ${track.name}`);
+  const labels = {
+    held: 'Reserved by Tarsier', released: 'Shared input',
+    pending: 'Reserving…', unavailable: 'Not reserved · Input busy or unavailable',
+    disconnected: 'Disconnected',
+  };
+  track.reserveStatus.textContent = track.reservationError || (!released && reservation?.status === 'released'
+    ? 'Reserving…' : released && reservation?.status === 'held' ? 'Releasing…'
+    : labels[reservation?.status] || 'Discovering…');
+  track.reserveStatus.title = reservation?.error || '';
+  track.reserveStatus.classList.toggle('reservation-warning', reservation?.status === 'unavailable');
+}
+
+async function setExclusive(track) {
+  if (track.reservationPending) return;
+  const exclusive = releasedSources.has(track.id);
+  track.reservationPending = true;
+  track.reservationError = null;
+  renderReservation(track);
+  try {
+    const response = await fetch('/api/v1/audio/exclusive', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source: track.id, exclusive }),
+    });
+    if (!response.ok) throw new Error('Could not update microphone reservation');
+  } catch (error) {
+    track.reservationError = error.message;
+  } finally {
+    track.reservationPending = false;
+    renderReservation(track);
+  }
+}
 const virtualId = 'tarsier_microphone';
 const outputSource = document.querySelector('#audio-output-source');
 const outputStatus = document.querySelector('#audio-output-status');
@@ -67,7 +108,9 @@ document.querySelectorAll('[data-audio-mute]').forEach((button) => {
   button.onclick = () => void updateOutput({ muted: button.dataset.audioMute === 'true' });
 });
 
-export function syncAudioCapture(sources, output) {
+export function syncAudioCapture(sources, output, currentReservations, released) {
+  reservations = currentReservations || {};
+  releasedSources = new Set(released || []);
   if (output) virtualState = output;
   enabledSources = new Set(sources);
   for (const track of tracks.values()) syncTrack(track);
@@ -75,13 +118,14 @@ export function syncAudioCapture(sources, output) {
 }
 
 function syncTrack(track) {
+  renderReservation(track);
   track.enabled = track.id === virtualId ? virtualState.enabled : enabledSources?.has(track.id) ?? track.enabled;
   track.buttons.forEach((button, index) => {
     button.setAttribute('aria-pressed', String(index === (track.enabled ? 0 : 1)));
     button.disabled = track.pending || (index === 0 && track.unavailable);
   });
   if (!track.enabled) {
-    stop(track, track.unavailable ? 'Disconnected' : 'Capture off');
+    stop(track, track.unavailable ? 'Disconnected' : 'Input off');
   } else if (!track.socket && Date.now() >= track.retryAt && !track.unavailable) {
     start(track);
   }
@@ -107,7 +151,7 @@ async function setCapture(track, enabled) {
   }
 }
 
-function stop(track, label = 'Capture off') {
+function stop(track, label = 'Input off') {
   const socket = track.socket;
   track.socket = null;
   socket?.close();
@@ -156,7 +200,7 @@ function create(source) {
     <span class="audio-peak">−∞ dBFS</span></div></div>`;
   row.querySelector('strong').textContent = source.name;
   const track = {
-    id: source.id, row, history: [], level: null, socket: null, clipUntil: 0,
+    id: source.id, name: source.name, row, history: [], level: null, socket: null, clipUntil: 0,
     enabled: source.enabled === true, pending: false, unavailable: false, retryAt: 0,
     label: row.querySelector('.audio-track-state'), canvas: row.querySelector('canvas'),
     buttons: [...row.querySelectorAll('button')], meters: [...row.querySelectorAll('meter')],
@@ -168,6 +212,16 @@ function create(source) {
   track.buttons[0].onclick = () => void setCapture(track, true);
   track.buttons[1].onclick = () => void setCapture(track, false);
   stop(track);
+  if (source.id !== virtualId) {
+    const reservation = document.createElement('div');
+    reservation.className = 'audio-reservation';
+    reservation.innerHTML = '<span role="status"></span><button type="button" class="secondary compact">Release</button>';
+    track.reserveStatus = reservation.querySelector('span');
+    track.reserveButton = reservation.querySelector('button');
+    track.reserveButton.onclick = () => void setExclusive(track);
+    row.append(reservation);
+    renderReservation(track);
+  }
   if (source.id === virtualId) {
     row.querySelector('[role="group"]').hidden = true;
     document.querySelector('#audio-output-track').append(row);

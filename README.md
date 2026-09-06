@@ -856,11 +856,31 @@ ffprobe -v error -show_entries format_tags=tarsier_settings -of json video.mp4
 ### Audio levels and virtual microphone
 
 The panel below the preview lists the daemon host's microphones by name. Enable
-an input with **On** to start shared daemon capture. All viewers see the same
+an input with **On** to use its captured audio for meters and virtual output. All viewers see the same
 controls and receive the same ten-second waveform history window and stereo peak
-levels. Closing a page does not stop capture; **Off** stops the input for every
-viewer and silences a virtual output using it. History itself is local to each
+levels. Closing a page does not stop capture; **Off** stops metering for every
+viewer and silences a virtual output using it, while retaining the reservation. History itself is local to each
 viewer. Speaker monitors and Tarsier's own output are excluded from input selection.
+
+At daemon startup, every discovered input is automatically captured with
+`node.exclusive=true`, including sources that appear later. A `pactl subscribe`
+listener triggers discovery on source arrival/removal; a five-second scan also
+recovers missed events. Tarsier's own virtual output and speaker monitor sources
+are excluded, so applications can share **Tarsier Microphone**.
+
+Each input shows its actual reservation status and a **Release** / **Reserve**
+button. **Release** closes its exclusive stream; if that input is enabled, capture
+continues in shared mode. Turning an input **Off** alone does not release it:
+keeping the reservation requires an active capture stream, whose samples are not
+routed to the virtual output or shown in meters while Off. A released input stays
+released even after reconnecting, until **Reserve** or a daemon restart.
+
+A reservation is marked **Reserved by Tarsier** only after the exclusive stream
+receives samples. Busy or unavailable inputs show **Not reserved** and retry;
+Tarsier does not interrupt existing applications to acquire a reservation.
+WirePlumber's exclusive linking policy prevents ordinary new captures after
+reservation, but cannot guarantee priority over an application that connects first
+at startup/hotplug, or replace access control against manually created links.
 
 Select **Virtual microphone input**, then turn **Virtual microphone On** to publish
 **Tarsier Microphone** as an audio input in KDE, browsers, and call applications.
@@ -876,7 +896,8 @@ volume applied in the system mixer. Select **Tarsier Microphone** separately fro
 the camera in your call app. Tarsier does not change the system's default input.
 Turning virtual output **Off** removes that virtual device; input capture controls
 remain independent. These settings are shared across browser clients but reset to
-off on daemon restart. Recordings remain video-only; agent audio is future work.
+off on daemon restart, while input reservations are automatically reacquired.
+Recordings remain video-only; agent audio is future work.
 
 Dependencies: `pactl` and `parec` (PulseAudio utilities), `pw-cli` and
 `libpipewire-module-pipe-tunnel` (PipeWire), a working user PipeWire/PulseAudio
@@ -890,6 +911,8 @@ raw audio stays on the daemon host and is neither saved nor played on speakers.
 
 - `GET /api/v1/audio/sources`: source IDs, names, mute state, and capture enablement.
 - `POST /api/v1/audio/capture`: `{ "source": "<id>", "enabled": true }`.
+- `POST /api/v1/audio/exclusive`: `{ "source": "<id>", "exclusive": false }` to
+  release, or `true` to reserve; shared runtime state exposes reservation results.
 - `GET /api/v1/audio/virtual`: desired settings and actual running/error status.
 - `POST /api/v1/audio/virtual`: partial update of `source`, `enabled`, or `muted`.
 - `WS /api/v1/audio/meter?source=<encoded-id>`: shared 20 ms summaries (`min`,
