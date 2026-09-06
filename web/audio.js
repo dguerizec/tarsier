@@ -1,8 +1,11 @@
+import { createElement, ChevronDown } from "/assets/lucide.js";
+
 const audioFold = document.querySelector('#audio-fold');
+audioFold.prepend(createElement(ChevronDown, { width: 18, height: 18, 'aria-hidden': 'true', focusable: 'false' }));
 function foldAudio(folded) {
   document.querySelector('#audio-inputs').hidden = folded;
   audioFold.setAttribute('aria-expanded', String(!folded));
-  audioFold.textContent = folded ? 'Show inputs ▾' : 'Hide inputs ▴';
+  audioFold.title = folded ? 'Show audio inputs' : 'Hide audio inputs';
   try { localStorage.setItem('tarsier.audio.folded', String(folded)); } catch {}
 }
 try { foldAudio(localStorage.getItem('tarsier.audio.folded') === 'true'); } catch {}

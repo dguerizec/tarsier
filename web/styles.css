@@ -272,3 +272,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 
 .audio-track-header .segmented-control { flex-shrink: 0; gap: .3rem; }
 .audio-track-header .audio-reservation button { min-width: 2rem; }
+
+#audio-fold { display: inline-flex; align-items: center; gap: .45rem; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; letter-spacing: inherit; }
+#audio-fold:hover { color: var(--green); }
+#audio-fold[aria-expanded="false"] svg { transform: rotate(-90deg); }
