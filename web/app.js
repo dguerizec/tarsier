@@ -171,7 +171,7 @@ const cameraControlsAvailable = (camera) => camera.available && cameraIsPowered(
 
 function buildImageSettingsUi() {
   imageSettingsGroups.innerHTML = imageSettingGroups.map((group) => `
-    <details class="image-settings-group" open>
+    <details class="image-settings-group" data-image-settings-group="${group.label.toLowerCase().replaceAll(" ", "-")}" open>
       <summary><h4>${group.label}</h4></summary>
       ${group.controls.map((definition) => `
         <div class="image-setting-row kind-${definition.kind}" data-image-setting-row="${definition.control}">
@@ -198,6 +198,21 @@ function buildImageSettingsUi() {
       `).join("")}
     </details>
   `).join("");
+  imageSettingsGroups.querySelectorAll("details[data-image-settings-group]").forEach((card) => {
+    const storageKey = `tarsier.imageSettings.${card.dataset.imageSettingsGroup}.open`;
+    try {
+      card.open = localStorage.getItem(storageKey) !== "false";
+    } catch {
+      // Keep the default when browser storage is unavailable.
+    }
+    card.addEventListener("toggle", () => {
+      try {
+        localStorage.setItem(storageKey, String(card.open));
+      } catch {
+        // Folding remains available when browser storage cannot be written.
+      }
+    });
+  });
 }
 
 function imageSettingState(camera, control) {
