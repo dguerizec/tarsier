@@ -259,7 +259,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 #audio-applications-list li > div { display: grid; gap: .25rem; }
 .audio-application-kill { color: var(--red); white-space: nowrap; }
 
-.audio-reservation .audio-reservation-status { display: grid; place-items: center; width: 2rem; height: 1.7rem; padding: 0; }
+.audio-reservation .audio-reservation-status, .audio-track-controls .audio-mute { display: grid; place-items: center; width: 2rem; min-width: 2rem; height: 1.7rem; padding: 0; }
 .audio-panel button[aria-pressed="true"] { background: var(--green); color: #0a0d0a; }
 #audio-inputs[hidden] { display: none; }
 .audio-visual canvas { height: 48px; }
@@ -282,7 +282,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   .audio-track-state { display: none; }
 }
 
-.audio-track-controls .audio-mute { display: grid; place-items: center; width: 2rem; min-width: 2rem; height: 1.7rem; padding: 0; color: var(--green); }
+.audio-track-controls .audio-mute { color: var(--green); }
 .audio-track-controls .audio-mute[aria-pressed="true"] { color: var(--red); background: #f37d6d18; }
 
 .audio-source-choice { display: inline-flex; align-items: center; justify-content: center; align-self: center; flex: 0 0 18px; height: 18px; pointer-events: auto; cursor: pointer; }
