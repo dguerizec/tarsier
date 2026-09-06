@@ -797,7 +797,10 @@ output at the selected resolution, including current effects and output
 transforms. Frames are shared directly by the daemon, so recording also works
 while a browser or call application uses the virtual camera. When audio output is enabled, the MP4 includes **Tarsier Microphone** as a 48 kHz
 stereo AAC track, respecting the selected input and output mute (including system
-mixer settings). With audio output off at start, the recording is video-only.
+mixer settings). Recording applies an 18 dB gain followed by a limiter at −1 dBFS
+to make quiet microphones audible while containing peaks. Limiter latency is
+compensated; the virtual microphone and its meters retain their original level.
+With audio output off at start, the recording is video-only.
 An enabled but unavailable output reports an error instead of silently omitting
 audio. Input changes and mute remain live during recording; stop recording before
 turning audio output off, or use mute to record silence. **Stop recording** finalizes

@@ -133,6 +133,9 @@ impl Recorder {
         );
         metadata["output"]["recording_fps"] = serde_json::json!(config.fps);
         metadata["output"]["recording_audio"] = serde_json::json!(audio);
+        if audio {
+            metadata["output"]["recording_audio_gain_db"] = serde_json::json!(18);
+        }
         let mut command = Command::new("ffmpeg");
         command
             .args([
@@ -180,7 +183,7 @@ impl Recorder {
                 "-b:a",
                 "192k",
                 "-af",
-                "aresample=async=1",
+                "aresample=async=1,volume=18dB,alimiter=limit=0.891251:level=false:latency=true",
             ]);
         } else {
             command.args(["-map", "0:v:0", "-an"]);
