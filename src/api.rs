@@ -37,6 +37,7 @@ use crate::{
 
 #[derive(Clone)]
 struct ApiState {
+    recorder: crate::recording::Recorder,
     config: Config,
     runtime: Runtime,
     stabilizer: Arc<Mutex<OpenPalmStabilizer>>,
@@ -78,6 +79,7 @@ impl DaemonRestart {
 
 #[derive(Default)]
 pub struct ApiOptions {
+    pub recorder: crate::recording::Recorder,
     pub pipeline: Option<VideoPipelineControl>,
     pub daemon_restart: Option<DaemonRestart>,
     pub user_settings: Option<UserSettingsStore>,
@@ -118,6 +120,7 @@ pub fn router_with_controls(
     let mut hands_tracking = HandsTrackingController::default();
     hands_tracking.set_enabled(options.hands_tracking_enabled);
     let state = ApiState {
+        recorder: options.recorder,
         stabilizer: Arc::new(Mutex::new(OpenPalmStabilizer::new(&config.perception))),
         face_presence: Arc::new(Mutex::new(FacePresenceStabilizer::new(&config.perception))),
         config,
@@ -190,6 +193,12 @@ pub fn router_with_controls(
             "/api/v1/perception/input.mjpeg",
             get(perception_input_mjpeg),
         )
+        .route(
+            "/api/v1/video/recording",
+            get(recording_status).post(start_recording),
+        )
+        .route("/api/v1/video/recording/stop", post(stop_recording))
+        .route("/api/v1/video/recordings/{filename}", get(saved_recording))
         .route("/api/v1/video/resolution", post(set_resolution))
         .route("/api/v1/video/background", post(set_background))
         .route(
@@ -322,6 +331,10 @@ async fn set_camera_power(
     Json(request): Json<CameraPowerRequest>,
 ) -> Response {
     let _power_change = state.camera_power_control.lock().await;
+    let _video_change = state.video_output_control.lock().await;
+    if !request.enabled {
+        let _ = state.recorder.stop().await;
+    }
     let Some(camera) = state.camera.clone() else {
         return camera_unavailable();
     };
@@ -1662,6 +1675,65 @@ async fn set_background(
     StatusCode::ACCEPTED.into_response()
 }
 
+async fn recording_status(
+    State(state): State<ApiState>,
+) -> Json<crate::recording::RecordingStatus> {
+    Json(state.recorder.status().await)
+}
+
+async fn start_recording(State(state): State<ApiState>, Json(_): Json<Value>) -> Response {
+    let _guard = state.video_output_control.lock().await;
+    let pipeline = state.runtime.state().await.pipeline;
+    if !pipeline.running
+        || pipeline
+            .last_frame_at_ms
+            .is_none_or(|at| unix_ms().saturating_sub(at) > 2000)
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "No live video output is available"})),
+        )
+            .into_response();
+    }
+    match state.recorder.start(&state.config.video).await {
+        Ok(status) => (StatusCode::CREATED, Json(status)).into_response(),
+        Err(error) => command_error(error),
+    }
+}
+
+async fn stop_recording(State(state): State<ApiState>, Json(_): Json<Value>) -> Response {
+    match state.recorder.stop().await {
+        Ok(status) => Json(status).into_response(),
+        Err(error) => command_error(error),
+    }
+}
+
+async fn saved_recording(
+    axum::extract::Path(filename): axum::extract::Path<String>,
+    request: axum::extract::Request,
+) -> Response {
+    if !crate::recording::valid_filename(&filename) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let Ok(directory) = crate::recording::directory() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let path = directory.join(filename);
+    if !tokio::fs::symlink_metadata(&path)
+        .await
+        .is_ok_and(|metadata| metadata.is_file())
+    {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    match tower_http::services::ServeFile::new(path)
+        .try_call(request)
+        .await
+    {
+        Ok(response) => response.into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
 fn effects_unavailable_in_4k() -> Response {
     (StatusCode::CONFLICT, Json(json!({"error": "Effects are unavailable in 4K camera mode. Select a lower resolution first."}))).into_response()
 }
@@ -1670,6 +1742,14 @@ async fn set_resolution(
     State(state): State<ApiState>,
     Json(resolution): Json<crate::settings::VideoResolution>,
 ) -> Response {
+    let _guard = state.video_output_control.lock().await;
+    if state.recorder.status().await.active {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "Stop recording before changing resolution"})),
+        )
+            .into_response();
+    }
     if !resolution.valid() {
         return (
             StatusCode::BAD_REQUEST,
@@ -1677,7 +1757,6 @@ async fn set_resolution(
         )
             .into_response();
     }
-    let _guard = state.video_output_control.lock().await;
     let (Some(restart), Some(settings)) = (&state.daemon_restart, &state.user_settings) else {
         return (StatusCode::CONFLICT, Json(json!({"error": "Resolution changes require a supervised daemon and persistent settings"}))).into_response();
     };

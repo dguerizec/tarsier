@@ -133,6 +133,7 @@ The current prototype targets Linux and expects:
 - a Rust toolchain with edition 2024 support (tested with Rust 1.93);
 - Python 3.12 and `uv`;
 - GStreamer runtime, base/good plugins, and development headers;
+- FFmpeg with the `libx264` encoder for video recording;
 - `v4l2loopback`, `v4l-utils`, and a free virtual device;
 - an OBSBOT Tiny 2 reachable through the configured video-device path for the
   real adapter.
@@ -770,3 +771,22 @@ is committed and embedded in the daemon; the UI never requests a CDN. To update
 icons, edit `web/icons.js`, run `npm ci --prefix web` and
 `npm run build:icons --prefix web`, then rebuild the Rust daemon. Keep the Lucide
 license alongside the generated bundle.
+
+### Video recording
+
+Use **Record video** beside **Take photo** to record the final virtual-camera
+output at the selected resolution, including current effects and output
+transforms. This records video only, without audio. **Stop recording** finalizes
+an H.264 MP4 and displays a link to play or download it. Files are saved in
+`~/Videos/Tarsier` (override with `TARSIER_VIDEOS_DIR`). The live timer and stop
+button are restored when the page reloads. Only one recording runs at a time.
+
+Recording requires the enabled V4L2 loopback output and FFmpeg on the daemon's
+PATH. Resolution changes are blocked during recording; camera power-off and
+graceful daemon shutdown finalize the recording first. The current CPU encoder
+prioritizes capture speed, so 4K recordings can be large.
+
+- `GET /api/v1/video/recording`: active recording or last result.
+- `POST /api/v1/video/recording` with `{}`: start recording.
+- `POST /api/v1/video/recording/stop` with `{}`: finalize recording.
+- `GET /api/v1/video/recordings/{filename}`: stream a saved MP4 with range support.

@@ -9,6 +9,11 @@ const daemonRestartConfirm = $("#daemon-restart-confirm");
 const daemonRestartError = $("#daemon-restart-error");
 const events = $("#events");
 let photoPending = false;
+let recordingPending = false;
+let recordingState = null;
+let recordingStatusKey = null;
+const recordVideo = $("#record-video");
+const recordingStatus = $("#recording-status");
 let resolutionPending = false;
 const cameraOnly4k = () => (state?.pipeline?.width || 0) >= 3840;
 const takePhoto = $("#take-photo");
@@ -806,11 +811,12 @@ function render(next) {
     : pipeline.error || "Pipeline stopped";
   $("#video-resolution").textContent = pipeline.width ? `${pipeline.width}×${pipeline.height}` : "Resolution";
   for (const button of document.querySelectorAll("[data-resolution]")) {
-    button.disabled = resolutionPending || !socketConnected || !daemonRestartAvailable;
+    button.disabled = resolutionPending || recordingState?.active || !socketConnected || !daemonRestartAvailable;
     button.setAttribute("aria-pressed", String(button.dataset.resolution === `${pipeline.width}x${pipeline.height}`));
   }
   syncPreview(pipeline);
   takePhoto.disabled = photoPending || !socketConnected || !pipeline.running;
+  renderRecording();
   $("#worker").textContent = perception.worker_connected ? `Frame ${perception.frame_id}` : "Worker offline";
   $("#gesture").textContent = perception.gesture || "No gesture";
   $("#confidence").textContent = gestureDetail(perception);
@@ -1679,3 +1685,67 @@ for (const button of document.querySelectorAll("[data-resolution]")) {
     }
   });
 }
+
+function renderRecording() {
+  const active = recordingState?.active === true;
+  recordVideo.disabled = recordingPending || !socketConnected || !recordingState || (!active && !state?.pipeline.running);
+  recordVideo.classList.toggle("recording", active);
+  recordVideo.setAttribute("aria-pressed", String(active));
+  const seconds = Math.max(0, Math.floor((Date.now() - (recordingState?.started_at_ms || Date.now())) / 1000));
+  const elapsed = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+  recordVideo.textContent = recordingPending ? (active ? "Saving video…" : "Starting…") : active ? `Stop recording · ${elapsed}` : "Record video";
+  if (active) {
+    recordingStatus.hidden = false;
+    recordingStatus.textContent = "Recording video without audio · Includes current video effects.";
+    recordingStatusKey = null;
+  } else if (recordingState?.error) {
+    recordingStatus.hidden = false;
+    recordingStatus.textContent = recordingState.error;
+    recordingStatusKey = null;
+  } else if (recordingState?.url && recordingStatusKey !== recordingState.url) {
+    const link = document.createElement("a");
+    link.href = recordingState.url;
+    link.textContent = recordingState.path;
+    link.target = "_blank";
+    link.rel = "noopener";
+    recordingStatus.replaceChildren("Saved video: ", link);
+    recordingStatus.hidden = false;
+    recordingStatusKey = recordingState.url;
+  }
+}
+
+async function pollRecording() {
+  try {
+    if (!recordingPending) {
+      const response = await fetch("/api/v1/video/recording", { cache: "no-store" });
+      if (response.ok && !recordingPending) {
+        recordingState = await response.json();
+        renderRecording();
+      }
+    }
+  } catch {
+    // The daemon may be reconnecting after a restart.
+  } finally {
+    setTimeout(pollRecording, 1000);
+  }
+}
+
+recordVideo.addEventListener("click", async () => {
+  if (recordingPending || !recordingState) return;
+  recordingPending = true;
+  renderRecording();
+  try {
+    const response = await fetch(`/api/v1/video/recording${recordingState.active ? "/stop" : ""}`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Could not change recording state");
+    recordingState = payload;
+  } catch (error) {
+    recordingState = { ...recordingState, error: error.message };
+  } finally {
+    recordingPending = false;
+    renderRecording();
+  }
+});
+void pollRecording();

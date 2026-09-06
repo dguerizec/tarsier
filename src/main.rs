@@ -7,6 +7,7 @@ mod hands_tracking;
 mod model;
 mod perception;
 mod pipeline;
+mod recording;
 mod runtime;
 mod scenario;
 mod settings;
@@ -174,12 +175,14 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
     } else {
         (None, None)
     };
+    let recorder = recording::Recorder::default();
     let app = api::router_with_controls(
         config.clone(),
         runtime.clone(),
         preview,
         camera,
         api::ApiOptions {
+            recorder: recorder.clone(),
             pipeline: Some(pipeline_control),
             daemon_restart,
             user_settings: Some(settings_store),
@@ -213,6 +216,7 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
                         .store(true, std::sync::atomic::Ordering::Relaxed);
                 }
             }
+            recorder.shutdown().await;
             let _ = shutdown_tx.send(true);
             if let Some(perception) = perception {
                 // Stop the worker before Axum drains any remaining requests.
