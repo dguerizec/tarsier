@@ -797,7 +797,7 @@ output at the selected resolution, including current effects and output
 transforms. Frames are shared directly by the daemon, so recording also works
 while a browser or call application uses the virtual camera. When audio output is enabled, the MP4 includes **Tarsier Microphone** as a 48 kHz
 stereo AAC track, respecting the selected input and output mute (including system
-mixer settings). Recording uses the calibrated virtual output level and a latency-compensated
+mixer settings). Recording uses the automatically adjusted virtual output level and a latency-compensated
 limiter at −1 dBFS. No fixed recording boost is applied.
 With audio output off at start, the recording is video-only.
 An enabled but unavailable output reports an error instead of silently omitting
@@ -928,17 +928,23 @@ input. Then turn the output **On** to publish
 **Tarsier Microphone** as an audio input in KDE, browsers, and call applications.
 Enabling the virtual microphone or switching its input enables capture of that
 selected source. The audio is passed through as 48 kHz, 16-bit stereo PCM, without
-denoising. Mono sources are converted to stereo. Each input starts at 0 dB gain.
-Use **Calibrate** on an enabled input: stay quiet for 2 seconds, then speak normally
-for 6 seconds at your usual distance. Calibration compares speech levels with the
-ambient noise floor and targets peaks near −6 dBFS, with gain bounded to ±24 dB.
-Silence, insufficient contrast, clipping, and interrupted capture are rejected
-without replacing a previous calibration. This is a level-based measurement, not
-a speech recognition model. Gain is saved per microphone and applied to the virtual
-output (including calls and recordings); input meters show the original signal,
-and output meters show the calibrated result. Stereo blocks are limited together
-at −1 dBFS to contain unexpected peaks. **Reset gain** restores 0 dB. Recalibrate
-after changing microphone position or hardware/system gain.
+denoising. Mono sources are converted to stereo. **Auto gain** is enabled by default:
+[WebRTC's local voice activity detector](https://docs.rs/webrtc-vad/0.4.0/webrtc_vad/) gates a bounded gain controller, with no
+countdown, GPU, model download, or paid API. It targets −18 dBFS voice RMS with
+3 dB peak headroom, bounded to ±24 dB. Speech energy is smoothed across syllables;
+initial acquisition can raise gain at 60 dB/s, then adaptation rises at up to
+10 dB/s and falls at up to 40 dB/s. Brief voice-detector gaps do not reset learning.
+Gain holds during pauses up to one second; longer pauses release positive gain
+at 8 dB/s toward 0 dB. It never learns higher gain from silence. Quiet
+signals below −60 dBFS RMS cannot raise gain. Classification is not perfect,
+particularly with music or speech-like background noise.
+
+Stereo gain is shared and ramped between blocks; a −1 dBFS block limiter contains
+unexpected peaks. Input meters show raw capture; output meters and **Gain** show
+the actual adjusted output used by calls and recordings. The controller resets
+when switching microphones or toggling **Auto gain**; no learned gain is saved
+across restarts. **Off** passes through the source level. The On/Off preference is
+shared across clients and persisted. Previous manual calibrations are superseded.
 
 Each meter includes a per-channel maximum marker and a **Max** value, held since
 the page opened or the last reset. Click **Max** to reset both channels; these
@@ -975,8 +981,6 @@ regardless of the number of viewers. The UI receives only amplitude summaries;
 raw audio stays on the daemon host and is not played on speakers. Video recording
 saves the enabled virtual output in the MP4.
 
-- `POST /api/v1/audio/calibration`: `{ "source": "<id>" }` measures and saves calibration;
-  add `"reset": true` to remove that microphone's calibration.
 - `GET /api/v1/audio/sources`: source IDs, names, mute state, and capture enablement.
 - `POST /api/v1/audio/capture`: `{ "source": "<id>", "enabled": true }`.
 - `POST /api/v1/audio/exclusive`: `{ "source": "<id>", "exclusive": false }` to
@@ -988,7 +992,7 @@ saves the enabled virtual output in the MP4.
   { "pid": 123, "start_ticks": 456 }, "signal": 15 }`; use the identity returned
   by the application list. Signal 9 is accepted only after a successful signal 15.
 - `GET /api/v1/audio/virtual`: desired settings and actual running/error status.
-- `POST /api/v1/audio/virtual`: partial update of `source`, `enabled`, or `muted`.
+- `POST /api/v1/audio/virtual`: partial update of `source`, `enabled`, `muted`, or `auto_gain`.
 - `WS /api/v1/audio/meter?source=<encoded-id>`: shared 20 ms summaries (`min`,
   `max`, stereo `peak`/`rms`, `clipped`), or a capture error. Use
   `source=tarsier_microphone` to observe the published output while enabled.

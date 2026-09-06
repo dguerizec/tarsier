@@ -162,7 +162,6 @@ pub fn router_with_controls(
             }),
         )
         .route("/api/v1/audio/sources", get(audio_sources))
-        .route("/api/v1/audio/calibration", post(calibrate_audio))
         .route("/api/v1/audio/meter", get(audio_meter))
         .route("/api/v1/audio/capture", post(set_audio_capture))
         .route("/api/v1/audio/exclusive", post(set_audio_exclusive))
@@ -479,6 +478,7 @@ async fn set_camera_power(
                 let response = set_virtual_audio(
                     State(state.clone()),
                     Json(VirtualAudioRequest {
+                        auto_gain: None,
                         enabled: None,
                         source: None,
                         muted: Some(true),
@@ -2936,69 +2936,6 @@ async fn activate_scenario(state: &ApiState, scenario: &ScenarioConfig, trigger_
         .await;
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CalibrationRequest {
-    source: String,
-    #[serde(default)]
-    reset: bool,
-}
-
-async fn calibrate_audio(
-    State(state): State<ApiState>,
-    Json(request): Json<CalibrationRequest>,
-) -> Response {
-    let Ok(_guard) = state.audio_settings_control.try_lock() else {
-        return (
-            StatusCode::CONFLICT,
-            Json(json!({"error": "Another audio change is in progress; retry shortly"})),
-        )
-            .into_response();
-    };
-    let current = state.runtime.state().await;
-    let result = if request.reset {
-        None
-    } else {
-        if request.source == crate::audio::VIRTUAL_SOURCE
-            || !current.audio_capture_sources.contains(&request.source)
-        {
-            return (
-                StatusCode::CONFLICT,
-                Json(json!({"error": "Enable this input before calibration"})),
-            )
-                .into_response();
-        }
-        let Some(hub) = &state.audio else {
-            return StatusCode::SERVICE_UNAVAILABLE.into_response();
-        };
-        match hub.calibrate(&request.source).await {
-            Ok(calibration) => Some(calibration),
-            Err(error) => {
-                return (
-                    StatusCode::CONFLICT,
-                    Json(json!({"error": error.to_string()})),
-                )
-                    .into_response();
-            }
-        }
-    };
-    let mut next = state.runtime.state().await;
-    if let Some(calibration) = &result {
-        next.audio_calibrations
-            .insert(request.source.clone(), calibration.clone());
-    } else {
-        next.audio_calibrations.remove(&request.source);
-    }
-    let settings = crate::settings::AudioSettings::from_state(&next);
-    if let Some(store) = &state.user_settings
-        && let Err(error) = store.set_audio(settings.clone()).await
-    {
-        return user_settings_error(error);
-    }
-    state.runtime.update(|s| settings.apply(s)).await;
-    Json(json!({"calibration": result})).into_response()
-}
-
 async fn audio_sources(State(state): State<ApiState>) -> Response {
     match crate::audio::sources().await {
         Ok(sources) => {
@@ -3186,6 +3123,7 @@ async fn virtual_audio(State(state): State<ApiState>) -> Json<crate::audio::Virt
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct VirtualAudioRequest {
+    auto_gain: Option<bool>,
     enabled: Option<bool>,
     source: Option<String>,
     muted: Option<bool>,
@@ -3220,6 +3158,9 @@ async fn set_virtual_audio(
     let mut next = state.runtime.state().await;
     {
         let s = &mut next;
+        if let Some(automatic) = request.auto_gain {
+            s.audio_virtual.auto_gain = automatic;
+        }
         if let Some(source) = &request.source {
             s.audio_virtual.source = Some(source.clone());
         }
@@ -3400,23 +3341,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn calibration_reset_is_scoped_and_disabled_inputs_are_rejected() {
+    async fn automatic_gain_defaults_on_and_can_be_disabled_without_muting() {
         let runtime = Runtime::new();
-        runtime
-            .update(|s| {
-                for id in ["mic", "other"] {
-                    s.audio_calibrations.insert(
-                        id.into(),
-                        crate::audio::Calibration {
-                            gain_db: 10,
-                            peak_db: -16,
-                            noise_db: -60,
-                            calibrated_at_ms: 1,
-                        },
-                    );
-                }
-            })
-            .await;
+        assert!(runtime.state().await.audio_virtual.auto_gain);
         let (_stop, shutdown) = watch::channel(false);
         let app = router(
             Config::default(),
@@ -3425,27 +3352,21 @@ mod tests {
             None,
             shutdown,
         );
-        for (body, expected) in [
-            (r#"{"source":"mic"}"#, StatusCode::CONFLICT),
-            (r#"{"source":"mic","reset":true}"#, StatusCode::OK),
-        ] {
-            let response = app
-                .clone()
-                .oneshot(
-                    Request::builder()
-                        .method("POST")
-                        .uri("/api/v1/audio/calibration")
-                        .header("content-type", "application/json")
-                        .body(Body::from(body))
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(response.status(), expected);
-        }
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/audio/virtual")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"auto_gain":false}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
         let state = runtime.state().await;
-        assert!(!state.audio_calibrations.contains_key("mic"));
-        assert_eq!(state.audio_calibrations["other"].gain_db, 10);
+        assert!(!state.audio_virtual.auto_gain);
+        assert!(!state.audio_virtual.muted);
     }
 
     #[tokio::test]

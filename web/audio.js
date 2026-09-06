@@ -26,8 +26,7 @@ let enabledSources = null;
 let reservations = {};
 let releasedSources = new Set();
 let busySources = new Set();
-let calibrations = {};
-let calibrating = null;
+let gainState = { gain_db: 0, speech: false };
 
 const applicationsDialog = document.querySelector('#audio-applications-dialog');
 const applicationsStatus = document.querySelector('#audio-applications-status');
@@ -222,7 +221,16 @@ function renderOutput() {
     button.disabled = virtualPending;
   });
   const track = tracks.get(virtualId);
-  if (track) syncTrack(track);
+  if (track) {
+    syncTrack(track);
+    const automatic = virtualState.auto_gain !== false;
+    track.autoGainButton.textContent = automatic ? 'On' : 'Off';
+    track.autoGainButton.setAttribute('aria-pressed', String(automatic));
+    track.autoGainButton.disabled = virtualPending;
+    const gain = automatic && virtualState.running ? (gainState.gain_db || 0) : 0;
+    track.gain.textContent = `Gain ${gain >= 0 ? '+' : ''}${gain.toFixed(1)} dB${automatic ? virtualState.muted ? ' · Muted' : !virtualState.running ? ' · Output off' : gainState.speech ? ' · Voice' : ' · Waiting for speech' : ''}`;
+    track.gain.title = 'Automatic level adjustment during speech. Applies to calls and recordings. No calibration needed.';
+  }
 }
 
 async function updateOutput(patch) {
@@ -251,9 +259,9 @@ async function updateOutput(patch) {
 document.querySelector('#audio-output-applications').onclick = () => showApplications(tracks.get(virtualId));
 document.querySelector('#preview-audio-mute').onclick = () => void updateOutput({ muted: !virtualState.muted });
 
-export function syncAudioCapture(sources, output, currentReservations, released, busy, outputApplications = 0, currentCalibrations = {}) {
+export function syncAudioCapture(sources, output, currentReservations, released, busy, outputApplications = 0, currentGain = {}) {
   document.querySelector('#audio-output-applications').textContent = `${outputApplications} ${outputApplications === 1 ? 'app' : 'apps'}`;
-  calibrations = currentCalibrations;
+  gainState = currentGain;
   reservations = currentReservations || {};
   releasedSources = new Set(released || []);
   busySources = new Set(busy || []);
@@ -265,13 +273,6 @@ export function syncAudioCapture(sources, output, currentReservations, released,
 
 function syncTrack(track) {
   renderReservation(track);
-  if (track.calibrateButton) {
-    const calibration = calibrations[track.id];
-    track.calibrateButton.disabled = !!calibrating || !enabledSources?.has(track.id) || track.unavailable;
-    track.resetGain.disabled = !!calibrating || !calibration;
-    track.gain.textContent = calibration ? `Gain ${calibration.gain_db >= 0 ? '+' : ''}${calibration.gain_db} dB` : 'Not calibrated · 0 dB';
-    track.gain.title = calibration ? `Measured peak ${calibration.peak_db} dBFS · Noise ${calibration.noise_db} dBFS. Recalibrate after changing microphone gain or position.` : 'Calibrate at your usual speaking distance.';
-  }
   if (track.sourceButton) {
     track.sourceButton.setAttribute('aria-pressed', String(virtualState.source === track.id));
     track.sourceButton.disabled = virtualPending || track.unavailable;
@@ -427,54 +428,17 @@ function create(source) {
   track.maxLabel = row.querySelector('.audio-max');
   track.maxMarkers = [...row.querySelectorAll('.audio-max-marker')];
   track.maxLabel.onclick = () => { track.maxPeak = [0, 0]; };
-  if (source.id !== virtualId) {
-    const calibration = document.createElement('div');
-    calibration.className = 'audio-calibration';
-    calibration.innerHTML = '<span class="audio-gain"></span><button type="button" class="secondary compact">Calibrate</button><button type="button" class="secondary compact">Reset gain</button><span role="status">2 s quiet · 6 s speaking</span>';
-    track.gain = calibration.querySelector('.audio-gain');
-    [track.calibrateButton, track.resetGain] = calibration.querySelectorAll('button');
-    track.calibrationStatus = calibration.querySelector('[role=status]');
-    track.calibrateButton.title = 'Stay quiet for 2 seconds, then speak normally for 6 seconds. Applies to Tarsier output and recordings.';
-    track.calibrateButton.onclick = () => void calibrate(track);
-    track.resetGain.onclick = () => void calibrate(track, true);
-    row.append(calibration);
+  if (source.id === virtualId) {
+    const controls = document.createElement('div');
+    controls.className = 'audio-gain-controls';
+    controls.innerHTML = '<span>Auto gain</span><div class="segmented-control" role="group" aria-label="Automatic microphone gain"><button type="button" class="secondary compact" aria-pressed="true">On</button></div><span class="audio-gain" role="status"></span>';
+    track.autoGainButton = controls.querySelector('button');
+    track.autoGainButton.onclick = () => void updateOutput({ auto_gain: !virtualState.auto_gain });
+    track.gain = controls.querySelector('.audio-gain');
+    row.append(controls);
   }
   tracks.set(source.id, track);
   return track;
-}
-
-async function calibrate(track, reset = false) {
-  if (calibrating) return;
-  calibrating = track.id;
-  for (const item of tracks.values()) syncTrack(item);
-  const started = performance.now();
-  track.calibrationStatus.classList.remove('error');
-  const render = () => {
-    const elapsed = (performance.now() - started) / 1000;
-    track.calibrationStatus.textContent = reset ? 'Resetting…' : elapsed < 2
-      ? `Stay quiet · ${Math.ceil(2 - elapsed)} s`
-      : elapsed < 8 ? `Speak normally · ${Math.ceil(8 - elapsed)} s` : 'Saving calibration…';
-  };
-  render();
-  const timer = setInterval(render, 100);
-  try {
-    const response = await fetch('/api/v1/audio/calibration', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ source: track.id, reset }),
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || 'Calibration failed');
-    if (data.calibration) calibrations[track.id] = data.calibration;
-    else delete calibrations[track.id];
-    track.calibrationStatus.textContent = reset ? 'Gain reset to 0 dB' : 'Calibration saved';
-  } catch (error) {
-    track.calibrationStatus.classList.add('error');
-    track.calibrationStatus.textContent = error.message;
-  } finally {
-    clearInterval(timer);
-    calibrating = null;
-    for (const item of tracks.values()) syncTrack(item);
-  }
 }
 
 async function refresh() {

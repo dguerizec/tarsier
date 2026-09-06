@@ -32,59 +32,27 @@ pub(crate) fn is_camera_source(source: &str) -> bool {
 const BLOCK_BYTES: usize = 960 * 4;
 const MAX_AGE: Duration = Duration::from_millis(120);
 
+pub fn auto_gain_default() -> bool {
+    true
+}
+
+impl Default for VirtualMicrophone {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            source: None,
+            muted: false,
+            running: false,
+            error: None,
+            auto_gain: true,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct Calibration {
-    pub gain_db: i32,
-    pub peak_db: i32,
-    pub noise_db: i32,
-    pub calibrated_at_ms: u64,
-}
-
-fn calibration(noise: &[f32], speech: &[(f32, f32)]) -> Result<Calibration> {
-    if noise.len() < 70 || speech.len() < 200 {
-        bail!("Audio interrupted; retry calibration");
-    }
-    let mut noise = noise.to_vec();
-    noise.sort_by(f32::total_cmp);
-    let floor = noise[noise.len() * 9 / 10].max(0.00001);
-    let threshold = (floor * 3.162278).max(0.001);
-    let voiced: Vec<_> = speech.iter().filter(|(rms, _)| *rms > threshold).collect();
-    if voiced.len() < 50 {
-        bail!(
-            "Not enough speech above background noise; stay quiet first, then speak normally and retry"
-        );
-    }
-    let peak = speech.iter().map(|(_, peak)| *peak).fold(0.0_f32, f32::max);
-    if peak >= 0.99 {
-        bail!("Microphone is clipping; lower its hardware or system gain and retry");
-    }
-    let peak_db = 20.0 * peak.log10();
-    Ok(Calibration {
-        gain_db: (-6.0 - peak_db).floor().clamp(-24.0, 24.0) as i32,
-        peak_db: peak_db.round() as i32,
-        noise_db: (20.0 * floor.log10()).round() as i32,
-        calibrated_at_ms: crate::model::unix_ms(),
-    })
-}
-
-fn calibrated_pcm(pcm: &[u8], gain_db: i32) -> Vec<u8> {
-    let requested = 10.0_f32.powf(gain_db.clamp(-24, 24) as f32 / 20.0);
-    let peak = pcm
-        .chunks_exact(2)
-        .map(|s| (i16::from_le_bytes([s[0], s[1]]) as f32).abs())
-        .fold(1.0_f32, f32::max);
-    // Limit the whole stereo block together, preserving waveform and balance.
-    let gain = requested.min(29204.0 / peak);
-    pcm.chunks_exact(2)
-        .flat_map(|sample| {
-            let value = i16::from_le_bytes([sample[0], sample[1]]) as f32 * gain;
-            (value.clamp(-29204.0, 29204.0) as i16).to_le_bytes()
-        })
-        .collect()
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct VirtualMicrophone {
+    #[serde(default = "auto_gain_default")]
+    pub auto_gain: bool,
     pub enabled: bool,
     pub source: Option<String>,
     pub muted: bool,
@@ -342,35 +310,6 @@ pub struct AudioHub {
 }
 
 impl AudioHub {
-    pub async fn calibrate(&self, source: &str) -> Result<Calibration> {
-        let mut packets = self.channel(source).subscribe();
-        let started = Instant::now();
-        let mut noise = Vec::new();
-        let mut speech = Vec::new();
-        while started.elapsed() < Duration::from_secs(8) {
-            let packet = timeout(Duration::from_millis(500), packets.recv())
-                .await
-                .context("Microphone stopped responding; retry calibration")??;
-            match packet {
-                Packet::Error(error) => bail!("{error}"),
-                Packet::Audio(frame) => {
-                    if frame.captured.elapsed() > MAX_AGE {
-                        bail!("Audio is delayed; retry calibration");
-                    }
-                    let level = measure(&frame.pcm);
-                    let rms = level.rms[0].max(level.rms[1]);
-                    let peak = level.peak[0].max(level.peak[1]);
-                    if started.elapsed() < Duration::from_secs(2) {
-                        noise.push(rms);
-                    } else {
-                        speech.push((rms, peak));
-                    }
-                }
-            }
-        }
-        calibration(&noise, &speech)
-    }
-
     pub async fn inspect_applications(&self, source: &str) -> Result<SourceApplications> {
         let mut result = applications(source).await?;
         let mut terminated = self.terminated.lock().unwrap();
@@ -542,6 +481,7 @@ impl AudioHub {
             runtime
                 .update(|s| {
                     s.audio_virtual.running = false;
+                    s.audio_gain = Default::default();
                     s.audio_virtual.error = error;
                 })
                 .await;
@@ -550,6 +490,7 @@ impl AudioHub {
         runtime
             .update(|s| {
                 s.audio_virtual.running = false;
+                s.audio_gain = Default::default();
                 s.audio_virtual.error = None;
             })
             .await;
@@ -622,6 +563,9 @@ impl AudioHub {
             .await;
         let mut writer = writer;
         let mut selected = None;
+        let mut auto_gain = crate::audio_gain::AutoGain::default();
+        let mut automatic = true;
+        let mut last_gain_update = Instant::now() - Duration::from_secs(1);
         let mut input = None;
         let silence = vec![0; BLOCK_BYTES];
         let mut tick = interval(Duration::from_millis(20));
@@ -633,7 +577,10 @@ impl AudioHub {
             }
             let state = runtime.state().await;
             let settings = state.audio_virtual;
-            if selected != settings.source {
+            if selected != settings.source || automatic != settings.auto_gain {
+                auto_gain = crate::audio_gain::AutoGain::default();
+                automatic = settings.auto_gain;
+                last_gain_update = Instant::now() - Duration::from_secs(1);
                 selected = settings.source.clone();
                 input = selected.as_ref().map(|id| self.channel(id).subscribe());
             }
@@ -644,16 +591,18 @@ impl AudioHub {
                     .as_ref()
                     .is_some_and(|id| state.audio_capture_sources.contains(id));
             let pcm = output_pcm(frame.as_ref(), allowed, &silence);
-            let calibrated;
-            let pcm = if let Some(calibration) = selected
-                .as_ref()
-                .and_then(|id| state.audio_calibrations.get(id))
-            {
-                calibrated = calibrated_pcm(pcm, calibration.gain_db);
-                calibrated.as_slice()
+            let (processed, gain_status) = if automatic {
+                auto_gain.process(pcm)
             } else {
-                pcm
+                (pcm.to_vec(), crate::audio_gain::GainStatus::default())
             };
+            let pcm = processed.as_slice();
+            if last_gain_update.elapsed() >= Duration::from_millis(250) {
+                last_gain_update = Instant::now();
+                if state.audio_gain != gain_status {
+                    runtime.update(|s| s.audio_gain = gain_status).await;
+                }
+            }
             // One block fits PIPE_BUF: nonblocking writes are atomic. A full pipe
             // drops this block instead of accumulating delayed microphone audio.
             match writer.write(pcm) {
@@ -1070,81 +1019,6 @@ fn measure(bytes: &[u8]) -> Level {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn calibration_uses_voice_headroom_and_rejects_noise_clipping_and_gaps() {
-        let noise = vec![0.0001; 100];
-        let voice = vec![(0.02, 0.05); 300];
-        let result = calibration(&noise, &voice).unwrap();
-        assert_eq!(result.gain_db, 20);
-        assert_eq!(result.peak_db, -26);
-        assert!(calibration(&noise, &vec![(0.0001, 0.0003); 300]).is_err());
-        assert!(calibration(&vec![0.02; 100], &voice).is_err());
-        assert!(calibration(&noise, &vec![(0.2, 1.0); 300]).is_err());
-        assert!(calibration(&noise[..10], &voice).is_err());
-        assert_eq!(
-            calibration(&noise, &vec![(0.002, 0.003); 300])
-                .unwrap()
-                .gain_db,
-            24
-        );
-        assert!(calibration(&noise, &vec![(0.3, 0.8); 300]).unwrap().gain_db < 0);
-    }
-
-    #[tokio::test]
-    async fn calibration_collects_shared_capture_without_opening_another_microphone() {
-        let hub = AudioHub::default();
-        let sender = hub.channel("test-mic");
-        let producer = tokio::spawn(async move {
-            let started = Instant::now();
-            let mut tick = interval(Duration::from_millis(20));
-            loop {
-                tick.tick().await;
-                let sample: i16 = if started.elapsed() < Duration::from_secs(2) {
-                    3
-                } else {
-                    1000
-                };
-                let pcm = sample.to_le_bytes().repeat(BLOCK_BYTES / 2);
-                if sender
-                    .send(Packet::Audio(Frame {
-                        captured: Instant::now(),
-                        pcm: Arc::new(pcm),
-                    }))
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        });
-        let result = hub.calibrate("test-mic").await;
-        producer.abort();
-        assert_eq!(result.unwrap().gain_db, 24);
-    }
-
-    #[test]
-    fn calibrated_gain_preserves_silence_stereo_balance_and_bounds_peaks() {
-        assert_eq!(calibrated_pcm(&[0; 40], 24), vec![0; 40]);
-        let bytes: Vec<_> = [100_i16, -200, 200, -400]
-            .into_iter()
-            .flat_map(i16::to_le_bytes)
-            .collect();
-        let output = calibrated_pcm(&bytes, 20);
-        let samples: Vec<_> = output
-            .chunks_exact(2)
-            .map(|s| i16::from_le_bytes([s[0], s[1]]))
-            .collect();
-        assert_eq!(samples, [1000, -2000, 2000, -4000]);
-        let loud: Vec<_> = [10000_i16, -20000]
-            .into_iter()
-            .flat_map(i16::to_le_bytes)
-            .collect();
-        let limited = calibrated_pcm(&loud, 24);
-        let left = i16::from_le_bytes([limited[0], limited[1]]);
-        let right = i16::from_le_bytes([limited[2], limited[3]]);
-        assert_eq!(left, 14602);
-        assert_eq!(right, -29204);
-    }
 
     #[test]
     fn busy_sources_excludes_own_capture_and_tracks_external_links() {

@@ -34,14 +34,26 @@ impl VideoResolution {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct AudioSettings {
     pub capture_sources: Vec<String>,
     pub output_source: Option<String>,
     pub output_enabled: bool,
     pub output_muted: bool,
-    pub calibrations: std::collections::BTreeMap<String, crate::audio::Calibration>,
+    pub output_auto_gain: bool,
+}
+
+impl Default for AudioSettings {
+    fn default() -> Self {
+        Self {
+            capture_sources: Vec::new(),
+            output_source: None,
+            output_enabled: false,
+            output_muted: false,
+            output_auto_gain: true,
+        }
+    }
 }
 
 impl AudioSettings {
@@ -51,7 +63,7 @@ impl AudioSettings {
             output_source: state.audio_virtual.source.clone(),
             output_enabled: state.audio_virtual.enabled,
             output_muted: state.audio_virtual.muted,
-            calibrations: state.audio_calibrations.clone(),
+            output_auto_gain: state.audio_virtual.auto_gain,
         }
     }
 
@@ -60,7 +72,7 @@ impl AudioSettings {
         state.audio_virtual.source = self.output_source.clone();
         state.audio_virtual.enabled = self.output_enabled;
         state.audio_virtual.muted = self.output_muted;
-        state.audio_calibrations = self.calibrations.clone();
+        state.audio_virtual.auto_gain = self.output_auto_gain;
     }
 }
 
@@ -364,6 +376,16 @@ fn persist(path: &Path, settings: UserSettings) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn legacy_audio_settings_enable_automatic_gain_without_reusing_calibration() {
+        let settings: super::AudioSettings = serde_json::from_str(
+            r#"{"output_enabled":true,"calibrations":{"old":{"gain_db":24}}}"#,
+        )
+        .unwrap();
+        assert!(settings.output_auto_gain);
+        assert!(super::AudioSettings::default().output_auto_gain);
+    }
+
     use super::*;
 
     fn test_path(name: &str) -> PathBuf {
@@ -397,26 +419,7 @@ mod tests {
             output_source: Some("disabled-mic".into()),
             output_enabled: true,
             output_muted: true,
-            calibrations: std::collections::BTreeMap::from([
-                (
-                    "disconnected-mic".into(),
-                    crate::audio::Calibration {
-                        gain_db: 12,
-                        peak_db: -18,
-                        noise_db: -60,
-                        calibrated_at_ms: 42,
-                    },
-                ),
-                (
-                    "other-mic".into(),
-                    crate::audio::Calibration {
-                        gain_db: -3,
-                        peak_db: -3,
-                        noise_db: -50,
-                        calibrated_at_ms: 43,
-                    },
-                ),
-            ]),
+            output_auto_gain: false,
         };
         store.set_audio(audio.clone()).await.unwrap();
         store.set_network_lan_access(true).await.unwrap();

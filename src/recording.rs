@@ -134,14 +134,10 @@ impl Recorder {
         metadata["output"]["recording_fps"] = serde_json::json!(config.fps);
         metadata["output"]["recording_audio"] = serde_json::json!(audio);
         if audio {
-            metadata["output"]["recording_audio_gain_db"] = serde_json::json!(
-                settings
-                    .audio_virtual
-                    .source
-                    .as_ref()
-                    .and_then(|id| settings.audio_calibrations.get(id))
-                    .map_or(0, |calibration| calibration.gain_db)
-            );
+            metadata["output"]["recording_audio_gain_db"] =
+                serde_json::json!(settings.audio_gain.gain_db);
+            metadata["output"]["recording_audio_auto_gain"] =
+                serde_json::json!(settings.audio_virtual.auto_gain);
         }
         let mut command = Command::new("ffmpeg");
         command
