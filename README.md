@@ -871,7 +871,13 @@ are excluded, so applications can share **Tarsier Microphone**.
 Each input shows its actual reservation status and a **Release** / **Reserve**
 button. Click **Not reserved** (or **Shared input**) to open an overlay listing
 applications currently connected to that input, with executable and PID when
-available. The list refreshes while open and includes native PipeWire clients;
+available. Each application with a verifiable local process has a **Kill -15**
+button. The first click sends SIGTERM; a subsequent **Kill -9** click sends
+SIGKILL if the process remains connected. This terminates the application process,
+which may own more than one call or browser tab. Process identity and the current
+microphone connection are checked before signaling. After clicking Kill, the list
+refreshes every two seconds until the overlay closes. Manual refresh is also
+available. The list includes native PipeWire clients;
 browser metadata may identify the browser without naming the tab or website.
 **Release** closes its exclusive stream; if that input is enabled, capture
 continues in shared mode. Turning an input **Off** alone does not release it:
@@ -918,7 +924,11 @@ raw audio stays on the daemon host and is neither saved nor played on speakers.
 - `POST /api/v1/audio/exclusive`: `{ "source": "<id>", "exclusive": false }` to
   release, or `true` to reserve; shared runtime state exposes reservation results.
 - `GET /api/v1/audio/applications?source=<encoded-id>`: connected applications
-  grouped by process, with source availability and capture stream counts.
+  grouped by process, with source availability, capture stream counts, process
+  identity, and the next permitted signal.
+- `POST /api/v1/audio/applications/kill`: `{ "source": "<id>", "process":
+  { "pid": 123, "start_ticks": 456 }, "signal": 15 }`; use the identity returned
+  by the application list. Signal 9 is accepted only after a successful signal 15.
 - `GET /api/v1/audio/virtual`: desired settings and actual running/error status.
 - `POST /api/v1/audio/virtual`: partial update of `source`, `enabled`, or `muted`.
 - `WS /api/v1/audio/meter?source=<encoded-id>`: shared 20 ms summaries (`min`,

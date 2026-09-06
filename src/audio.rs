@@ -2,7 +2,8 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     io::Write,
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt},
+    os::fd::{AsRawFd, FromRawFd, OwnedFd},
+    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
     path::PathBuf,
     process::Stdio,
     sync::{Arc, Mutex},
@@ -100,6 +101,58 @@ pub struct Application {
     pub binary: Option<String>,
     pub pid: Option<String>,
     pub streams: usize,
+    pub process: Option<ProcessIdentity>,
+    pub next_signal: Option<i32>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
+pub struct ProcessIdentity {
+    pub pid: u32,
+    pub start_ticks: u64,
+}
+
+fn process_identity(pid: u32) -> Option<ProcessIdentity> {
+    if pid <= 1 || pid == std::process::id() {
+        return None;
+    }
+    let path = format!("/proc/{pid}");
+    if std::fs::metadata(&path).ok()?.uid() != std::fs::metadata("/proc/self").ok()?.uid() {
+        return None;
+    }
+    let stat = std::fs::read_to_string(format!("{path}/stat")).ok()?;
+    let start_ticks = stat
+        .rsplit_once(") ")?
+        .1
+        .split_whitespace()
+        .nth(19)?
+        .parse()
+        .ok()?;
+    Some(ProcessIdentity { pid, start_ticks })
+}
+
+fn signal_process(process: &ProcessIdentity, signal: i32) -> Result<()> {
+    // A pidfd pins the process across exit/PID reuse between validation and signaling.
+    let raw = unsafe { nix::libc::syscall(nix::libc::SYS_pidfd_open, process.pid, 0) };
+    if raw < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(raw as i32) };
+    if process_identity(process.pid).as_ref() != Some(process) {
+        bail!("The process changed or exited; refresh the application list");
+    }
+    let result = unsafe {
+        nix::libc::syscall(
+            nix::libc::SYS_pidfd_send_signal,
+            fd.as_raw_fd(),
+            signal,
+            std::ptr::null::<nix::libc::siginfo_t>(),
+            0,
+        )
+    };
+    if result < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(())
 }
 
 #[derive(Debug, Serialize)]
@@ -119,7 +172,15 @@ pub async fn applications(source: &str) -> Result<SourceApplications> {
         bail!("Could not inspect audio connections");
     }
     let graph: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout)?;
-    Ok(connected_applications(&graph, source))
+    let mut result = connected_applications(&graph, source);
+    for app in &mut result.applications {
+        app.process = app
+            .pid
+            .as_ref()
+            .and_then(|pid| pid.parse().ok())
+            .and_then(process_identity);
+    }
+    Ok(result)
 }
 
 fn connected_applications(graph: &[serde_json::Value], source: &str) -> SourceApplications {
@@ -194,6 +255,8 @@ fn connected_applications(graph: &[serde_json::Value], source: &str) -> SourceAp
                 binary,
                 pid,
                 streams: 0,
+                process: None,
+                next_signal: None,
             })
             .streams += 1;
     }
@@ -218,9 +281,50 @@ enum Packet {
 #[derive(Clone, Default)]
 pub struct AudioHub {
     channels: Arc<Mutex<HashMap<String, broadcast::Sender<Packet>>>>,
+    terminated: Arc<Mutex<HashSet<ProcessIdentity>>>,
 }
 
 impl AudioHub {
+    pub async fn inspect_applications(&self, source: &str) -> Result<SourceApplications> {
+        let mut result = applications(source).await?;
+        let mut terminated = self.terminated.lock().unwrap();
+        terminated.retain(|process| process_identity(process.pid).as_ref() == Some(process));
+        for app in &mut result.applications {
+            app.next_signal = app
+                .process
+                .as_ref()
+                .map(|process| if terminated.contains(process) { 9 } else { 15 });
+        }
+        Ok(result)
+    }
+
+    pub async fn kill_application(
+        &self,
+        source: &str,
+        process: ProcessIdentity,
+        signal: i32,
+    ) -> Result<()> {
+        if signal != 15 && signal != 9 {
+            bail!("Only SIGTERM and SIGKILL are supported");
+        }
+        let connected = applications(source).await?;
+        if !connected
+            .applications
+            .iter()
+            .any(|app| app.process.as_ref() == Some(&process))
+        {
+            bail!("This process is no longer connected to the selected microphone");
+        }
+        let mut terminated = self.terminated.lock().unwrap();
+        let expected = if terminated.contains(&process) { 9 } else { 15 };
+        if signal != expected {
+            bail!("Signal state changed; refresh the list before trying again");
+        }
+        signal_process(&process, signal)?;
+        terminated.insert(process);
+        Ok(())
+    }
+
     fn channel(&self, source: &str) -> broadcast::Sender<Packet> {
         self.channels
             .lock()
@@ -735,6 +839,32 @@ fn measure(bytes: &[u8]) -> Level {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signaling_rejects_stale_identity_and_terminates_owned_process() {
+        assert!(process_identity(0).is_none());
+        assert!(process_identity(std::process::id()).is_none());
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let identity = process_identity(child.id()).unwrap();
+        let stale = ProcessIdentity {
+            start_ticks: identity.start_ticks + 1,
+            ..identity.clone()
+        };
+        let rejected = signal_process(&stale, 15).is_err();
+        let alive = child.try_wait().unwrap().is_none();
+        let sent = signal_process(&identity, 15);
+        if sent.is_err() {
+            let _ = child.kill();
+        }
+        let status = child.wait().unwrap();
+        assert!(rejected && alive);
+        assert!(sent.is_ok());
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(status.signal(), Some(15));
+    }
 
     #[test]
     fn application_lookup_follows_links_and_deduplicates_channels_and_processes() {

@@ -11,9 +11,43 @@ const applicationsList = document.querySelector('#audio-applications-list');
 let inspectedSource = null;
 let applicationsRequest = null;
 let applicationsTimer = null;
+let applicationKillPending = false;
+let applicationsAutoRefresh = false;
+const applicationActionStatus = document.querySelector('#audio-applications-action-status');
+
+async function killApplication(app) {
+  if (applicationKillPending || !app.process || !app.next_signal) return;
+  applicationKillPending = true;
+  applicationsAutoRefresh = true;
+  applicationsRequest?.abort();
+  clearTimeout(applicationsTimer);
+  applicationsList.querySelectorAll('button').forEach((button) => { button.disabled = true; });
+  const source = inspectedSource;
+  applicationActionStatus.classList.remove('error');
+  applicationActionStatus.textContent = `Sending SIG${app.next_signal === 15 ? 'TERM' : 'KILL'} to ${app.name}…`;
+  try {
+    const response = await fetch('/api/v1/audio/applications/kill', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source, process: app.process, signal: app.next_signal }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Could not signal this application');
+    if (inspectedSource === source) applicationActionStatus.textContent = app.next_signal === 15
+      ? `SIGTERM sent to ${app.name}. If it remains connected, click Kill -9 to force it to exit.`
+      : `SIGKILL sent to ${app.name}.`;
+  } catch (error) {
+    if (inspectedSource === source) {
+      applicationActionStatus.classList.add('error');
+      applicationActionStatus.textContent = error.message;
+    }
+  } finally {
+    applicationKillPending = false;
+    void refreshApplications();
+  }
+}
 
 async function refreshApplications() {
-  if (!applicationsDialog.open || !inspectedSource) return;
+  if (!applicationsDialog.open || !inspectedSource || applicationKillPending) return;
   clearTimeout(applicationsTimer);
   applicationsRequest?.abort();
   const request = new AbortController();
@@ -33,12 +67,21 @@ async function refreshApplications() {
       const detail = document.createElement('span');
       detail.textContent = [app.binary, app.pid ? `PID ${app.pid}` : null,
         app.streams > 1 ? `${app.streams} capture streams` : null].filter(Boolean).join(' · ');
-      row.append(name, detail);
+      const info = document.createElement('div');
+      info.append(name, detail);
+      const kill = document.createElement('button');
+      kill.type = 'button';
+      kill.className = 'secondary compact audio-application-kill';
+      kill.textContent = app.next_signal === 9 ? 'Kill -9' : 'Kill -15';
+      kill.disabled = !app.process || !app.next_signal || applicationKillPending;
+      kill.title = app.process ? `Send ${app.next_signal === 9 ? 'SIGKILL' : 'SIGTERM'} to ${app.name}` : 'No verifiable local process is available';
+      kill.onclick = () => void killApplication(app);
+      row.append(info, kill);
       applicationsList.append(row);
     }
     applicationsStatus.classList.remove('error');
     applicationsStatus.textContent = !data.available ? 'This microphone is no longer available.'
-      : data.applications.length ? 'Connected applications · Updates automatically'
+      : data.applications.length ? (applicationsAutoRefresh ? 'Connected applications · Updates every 2 seconds' : 'Connected applications')
       : 'No applications are connected. The input may be unavailable for another reason.';
   } catch (error) {
     if (request.signal.aborted) return;
@@ -46,16 +89,18 @@ async function refreshApplications() {
     applicationsStatus.classList.add('error');
     applicationsStatus.textContent = error.message;
   } finally {
-    if (applicationsRequest === request && applicationsDialog.open) {
+    if (applicationsRequest === request && applicationsDialog.open && applicationsAutoRefresh) {
       applicationsTimer = setTimeout(refreshApplications, 2000);
     }
   }
 }
 
 function showApplications(track) {
+  applicationsAutoRefresh = false;
   inspectedSource = track.id;
   document.querySelector('#audio-applications-source').textContent = track.name;
   applicationsList.replaceChildren();
+  applicationActionStatus.textContent = '';
   applicationsStatus.textContent = 'Loading…';
   applicationsStatus.classList.remove('error');
   applicationsDialog.showModal();
@@ -65,6 +110,7 @@ document.querySelector('#audio-applications-refresh').onclick = () => void refre
 applicationsDialog.addEventListener('close', () => {
   clearTimeout(applicationsTimer);
   applicationsRequest?.abort();
+  applicationsAutoRefresh = false;
   inspectedSource = null;
 });
 applicationsDialog.addEventListener('click', (event) => {

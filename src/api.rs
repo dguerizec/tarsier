@@ -165,6 +165,10 @@ pub fn router_with_controls(
         .route("/api/v1/audio/exclusive", post(set_audio_exclusive))
         .route("/api/v1/audio/applications", get(audio_applications))
         .route(
+            "/api/v1/audio/applications/kill",
+            post(kill_audio_application),
+        )
+        .route(
             "/api/v1/audio/virtual",
             get(virtual_audio).post(set_virtual_audio),
         )
@@ -2910,15 +2914,47 @@ async fn audio_sources(State(state): State<ApiState>) -> Response {
 }
 
 async fn audio_applications(
+    State(state): State<ApiState>,
     axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
     let Some(source) = query.get("source").filter(|source| !source.is_empty()) else {
         return StatusCode::BAD_REQUEST.into_response();
     };
-    match crate::audio::applications(source).await {
+    let Some(audio) = state.audio else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    match audio.inspect_applications(source).await {
         Ok(applications) => Json(applications).into_response(),
         Err(error) => (
             StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct KillAudioApplicationRequest {
+    source: String,
+    process: crate::audio::ProcessIdentity,
+    signal: i32,
+}
+
+async fn kill_audio_application(
+    State(state): State<ApiState>,
+    Json(request): Json<KillAudioApplicationRequest>,
+) -> Response {
+    let Some(audio) = state.audio else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    match audio
+        .kill_application(&request.source, request.process, request.signal)
+        .await
+    {
+        Ok(()) => Json(json!({"signal": request.signal, "sent": true})).into_response(),
+        Err(error) => (
+            StatusCode::CONFLICT,
             Json(json!({"error": error.to_string()})),
         )
             .into_response(),

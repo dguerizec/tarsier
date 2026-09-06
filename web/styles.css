@@ -256,3 +256,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 #audio-applications-list { list-style: none; padding: 0; margin: 0; max-height: 45vh; overflow-y: auto; }
 #audio-applications-list li { display: grid; gap: .25rem; padding: .7rem 0; border-bottom: 1px solid var(--panel-edge); overflow-wrap: anywhere; }
 #audio-applications-list span { font-size: .75rem; color: var(--muted); }
+
+#audio-applications-list li { grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: .8rem; }
+#audio-applications-list li > div { display: grid; gap: .25rem; }
+.audio-application-kill { color: var(--red); white-space: nowrap; }
