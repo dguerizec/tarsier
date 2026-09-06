@@ -11,4 +11,4 @@ __pycache__/
 /web/node_modules/
 
 /assets/avatars/portrait/current/
-/assets/avatars/liveportrait-source.png
+/assets/avatars/*.png

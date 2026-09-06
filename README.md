@@ -275,7 +275,9 @@ the avatar bounce. The supervised worker installs both optional dependency
 groups and verifies the additional local weights at startup, but imports
 PyTorch and loads the neural models only after LivePortrait is selected.
 Download the weights with `models --download --avatar` and configure the
-approved source illustration. Its first compiled inference may take roughly
+approved source illustration at `assets/avatars/liveportrait-source.png` (or set
+`avatar.source_image` to another local path). Source portraits are not included
+in the repository. Its first compiled inference may take roughly
 one minute on the tested RTX 3070 while PyTorch builds and caches GPU kernels.
 
 Hold the direction buttons below the preview or use the keyboard arrow keys to
