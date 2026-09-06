@@ -514,6 +514,21 @@ impl AudioHub {
         })
         .await
         .context("Virtual microphone did not appear in the audio server")??;
+        let default_source = timeout(
+            Duration::from_secs(3),
+            Command::new("pactl")
+                .args(["set-default-source", VIRTUAL_SOURCE])
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await
+        .context("Setting the default microphone timed out")??;
+        if !default_source.status.success() {
+            bail!(
+                "Could not set Tarsier Microphone as the system default: {}",
+                String::from_utf8_lossy(&default_source.stderr).trim()
+            );
+        }
         runtime
             .update(|s| {
                 s.audio_virtual.running = true;

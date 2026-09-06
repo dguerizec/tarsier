@@ -920,7 +920,10 @@ Reconnecting the same source lets capture retry automatically.
 
 The output waveform meters the published virtual source, including any mute or
 volume applied in the system mixer. Select **Tarsier Microphone** separately from
-the camera in your call app. Tarsier does not change the system's default input.
+the camera in your call app. Whenever its virtual microphone is created, Tarsier
+sets it as the system default input after it appears in the audio server. This
+applies at startup and after output Off → On; applications with an explicit
+source selection may keep their own choice.
 Turning virtual output **Off** removes that virtual device; input capture controls
 remain independent. Input capture choices, selected output source, output enablement, and mute are
 shared across browser clients and saved in the user settings file. They are
