@@ -124,7 +124,7 @@ The process-local bus uses Tokio primitives. External modules communicate
 through versioned HTTP schemas; they do not gain direct access to hardware or
 the bus. The Python worker receives only downscaled raw-camera JPEG frames and
 posts compact observations, person masks, and optional relative-depth fields
-back to the loopback-only API.
+back to the API over loopback.
 
 ## Requirements
 
@@ -336,7 +336,7 @@ adapter = "mock"
 [`config/tarsier.example.toml`](config/tarsier.example.toml) is the reference
 configuration. It defines:
 
-- the loopback-only server address;
+- the server listen address;
 - physical and virtual video devices, frame size, rate, preview quality,
   initial video identity, background-effect state and selection, and pipeline
   recovery delay;
@@ -398,13 +398,25 @@ coordinates. Local tracking and output overlays retain that source coordinate
 contract. Camera mounting
 orientation telemetry and automatic orientation scenarios are not implemented.
 
-The default server binds only to `127.0.0.1:8742`.
+The default binds to `127.0.0.1:8742`. Open **Settings** in the UI and select
+**Local network**, then **Save and restart**, to listen on all IPv4 interfaces
+(`0.0.0.0`). The choice is persisted and overrides the configuration's bind IP.
+The port stays as configured. From a laptop on the same network, open
+`http://<camera-host-LAN-IP>:8742/` for the preview and controls. The perception
+worker still connects over loopback. Select **Local only** to disable remote
+access. Network changes require supervision and are blocked while recording.
+
+There is no authentication: anyone able to reach the port can view the video,
+access saved media, and control the daemon. Use this configuration only on a
+trusted network; keep port 8742 off the public Internet. Folder buttons act on
+the camera host's desktop, even when clicked from another computer.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `POST` | `/api/v1/camera/photos` | Save the final full-resolution JPEG locally; returns its path and URL |
 | `GET` | `/api/v1/camera/photos/{filename}` | Open a saved photo as a JPEG |
 | `POST` | `/api/v1/camera/photos/{filename}/open` | Show a saved photo in its folder, selected in the file manager; send an empty JSON object |
+| `GET` / `POST` | `/api/v1/settings/network` | Read network settings or persist `{ "lan_access": true }` and restart |
 | `GET` | `/api/v1/health` | Health, version, daemon start time, uptime, and restart availability |
 | `POST` | `/api/v1/daemon/restart` | Gracefully exit for restart by the active service supervisor |
 | `POST` | `/api/v1/video/resolution` | Persist `{ "width": 3840, "height": 2160 }` (also 720p/1080p) and restart under supervision; 4K disables effects |
@@ -723,8 +735,8 @@ run before unattended use.
   persisted, while transient telemetry and other hardware controls are not;
 - UI restart is offered only when systemd supervision is detected and relies on
   the unit's restart policy; it is deliberately unavailable for foreground runs;
-- the API has no authentication because it binds to loopback only; remote
-  exposure is unsupported;
+- the API has no authentication; wildcard binding is intended for trusted LAN
+  access only;
 - there is no system service, release packaging, multi-camera support, or
   production soak test yet.
 

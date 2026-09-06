@@ -37,6 +37,8 @@ impl VideoResolution {
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct UserSettings {
     #[serde(default)]
+    pub network_lan_access: Option<bool>,
+    #[serde(default)]
     pub video_resolution: Option<VideoResolution>,
     #[serde(default)]
     pub video_transform: crate::video_transform::VideoTransform,
@@ -55,6 +57,7 @@ impl UserSettings {
     pub fn from_config(config: &Config) -> Self {
         Self {
             version: SETTINGS_VERSION,
+            network_lan_access: None,
             video_resolution: None,
             video_transform: Default::default(),
             video_identity: identity_from_mode(config.video.output_mode, config.avatar.engine),
@@ -173,6 +176,11 @@ impl UserSettingsStore {
             settings.background_effect = effect;
         })
         .await
+    }
+
+    pub async fn set_network_lan_access(&self, enabled: bool) -> Result<()> {
+        self.replace(|settings| settings.network_lan_access = Some(enabled))
+            .await
     }
 
     pub async fn set_video_resolution(&self, resolution: VideoResolution) -> Result<()> {
@@ -325,6 +333,24 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    #[tokio::test]
+    async fn network_access_persists_both_choices() {
+        let path = test_path("network");
+        let fallback = UserSettings::from_config(&Config::default());
+        assert_eq!(fallback.network_lan_access, None);
+        let (store, _) = UserSettingsStore::load(path.clone(), fallback)
+            .await
+            .unwrap();
+        for enabled in [true, false] {
+            store.set_network_lan_access(enabled).await.unwrap();
+            let (_, restored) = UserSettingsStore::load(path.clone(), fallback)
+                .await
+                .unwrap();
+            assert_eq!(restored.network_lan_access, Some(enabled));
+        }
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[tokio::test]

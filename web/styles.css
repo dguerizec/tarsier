@@ -202,3 +202,19 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .preview-overlay-tools button[aria-pressed="true"] { background: var(--green); border-color: var(--green); color: #0a0d0a; }
 .preview-overlay-tools button[aria-pressed="true"]:hover:not(:disabled) { background: #c9f59e; }
 .preview-overlay-tools button:focus-visible { outline: 2px solid white; outline-offset: 3px; }
+
+.header-actions { display: flex; align-items: center; gap: 1rem; }
+.settings-link { color: var(--green); font-size: .85rem; text-underline-offset: .2rem; }
+.settings-page { display: block; max-width: 48rem; margin: 0 auto; }
+.settings-page .panel { padding: 1.5rem; }
+.settings-page p { margin: .8rem 0; color: var(--muted); font-size: .85rem; line-height: 1.5; }
+.settings-page fieldset { border: 0; padding: 0; margin: 1.5rem 0 1rem; }
+.settings-page legend { font-size: .85rem; margin-bottom: .6rem; }
+.network-choice { display: inline-flex; gap: .3rem; }
+.network-choice label { position: relative; cursor: pointer; }
+.network-choice input { position: absolute; opacity: 0; }
+.network-choice span { display: block; padding: .6rem .85rem; border-radius: .6rem; background: #273229; font-size: .85rem; font-weight: 600; }
+.network-choice input:checked + span { background: var(--green); color: #0a0d0a; }
+.network-choice input:focus-visible + span { outline: 2px solid white; outline-offset: 2px; }
+.network-choice input:disabled + span { opacity: .5; cursor: not-allowed; }
+.settings-page .network-notice { color: var(--amber); }

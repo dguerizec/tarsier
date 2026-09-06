@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Settings · Tarsier</title>
+    <link rel="stylesheet" href="/assets/styles.css">
+  </head>
+  <body>
+    <header>
+      <div><p class="eyebrow">TARSIER</p><h1>Settings</h1></div>
+      <a class="settings-link" href="/">Back to preview</a>
+    </header>
+    <main class="settings-page">
+      <section class="panel" aria-labelledby="network-heading">
+        <h2 id="network-heading">Network access</h2>
+        <p>Choose which devices can open the preview and camera controls.</p>
+        <form id="network-form">
+          <fieldset id="network-options" disabled>
+            <legend>Allow access from other devices</legend>
+            <div class="segmented-control network-choice">
+              <label><input type="radio" name="lan_access" value="false"> <span>Local only</span></label>
+              <label><input type="radio" name="lan_access" value="true"> <span>Local network</span></label>
+            </div>
+          </fieldset>
+          <p id="network-description">Loading settings…</p>
+          <p class="network-notice">There is no password protection. Network access includes the live video, saved media, and camera controls. Use a trusted network.</p>
+          <p id="network-address"></p>
+          <button id="network-save" type="submit" disabled>Save and restart</button>
+          <p id="network-status" role="status" aria-live="polite"></p>
+        </form>
+      </section>
+    </main>
+    <script type="module" src="/assets/settings.js"></script>
+  </body>
+</html>

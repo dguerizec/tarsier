@@ -87,6 +87,13 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
         settings::UserSettings::from_config(&config),
     )
     .await?;
+    if let Some(lan_access) = user_settings.network_lan_access {
+        config.server.bind.set_ip(if lan_access {
+            std::net::Ipv4Addr::UNSPECIFIED.into()
+        } else {
+            std::net::Ipv4Addr::LOCALHOST.into()
+        });
+    }
     if let Some(resolution) = user_settings.video_resolution {
         config.video.width = resolution.width;
         config.video.height = resolution.height;

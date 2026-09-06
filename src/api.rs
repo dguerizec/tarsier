@@ -139,6 +139,12 @@ pub fn router_with_controls(
     };
     Router::new()
         .route("/", get(index))
+        .route("/settings", get(settings_page))
+        .route("/assets/settings.js", get(settings_js))
+        .route(
+            "/api/v1/settings/network",
+            get(network_settings).post(set_network_settings),
+        )
         .route("/assets/app.js", get(app_js))
         .route("/assets/lucide.js", get(lucide_js))
         .route("/assets/styles.css", get(styles_css))
@@ -232,6 +238,62 @@ async fn index() -> impl IntoResponse {
         [(header::CACHE_CONTROL, "no-store")],
         Html(include_str!("../web/index.html")),
     )
+}
+
+async fn settings_page() -> impl IntoResponse {
+    (
+        [(header::CACHE_CONTROL, "no-store")],
+        Html(include_str!("../web/settings.html")),
+    )
+}
+
+async fn settings_js() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        include_str!("../web/settings.js"),
+    )
+}
+
+async fn network_settings(State(state): State<ApiState>) -> Json<Value> {
+    Json(json!({
+        "lan_access": !state.config.server.bind.ip().is_loopback(),
+        "bind": state.config.server.bind.to_string(),
+        "port": state.config.server.bind.port(),
+        "can_apply": state.daemon_restart.is_some() && state.user_settings.is_some(),
+        "started_at_ms": state.runtime.state().await.started_at_ms,
+    }))
+}
+
+#[derive(Deserialize)]
+struct NetworkSettingsRequest {
+    lan_access: bool,
+}
+
+async fn set_network_settings(
+    State(state): State<ApiState>,
+    Json(request): Json<NetworkSettingsRequest>,
+) -> Response {
+    let _guard = state.video_output_control.lock().await;
+    if state.recorder.status().await.active {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "Stop recording before changing network access"})),
+        )
+            .into_response();
+    }
+    let (Some(restart), Some(settings)) = (&state.daemon_restart, &state.user_settings) else {
+        return (StatusCode::CONFLICT, Json(json!({"error": "Network changes require a supervised daemon and persistent settings"}))).into_response();
+    };
+    if let Err(error) = settings.set_network_lan_access(request.lan_access).await {
+        return user_settings_error(error);
+    }
+    if let Err(error) = restart.request().await {
+        return (StatusCode::CONFLICT, Json(json!({"error": error}))).into_response();
+    }
+    (StatusCode::ACCEPTED, Json(json!({"restarting": true}))).into_response()
 }
 
 async fn app_js() -> impl IntoResponse {
@@ -2911,6 +2973,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn network_settings_report_scope_and_require_supervision() {
+        let mut config = Config::default();
+        config.server.bind = "0.0.0.0:8742".parse().unwrap();
+        config.perception.enabled = false;
+        let (_tx, rx) = watch::channel(false);
+        let app = router(config, Runtime::new(), PreviewHub::new(), None, rx);
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/settings/network")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+        assert_eq!(body["lan_access"], true);
+        assert_eq!(body["can_apply"], false);
+        let response = app
+            .oneshot(
+                Request::post("/api/v1/settings/network")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"lan_access":false}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
     async fn embedded_ui_assets_are_not_cached() {
         let mut config = Config::default();
         config.perception.enabled = false;
@@ -2922,6 +3016,8 @@ mod tests {
             "/assets/app.js",
             "/assets/styles.css",
             "/assets/lucide.js",
+            "/settings",
+            "/assets/settings.js",
         ] {
             let response = app
                 .clone()
