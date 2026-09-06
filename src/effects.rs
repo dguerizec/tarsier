@@ -209,6 +209,15 @@ pub struct VideoEffects {
     avatar_tx: watch::Sender<Option<Arc<AvatarFrame>>>,
     depth_tx: watch::Sender<Option<Arc<DepthFrame>>>,
     scratch: Arc<Mutex<EffectScratch>>,
+    held_output: Arc<Mutex<HeldOutput>>,
+}
+
+// Stores only successfully processed pixels, before the presentation transform.
+#[derive(Default)]
+struct HeldOutput {
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
 }
 
 #[derive(Default)]
@@ -237,6 +246,7 @@ impl VideoEffects {
             avatar_tx,
             depth_tx,
             scratch: Arc::new(Mutex::new(EffectScratch::default())),
+            held_output: Arc::new(Mutex::new(HeldOutput::default())),
         }
     }
 
@@ -245,6 +255,11 @@ impl VideoEffects {
     }
 
     pub fn set_output_mode(&self, mode: VideoOutputMode) {
+        let mut held = self
+            .held_output
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        *held = HeldOutput::default();
         self.output_mode
             .store(output_mode_code(mode), Ordering::Relaxed);
     }
@@ -272,6 +287,13 @@ impl VideoEffects {
     }
 
     pub fn set_background(&self, enabled: bool, effect: BackgroundEffect) {
+        let mut held = self
+            .held_output
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if enabled != self.background_enabled() || effect != self.background_effect() {
+            *held = HeldOutput::default();
+        }
         self.background_effect
             .store(effect_code(effect), Ordering::Relaxed);
         self.background_enabled.store(enabled, Ordering::Relaxed);
@@ -357,7 +379,16 @@ impl VideoEffects {
         now_ms: u64,
         frame_id: Option<u64>,
     ) -> bool {
-        let changed = match self.output_mode() {
+        // Serialize cache invalidation with processing so a settings change cannot
+        // retain a frame produced for the previous identity or background effect.
+        let mut held = self
+            .held_output
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if held.width != width || held.height != height || held.pixels.len() != frame.len() {
+            *held = HeldOutput::default();
+        }
+        let processed = match self.output_mode() {
             VideoOutputMode::Camera => {
                 self.apply_background_for_frame(frame, width, height, now_ms, frame_id)
             }
@@ -369,10 +400,10 @@ impl VideoEffects {
                 match (expected_len, avatar) {
                     (Some(expected_len), Some(avatar)) if frame.len() >= expected_len => {
                         frame[..expected_len].copy_from_slice(&avatar.pixels);
+                        Some(true)
                     }
-                    _ => frame.fill(0),
+                    _ => None,
                 }
-                true
             }
             VideoOutputMode::DepthMap => {
                 let expected_len = avatar_frame_len(width, height).ok();
@@ -380,12 +411,34 @@ impl VideoEffects {
                 match (expected_len, depth) {
                     (Some(expected_len), Some(depth)) if frame.len() >= expected_len => {
                         render_depth_map(&mut frame[..expected_len], width, height, &depth);
+                        Some(true)
                     }
-                    _ => frame.fill(0),
+                    _ => None,
+                }
+            }
+        };
+        let changed = match processed {
+            Some(true) => {
+                held.width = width;
+                held.height = height;
+                held.pixels.resize(frame.len(), 0);
+                held.pixels.copy_from_slice(frame);
+                true
+            }
+            Some(false) => {
+                *held = HeldOutput::default();
+                false
+            }
+            None => {
+                if held.pixels.len() == frame.len() {
+                    frame.copy_from_slice(&held.pixels);
+                } else {
+                    frame.fill(0);
                 }
                 true
             }
         };
+        drop(held);
         let code = self.transform.load(Ordering::Relaxed);
         if code != 0 {
             self.transform_scratch
@@ -403,7 +456,7 @@ impl VideoEffects {
 
     #[cfg(test)]
     pub fn apply_background(&self, frame: &mut [u8], width: u32, height: u32, now_ms: u64) -> bool {
-        self.apply_background_for_frame(frame, width, height, now_ms, None)
+        self.apply_output_for_frame(frame, width, height, now_ms, None)
     }
 
     fn apply_background_for_frame(
@@ -413,31 +466,31 @@ impl VideoEffects {
         height: u32,
         now_ms: u64,
         frame_id: Option<u64>,
-    ) -> bool {
+    ) -> Option<bool> {
         if !self.background_enabled() {
-            return false;
+            return Some(false);
         }
         if width == 0 || height == 0 {
             frame.fill(0);
-            return true;
+            return None;
         }
         let pixel_count = match (width as usize).checked_mul(height as usize) {
             Some(pixel_count) => pixel_count,
             None => {
                 frame.fill(0);
-                return true;
+                return None;
             }
         };
         let expected_len = match pixel_count.checked_mul(4) {
             Some(expected_len) => expected_len,
             None => {
                 frame.fill(0);
-                return true;
+                return None;
             }
         };
         if frame.len() < expected_len {
             frame.fill(0);
-            return true;
+            return None;
         }
         let mask = match frame_id {
             Some(frame_id) => self.wait_for_mask(frame_id),
@@ -445,7 +498,7 @@ impl VideoEffects {
         };
         let Some(mask) = mask else {
             frame[..expected_len].fill(0);
-            return true;
+            return None;
         };
 
         let width = width as usize;
@@ -457,19 +510,19 @@ impl VideoEffects {
             BackgroundEffect::Blur => {
                 let Ok(mut scratch) = self.scratch.lock() else {
                     frame[..expected_len].fill(0);
-                    return true;
+                    return None;
                 };
                 apply_background_blur(frame, width, height, &mask, &mut scratch);
             }
             BackgroundEffect::PixelParty => {
                 let Ok(mut scratch) = self.scratch.lock() else {
                     frame[..expected_len].fill(0);
-                    return true;
+                    return None;
                 };
                 apply_pixel_party(frame, width, height, &mask, now_ms, &mut scratch);
             }
         }
-        true
+        Some(true)
     }
 
     fn wait_for_mask(&self, frame_id: u64) -> Option<Arc<VideoMask>> {
@@ -971,7 +1024,7 @@ mod tests {
     }
 
     #[test]
-    fn depth_map_colorizes_relative_values_and_fails_closed_when_stale() {
+    fn depth_map_colorizes_relative_values_and_holds_when_stale() {
         let effects = VideoEffects::new();
         effects.set_output_mode(VideoOutputMode::DepthMap);
         let captured_at_ms = unix_ms();
@@ -991,7 +1044,7 @@ mod tests {
 
         let mut stale = [255; 8];
         assert!(effects.apply_output(&mut stale, 2, 1, published_at_ms + DEPTH_MAX_AGE_MS + 1,));
-        assert_eq!(stale, [0; 8]);
+        assert_eq!(stale, frame);
     }
 
     #[test]
@@ -1052,6 +1105,101 @@ mod tests {
         effects.set_background(true, BackgroundEffect::PixelParty);
         assert!(effects.apply_background(&mut frame, 1, 1, published_at_ms + MASK_MAX_AGE_MS + 1,));
         assert_eq!(frame, [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn background_holds_processed_pixels_on_timeout_and_resumes_with_a_matching_mask() {
+        for effect in [
+            BackgroundEffect::GreenScreen,
+            BackgroundEffect::Blur,
+            BackgroundEffect::PixelParty,
+        ] {
+            let effects = VideoEffects::new();
+            effects.set_background(true, effect);
+            let now = unix_ms();
+            effects.publish_mask(VideoMask::new(1, now, 2, 1, vec![255, 0]).unwrap());
+            let mut frame = [10, 20, 30, 255, 40, 50, 60, 255];
+            effects.apply_output_for_frame(&mut frame, 2, 1, now, Some(1));
+            let processed = frame;
+
+            frame.fill(99);
+            effects.apply_output_for_frame(&mut frame, 2, 1, now, Some(2));
+            assert_eq!(frame, processed, "{effect:?}");
+            effects.clear_mask();
+            frame.fill(88);
+            effects.apply_output(&mut frame, 2, 1, now + 10_000);
+            assert_eq!(frame, processed, "{effect:?}");
+
+            let now = unix_ms();
+            effects.publish_mask(VideoMask::new(3, now, 2, 1, vec![255, 0]).unwrap());
+            frame.fill(77);
+            effects.apply_output_for_frame(&mut frame, 2, 1, now, Some(3));
+            assert_eq!(&frame[..4], &[77; 4]);
+        }
+    }
+
+    #[test]
+    fn avatar_holds_without_reapplying_transform_and_resumes() {
+        let effects = VideoEffects::new();
+        effects.set_output_mode(VideoOutputMode::ComicAvatar);
+        effects.set_transform(crate::video_transform::VideoTransform {
+            rotation: 0,
+            mirror: true,
+        });
+        let now = unix_ms();
+        effects.publish_avatar(
+            AvatarFrame::new(1, now, 2, 1, vec![1, 2, 3, 255, 4, 5, 6, 255]).unwrap(),
+        );
+        let mut frame = [99; 8];
+        effects.apply_output(&mut frame, 2, 1, now);
+        assert_eq!(frame, [4, 5, 6, 255, 1, 2, 3, 255]);
+        let processed = frame;
+        for time in [now + AVATAR_MAX_AGE_MS + 1, now + 10_000] {
+            frame.fill(99);
+            effects.apply_output(&mut frame, 2, 1, time);
+            assert_eq!(frame, processed);
+        }
+        effects.clear_avatar();
+        frame.fill(99);
+        effects.apply_output(&mut frame, 2, 1, now);
+        assert_eq!(frame, processed);
+        effects.publish_avatar(AvatarFrame::new(2, now, 2, 1, vec![7; 8]).unwrap());
+        effects.apply_output(&mut frame, 2, 1, now);
+        assert_eq!(frame, [7; 8]);
+    }
+
+    #[test]
+    fn held_frame_is_invalidated_by_settings_and_dimensions() {
+        let effects = VideoEffects::new();
+        effects.set_background(true, BackgroundEffect::GreenScreen);
+        let now = unix_ms();
+        effects.publish_mask(VideoMask::new(1, now, 2, 1, vec![0, 255]).unwrap());
+        let mut frame = [99; 8];
+        effects.apply_output(&mut frame, 2, 1, now);
+        effects.clear_mask();
+        effects.set_background(true, BackgroundEffect::Blur);
+        effects.apply_output(&mut frame, 2, 1, now);
+        assert_eq!(frame, [0; 8]);
+
+        effects.set_output_mode(VideoOutputMode::ComicAvatar);
+        effects.publish_avatar(AvatarFrame::new(1, now, 2, 1, vec![7; 8]).unwrap());
+        effects.apply_output(&mut frame, 2, 1, now);
+        effects.clear_avatar();
+        // Even equal byte lengths cannot reuse an image with different dimensions.
+        effects.apply_output(&mut frame, 1, 2, now);
+        assert_eq!(frame, [0; 8]);
+        effects.publish_avatar(AvatarFrame::new(2, now, 2, 1, vec![7; 8]).unwrap());
+        effects.apply_output(&mut frame, 2, 1, now);
+        // Identity switches may keep the same output mode (another avatar engine).
+        effects.clear_avatar();
+        effects.set_output_mode(VideoOutputMode::ComicAvatar);
+        effects.apply_output(&mut frame, 2, 1, now);
+        assert_eq!(frame, [0; 8]);
+        effects.set_output_mode(VideoOutputMode::Camera);
+        effects.set_background(false, BackgroundEffect::Blur);
+        frame.fill(42);
+        assert!(!effects.apply_output(&mut frame, 2, 1, now));
+        assert_eq!(frame, [42; 8]);
     }
 
     #[test]

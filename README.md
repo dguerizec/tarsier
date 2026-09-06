@@ -64,14 +64,14 @@ mischievous personality without tying its core to one camera vendor.
   depth is enabled, the worker combines MediaPipe's semantic person
   probability with the local depth distribution to suppress background leaks
   at depth breaks. The output branch waits for the mask generated from the
-  same camera frame; a missing or stale mask fails closed to black until the
-  effect is explicitly disabled;
+  same camera frame; a missing or stale mask freezes the last processed image
+  (black until the first valid image);
 - an optional local avatar worker defaults to a cel-shaded procedural 3D head
   and bust driven by MediaPipe head pose and facial blendshapes; LivePortrait
   remains an alternate engine. Both publish complete BGRx scenes to the same
   preview and virtual-camera output. The **Video identity** control switches
-  between the real camera and avatar, and a missing or stale avatar frame fails
-  closed to black instead of revealing the camera;
+  between the real camera and avatar; a missing or stale avatar frame freezes
+  the last generated image, with black only before the first valid image;
 - an optional local Depth Anything V2 worker estimates relative monocular depth
   on demand for either **Depth map** or Camera's active background effect.
   Tarsier retains the original `float32` field for machine use, independently
@@ -191,8 +191,10 @@ art-directed pixelated studio containing a desk, monitor, shelves, lamps, plants
 and layered lounge decor. The teal, indigo, plum, wood, and amber scene animates
 only its monitor glow, practical lamp, and a few distant highlights on a gentle
 24-second loop while leaving the subject untouched. While any effect is active,
-Tarsier emits black frames rather than expose the original image if the worker
-has not published a fresh mask.
+Tarsier freezes the last successfully processed image if the worker has not
+published a fresh mask. It resumes when a matching fresh mask arrives. Before
+the first valid image, or after changing the effect, identity, or dimensions,
+it emits black; it never exposes unprocessed camera pixels as a fallback.
 The final stream is held for one frame so the inferred mask remains aligned
 during subject or camera motion. Disabling the switch restores the original
 image without changing the public virtual-camera device. The reference camera
@@ -247,8 +249,9 @@ the web preview and `/dev/video42`. Background effects are disabled in the UI
 outside Camera because the alternate output is already complete. A switch
 immediately clears the previous generated frame, and Tarsier accepts new frames
 only for the selected identity. If initialization or inference takes more than
-500 ms, it outputs black until a fresh matching frame arrives; it never falls
-back to the real camera.
+500 ms, it holds the last successfully generated image until a fresh matching
+frame arrives. Before the first valid image for the selected identity it outputs
+black; it never falls back to the real camera. Depth map uses the same behavior.
 
 LivePortrait remains an experimental fallback. Because it animates one frontal
 source rather than a multi-view identity model, Tarsier attenuates and bounds
