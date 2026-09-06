@@ -204,6 +204,7 @@ pub fn router_with_controls(
         .route("/api/v1/preview.mjpeg", get(preview_mjpeg))
         .route("/api/v1/camera/snapshot", get(snapshot))
         .route("/api/v1/camera/photos", post(take_photo))
+        .route("/api/v1/camera/photos/{filename}", get(saved_photo))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
@@ -1296,18 +1297,16 @@ async fn take_photo(State(state): State<ApiState>) -> Response {
             .into_response();
     };
     let result = tokio::task::spawn_blocking(move || -> anyhow::Result<std::path::PathBuf> {
-        let directory = std::env::var_os("TARSIER_PHOTOS_DIR")
-            .map(std::path::PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME")
-                    .map(|home| std::path::PathBuf::from(home).join("Pictures/Tarsier"))
-            })
-            .ok_or_else(|| anyhow::anyhow!("Set TARSIER_PHOTOS_DIR or HOME to save photos"))?;
+        let directory = photos_directory()?;
         save_photo(&directory, &frame.bytes)
     })
     .await;
     match result {
-        Ok(Ok(path)) => (StatusCode::CREATED, Json(json!({"path": path}))).into_response(),
+        Ok(Ok(path)) => {
+            let filename = path.file_name().unwrap().to_string_lossy();
+            let url = format!("/api/v1/camera/photos/{filename}");
+            (StatusCode::CREATED, Json(json!({"path": path, "url": url}))).into_response()
+        }
         Ok(Err(error)) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": format!("Could not save photo: {error}")})),
@@ -1318,6 +1317,68 @@ async fn take_photo(State(state): State<ApiState>) -> Response {
             Json(json!({"error": format!("Photo task failed: {error}")})),
         )
             .into_response(),
+    }
+}
+
+fn photos_directory() -> anyhow::Result<std::path::PathBuf> {
+    std::env::var_os("TARSIER_PHOTOS_DIR")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(|home| std::path::PathBuf::from(home).join("Pictures/Tarsier"))
+        })
+        .ok_or_else(|| anyhow::anyhow!("Set TARSIER_PHOTOS_DIR or HOME to save photos"))
+}
+
+fn read_saved_photo(directory: &std::path::Path, filename: &str) -> std::io::Result<Vec<u8>> {
+    use std::{io::Read, os::unix::fs::OpenOptionsExt};
+    let valid = filename
+        .strip_prefix("photo-")
+        .and_then(|name| name.strip_suffix(".jpg"))
+        .is_some_and(|name| {
+            let parts: Vec<_> = name.split('-').collect();
+            parts.len() == 3
+                && parts
+                    .iter()
+                    .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+        });
+    if !valid {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Invalid photo filename",
+        ));
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
+        .open(directory.join(filename))?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Not a photo file",
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+async fn saved_photo(axum::extract::Path(filename): axum::extract::Path<String>) -> Response {
+    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<u8>> {
+        Ok(read_saved_photo(&photos_directory()?, &filename)?)
+    })
+    .await;
+    match result {
+        Ok(Ok(bytes)) => (
+            [
+                (header::CONTENT_TYPE, "image/jpeg"),
+                (header::CACHE_CONTROL, "no-store"),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            ],
+            bytes,
+        )
+            .into_response(),
+        _ => (StatusCode::NOT_FOUND, "Photo not found").into_response(),
     }
 }
 
@@ -2600,6 +2661,14 @@ mod tests {
         let first = save_photo(&directory, b"first JPEG").unwrap();
         let second = save_photo(&directory, b"second JPEG").unwrap();
         assert_ne!(first, second);
+        assert_eq!(
+            read_saved_photo(&directory, first.file_name().unwrap().to_str().unwrap()).unwrap(),
+            b"first JPEG"
+        );
+        assert!(read_saved_photo(&directory, "../secret.jpg").is_err());
+        assert!(read_saved_photo(&directory, "photo-1-2-3.jpg").is_err());
+        std::os::unix::fs::symlink(&first, directory.join("photo-1-2-3.jpg")).unwrap();
+        assert!(read_saved_photo(&directory, "photo-1-2-3.jpg").is_err());
         assert_eq!(std::fs::read(&first).unwrap(), b"first JPEG");
         assert_eq!(std::fs::read(&second).unwrap(), b"second JPEG");
         assert!(save_photo(&first, b"cannot write inside a file").is_err());

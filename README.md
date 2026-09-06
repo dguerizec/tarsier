@@ -401,7 +401,8 @@ The default server binds only to `127.0.0.1:8742`.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `POST` | `/api/v1/camera/photos` | Save the final full-resolution JPEG locally; returns its path |
+| `POST` | `/api/v1/camera/photos` | Save the final full-resolution JPEG locally; returns its path and URL |
+| `GET` | `/api/v1/camera/photos/{filename}` | Open a saved photo as a JPEG |
 | `GET` | `/api/v1/health` | Health, version, daemon start time, uptime, and restart availability |
 | `POST` | `/api/v1/daemon/restart` | Gracefully exit for restart by the active service supervisor |
 | `POST` | `/api/v1/video/resolution` | Persist `{ "width": 3840, "height": 2160 }` (also 720p/1080p) and restart under supervision; 4K disables effects |

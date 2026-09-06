@@ -1575,7 +1575,12 @@ takePhoto.addEventListener("click", async () => {
     const response = await fetch("/api/v1/camera/photos", { method: "POST" });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "Could not save photo");
-    photoStatus.textContent = `Saved: ${payload.path}`;
+    const photoLink = document.createElement("a");
+    photoLink.href = payload.url;
+    photoLink.textContent = payload.path;
+    photoLink.target = "_blank";
+    photoLink.rel = "noopener";
+    photoStatus.replaceChildren("Saved: ", photoLink);
   } catch (error) {
     photoStatus.classList.add("error");
     photoStatus.textContent = error instanceof Error ? error.message : String(error);
