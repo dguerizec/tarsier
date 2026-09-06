@@ -1735,8 +1735,8 @@ function localMediaOpenControls(url, mediaName) {
   fileLink.type = "button";
   fileLink.className = "photo-file-link";
   fileLink.append(createElement(FolderOpen, { width: 18, height: 18, "aria-hidden": "true", focusable: "false" }));
-  fileLink.title = `Open ${mediaName} with the default application`;
-  fileLink.setAttribute("aria-label", `Open ${mediaName} with the default application`);
+  fileLink.title = `Show ${mediaName} in folder`;
+  fileLink.setAttribute("aria-label", `Show ${mediaName} in folder`);
   const openStatus = document.createElement("span");
   fileLink.addEventListener("click", async () => {
     fileLink.disabled = true;
@@ -1747,7 +1747,7 @@ function localMediaOpenControls(url, mediaName) {
         headers: { "Content-Type": "application/json" },
         body: "{}",
       });
-      if (!response.ok) throw new Error((await response.json()).error || `Could not open ${mediaName}`);
+      if (!response.ok) throw new Error((await response.json()).error || `Could not show ${mediaName} in folder`);
       openStatus.textContent = "";
     } catch (error) {
       openStatus.textContent = ` ${error.message}`;

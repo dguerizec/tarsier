@@ -404,7 +404,7 @@ The default server binds only to `127.0.0.1:8742`.
 | --- | --- | --- |
 | `POST` | `/api/v1/camera/photos` | Save the final full-resolution JPEG locally; returns its path and URL |
 | `GET` | `/api/v1/camera/photos/{filename}` | Open a saved photo as a JPEG |
-| `POST` | `/api/v1/camera/photos/{filename}/open` | Open a saved photo with the local default application; send an empty JSON object |
+| `POST` | `/api/v1/camera/photos/{filename}/open` | Show a saved photo in its folder, selected in the file manager; send an empty JSON object |
 | `GET` | `/api/v1/health` | Health, version, daemon start time, uptime, and restart availability |
 | `POST` | `/api/v1/daemon/restart` | Gracefully exit for restart by the active service supervisor |
 | `POST` | `/api/v1/video/resolution` | Persist `{ "width": 3840, "height": 2160 }` (also 720p/1080p) and restart under supervision; 4K disables effects |
@@ -791,5 +791,8 @@ prioritizes capture speed, so 4K recordings can be large.
 - `POST /api/v1/video/recording/stop` with `{}`: finalize recording.
 - `GET /api/v1/video/recordings/{filename}`: stream a saved MP4 with range support.
 
-The folder icon beside a saved video opens it with the desktop default application
+The folder icon beside a saved video opens its containing folder and selects the file
 through `POST /api/v1/video/recordings/{filename}/open` with `{}`, like saved photos.
+
+Folder actions use `gdbus` and the desktop `org.freedesktop.FileManager1.ShowItems`
+interface, available through the daemon user's desktop session.

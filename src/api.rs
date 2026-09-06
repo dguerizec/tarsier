@@ -1431,44 +1431,47 @@ async fn open_saved_photo(
         )
             .into_response();
     };
-    open_local_media(path).await
+    reveal_local_media(path).await
 }
 
-async fn open_local_media(path: std::path::PathBuf) -> Response {
-    let mut command = tokio::process::Command::new("xdg-open");
+async fn reveal_local_media(path: std::path::PathBuf) -> Response {
+    let uri = std::path::absolute(path)
+        .ok()
+        .and_then(|path| reqwest::Url::from_file_path(path).ok());
+    let Some(uri) = uri else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "Could not resolve the saved file location"})),
+        )
+            .into_response();
+    };
+    let mut command = tokio::process::Command::new("gdbus");
     command
-        .arg(path)
+        .args([
+            "call",
+            "--session",
+            "--dest",
+            "org.freedesktop.FileManager1",
+            "--object-path",
+            "/org/freedesktop/FileManager1",
+            "--method",
+            "org.freedesktop.FileManager1.ShowItems",
+        ])
+        .arg(json!([uri.as_str()]).to_string())
+        .arg("")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(
-                    json!({"error": format!("Could not launch the default application: {error}")}),
-                ),
-            )
-                .into_response();
-        }
-    };
-    match tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await {
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    match tokio::time::timeout(std::time::Duration::from_secs(5), command.status()).await {
         Ok(Ok(status)) if status.success() => StatusCode::ACCEPTED.into_response(),
-        Ok(result) => {
-            tracing::warn!(?result, "default application launch failed");
+        result => {
+            tracing::warn!(?result, "file manager reveal failed");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Could not open the file with the default application"})),
+                Json(json!({"error": "Could not show the file in its folder"})),
             )
                 .into_response()
-        }
-        Err(_) => {
-            // Some desktop openers remain alive for the lifetime of the viewer.
-            tokio::spawn(async move {
-                let _ = child.wait().await;
-            });
-            StatusCode::ACCEPTED.into_response()
         }
     }
 }
@@ -1767,7 +1770,7 @@ async fn open_saved_recording(
         )
             .into_response();
     };
-    open_local_media(path).await
+    reveal_local_media(path).await
 }
 
 fn effects_unavailable_in_4k() -> Response {
