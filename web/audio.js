@@ -185,20 +185,18 @@ async function setExclusive(track) {
   }
 }
 const virtualId = 'tarsier_microphone';
-const outputSource = document.querySelector('#audio-output-source');
-const outputStatus = document.querySelector('#audio-output-status');
 const outputError = document.querySelector('#audio-output-error');
 let virtualState = { enabled: false, muted: false, source: null, running: false };
 let virtualPending = false;
-let availableSources = [];
 
 function renderOutput() {
   const selected = virtualState.source || '';
-  if (selected && ![...outputSource.options].some((option) => option.value === selected)) {
-    outputSource.add(new Option('Disconnected microphone', selected));
+  for (const track of tracks.values()) {
+    if (track.outputRadio) {
+      track.outputRadio.checked = track.id === selected;
+      track.outputRadio.disabled = virtualPending || track.unavailable;
+    }
   }
-  outputSource.value = selected;
-  outputSource.disabled = virtualPending;
   document.querySelectorAll('[data-audio-output]').forEach((button) => {
     const on = virtualState.enabled;
     button.setAttribute('aria-pressed', String(on));
@@ -216,13 +214,6 @@ function renderOutput() {
     }
     button.disabled = virtualPending;
   });
-  outputStatus.textContent = !virtualState.enabled ? 'Virtual microphone off'
-    : virtualState.error ? virtualState.error
-    : !virtualState.running ? 'Starting virtual microphone…'
-    : virtualState.muted ? 'Output muted · Sending silence'
-    : !availableSources.some((s) => s.id === selected) ? 'Input disconnected · Sending silence'
-    : !enabledSources?.has(selected) ? 'Input capture off · Sending silence'
-    : 'Tarsier Microphone is ready';
   const track = tracks.get(virtualId);
   if (track) syncTrack(track);
 }
@@ -249,7 +240,6 @@ async function updateOutput(patch) {
     renderOutput();
   }
 }
-outputSource.onchange = () => { if (outputSource.value) void updateOutput({ source: outputSource.value }); };
 
 export function syncAudioCapture(sources, output, currentReservations, released, busy) {
   reservations = currentReservations || {};
@@ -263,6 +253,10 @@ export function syncAudioCapture(sources, output, currentReservations, released,
 
 function syncTrack(track) {
   renderReservation(track);
+  if (track.outputRadio) {
+    track.outputRadio.checked = virtualState.source === track.id;
+    track.outputRadio.disabled = virtualPending || track.unavailable;
+  }
   track.enabled = track.id === virtualId ? virtualState.enabled : enabledSources?.has(track.id) ?? track.enabled;
   track.buttons.forEach((button) => {
     button.setAttribute('aria-pressed', String(track.enabled));
@@ -365,6 +359,18 @@ function create(source) {
   track.buttons[0].onclick = () => void setCapture(track, !track.enabled);
   stop(track);
   if (source.id !== virtualId) {
+    const radioLabel = document.createElement('label');
+    radioLabel.className = 'audio-source-choice';
+    radioLabel.title = `Use ${source.name} for the virtual microphone`;
+    const radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'audio-output-source';
+    radio.value = source.id;
+    radio.setAttribute('aria-label', `Use ${source.name} for the virtual microphone`);
+    radio.onchange = () => { if (radio.checked) void updateOutput({ source: source.id }); };
+    radioLabel.append(radio);
+    row.querySelector('.audio-track-overlay').prepend(radioLabel);
+    track.outputRadio = radio;
     const reservation = document.createElement('div');
     reservation.className = 'audio-reservation';
     reservation.innerHTML = '<button type="button" class="audio-reservation-status secondary compact"></button><span class="error" role="status" hidden></span>';
@@ -405,9 +411,6 @@ async function refresh() {
     if (!response.ok) throw new Error(sources.error || 'Audio discovery unavailable');
     status.textContent = sources.length ? '' : 'No microphones detected. Connect an audio input to get started.';
     status.hidden = sources.length > 0;
-    availableSources = sources;
-    outputSource.replaceChildren(new Option('Select a microphone', ''));
-    for (const source of sources) outputSource.add(new Option(source.name, source.id));
     renderOutput();
     for (const source of sources) {
       const track = tracks.get(source.id) || create(source);

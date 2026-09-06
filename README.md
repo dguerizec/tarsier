@@ -907,7 +907,7 @@ WirePlumber's exclusive linking policy prevents ordinary new captures after
 reservation, but cannot guarantee priority over an application that connects first
 at startup/hotplug, or replace access control against manually created links.
 
-Select **Virtual microphone input**, then turn **Virtual microphone On** to publish
+Select the radio button beside an input name, then turn the output **On** to publish
 **Tarsier Microphone** as an audio input in KDE, browsers, and call applications.
 Enabling the virtual microphone or switching its input enables capture of that
 selected source. The audio is passed through as 48 kHz, 16-bit stereo PCM, without
