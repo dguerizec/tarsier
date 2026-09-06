@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
+  <title>Tarsier</title>
+  <rect width="128" height="128" rx="28" fill="#090d0b"/>
+  <g transform="translate(8 8) scale(.875)">
+  <g fill="#b7ef7a">
+    <path d="M36 39C19 43 9 30 13 13C30 10 44 20 43 35ZM92 39C109 43 119 30 115 13C98 10 84 20 85 35Z"/>
+    <path d="M64 30C39 18 16 35 16 61C16 84 37 103 64 115C91 103 112 84 112 61C112 35 89 18 64 30Z"/>
+  </g>
+  <g fill="#090d0b">
+    <circle cx="42" cy="61" r="22"/>
+    <circle cx="86" cy="61" r="22"/>
+    <path d="M57 91Q64 87 71 91L64 99Z"/>
+  </g>
+  <g fill="#b7ef7a">
+    <circle cx="43" cy="62" r="11"/>
+    <circle cx="85" cy="62" r="11"/>
+  </g>
+</g>
+</svg>

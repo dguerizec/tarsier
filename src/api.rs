@@ -145,6 +145,8 @@ pub fn router_with_controls(
     Router::new()
         .route("/", get(index))
         .route("/settings", get(settings_page))
+        .route("/assets/logo.svg", get(logo_svg))
+        .route("/assets/favicon.svg", get(favicon_svg))
         .route("/assets/settings.js", get(settings_js))
         .route(
             "/api/v1/settings/network",
@@ -351,6 +353,26 @@ async fn lucide_js() -> impl IntoResponse {
             (header::CACHE_CONTROL, "no-store"),
         ],
         include_str!("../web/vendor/lucide.js"),
+    )
+}
+
+async fn logo_svg() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "image/svg+xml"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        include_str!("../web/logo.svg"),
+    )
+}
+
+async fn favicon_svg() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "image/svg+xml"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        include_str!("../web/favicon.svg"),
     )
 }
 
