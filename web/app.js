@@ -1,6 +1,6 @@
 import { installPreviewDrag, sourcePanTiltDirection } from "/assets/preview-drag.js";
 import { syncAudioCapture } from "/assets/audio.js";
-import { createElement, FolderOpen, FlipHorizontal2, Bone, Power } from "/assets/lucide.js";
+import { createElement, FolderOpen, FlipHorizontal2, Bone, Power, ChevronDown } from "/assets/lucide.js";
 
 const $ = (selector) => document.querySelector(selector);
 const connection = $("#connection");
@@ -211,6 +211,7 @@ function buildImageSettingsUi() {
     </details>
   `).join("");
   imageSettingsGroups.querySelectorAll("details[data-image-settings-group]").forEach((card) => {
+    card.querySelector("summary").prepend(createElement(ChevronDown, { width: 18, height: 18, "aria-hidden": "true", focusable: "false" }));
     const storageKey = `tarsier.imageSettings.${card.dataset.imageSettingsGroup}.open`;
     try {
       card.open = localStorage.getItem(storageKey) !== "false";
