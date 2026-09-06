@@ -868,6 +868,10 @@ listener triggers discovery on source arrival/removal; a five-second scan also
 recovers missed events. Tarsier's own virtual output and speaker monitor sources
 are excluded, so applications can share **Tarsier Microphone**.
 
+Audio waveform envelopes use a signed logarithmic display from -60 to 0 dBFS,
+matching the peak meter range. The waveform shows ten seconds of history; meters
+show the latest block. This display mapping does not alter captured audio.
+
 The input list can be collapsed while keeping the output visible; this preference
 is saved in the browser. Capture, virtual output, and mute each use one toggle
 button. Each input has one reservation icon beside its capture toggle: green **Locked** releases the microphone,

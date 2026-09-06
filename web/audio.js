@@ -354,7 +354,8 @@ function create(source) {
     peak: row.querySelector('.audio-peak'),
   };
   row.querySelector('[role="group"]').setAttribute('aria-label', `${source.name} capture`);
-  track.canvas.setAttribute('aria-label', `${source.name}: amplitude envelope over the last 10 seconds`);
+  track.canvas.setAttribute('aria-label', `${source.name}: logarithmic amplitude envelope over the last 10 seconds, minus 60 to 0 dBFS`);
+  track.canvas.title = 'Last 10 seconds · Logarithmic amplitude · −60 to 0 dBFS, matching the peak meters';
   track.meters.forEach((meter, index) => meter.setAttribute('aria-label', `${source.name} ${index ? 'right' : 'left'} peak in dBFS`));
   track.buttons[0].onclick = () => void setCapture(track, !track.enabled);
   stop(track);
@@ -415,6 +416,14 @@ async function refresh() {
   }
 }
 
+function amplitudeDb(value) {
+  return value > 0 ? Math.max(-60, Math.min(0, 20 * Math.log10(value))) : -60;
+}
+
+function waveformAmplitude(value) {
+  return Math.sign(value) * (amplitudeDb(Math.abs(value)) + 60) / 60;
+}
+
 function draw(now) {
   for (const track of tracks.values()) {
     track.history = track.history.filter((level) => now - level.time < 10000);
@@ -435,12 +444,13 @@ function draw(now) {
     for (const level of track.history) {
       const x = width * (1 - (now - level.time) / 10000);
       context.fillStyle = level.clipped ? '#f37878' : '#94dba7';
-      context.fillRect(x, height / 2 - level.max * height * 0.46,
-        Math.max(devicePixelRatio, width / 500), Math.max(devicePixelRatio, (level.max - level.min) * height * 0.46));
+      const top = waveformAmplitude(level.max);
+      const bottom = waveformAmplitude(level.min);
+      context.fillRect(x, height / 2 - top * height * 0.46,
+        Math.max(devicePixelRatio, width / 500), Math.max(devicePixelRatio, (top - bottom) * height * 0.46));
     }
     const live = track.level && now - track.level.time < 500 ? track.level : null;
-    const db = (value) => value > 0 ? Math.max(-60, 20 * Math.log10(value)) : -60;
-    track.meters.forEach((meter, index) => { meter.value = live ? db(live.peak[index]) : -60; });
+    track.meters.forEach((meter, index) => { meter.value = live ? amplitudeDb(live.peak[index]) : -60; });
     const peak = live ? Math.max(...live.peak) : 0;
     track.peak.textContent = track.clipUntil > now ? 'CLIP' : peak > 0 ? `${(20 * Math.log10(peak)).toFixed(1)} dBFS` : '−∞ dBFS';
     track.peak.classList.toggle('clipping', track.clipUntil > now);
