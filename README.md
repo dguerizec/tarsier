@@ -761,3 +761,12 @@ collecting training photos. No photo is saved if the frame is over one second ol
 
 The Space shortcut ignores key repeats, modifiers, focused controls, editable
 fields, and open dialogs. It works while the Tarsier page has keyboard focus.
+
+### UI icons
+
+Lucide is installed locally in `web/package.json` with pinned versions and a
+lockfile. Only the imported icons are bundled into `web/vendor/lucide.js`, which
+is committed and embedded in the daemon; the UI never requests a CDN. To update
+icons, edit `web/icons.js`, run `npm ci --prefix web` and
+`npm run build:icons --prefix web`, then rebuild the Rust daemon. Keep the Lucide
+license alongside the generated bundle.

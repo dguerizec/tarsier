@@ -1,0 +1,14 @@
+{
+  "name": "tarsier-ui",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:icons": "esbuild icons.js --bundle --format=esm --minify --outfile=vendor/lucide.js"
+  },
+  "dependencies": {
+    "lucide": "1.41.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

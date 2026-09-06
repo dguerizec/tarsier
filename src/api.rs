@@ -137,6 +137,7 @@ pub fn router_with_controls(
     Router::new()
         .route("/", get(index))
         .route("/assets/app.js", get(app_js))
+        .route("/assets/lucide.js", get(lucide_js))
         .route("/assets/styles.css", get(styles_css))
         .route("/api/v1/health", get(health))
         .route("/api/v1/daemon/restart", post(restart_daemon))
@@ -227,6 +228,16 @@ async fn app_js() -> impl IntoResponse {
             (header::CACHE_CONTROL, "no-store"),
         ],
         include_str!("../web/app.js"),
+    )
+}
+
+async fn lucide_js() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        include_str!("../web/vendor/lucide.js"),
     )
 }
 
@@ -2780,7 +2791,12 @@ mod tests {
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
         let app = router(config, Runtime::new(), PreviewHub::new(), None, shutdown_rx);
 
-        for path in ["/", "/assets/app.js", "/assets/styles.css"] {
+        for path in [
+            "/",
+            "/assets/app.js",
+            "/assets/styles.css",
+            "/assets/lucide.js",
+        ] {
             let response = app
                 .clone()
                 .oneshot(Request::get(path).body(Body::empty()).unwrap())

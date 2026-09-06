@@ -1,3 +1,5 @@
+import { createElement, FolderOpen } from "/assets/lucide.js";
+
 const $ = (selector) => document.querySelector(selector);
 const connection = $("#connection");
 const daemonRestartDialog = $("#daemon-restart-dialog");
@@ -1583,7 +1585,7 @@ takePhoto.addEventListener("click", async () => {
     const fileLink = document.createElement("button");
     fileLink.type = "button";
     fileLink.className = "photo-file-link";
-    fileLink.textContent = "📂";
+    fileLink.append(createElement(FolderOpen, { width: 18, height: 18, "aria-hidden": "true", focusable: "false" }));
     fileLink.title = "Open photo with the default application";
     fileLink.setAttribute("aria-label", "Open photo with the default application");
     const openStatus = document.createElement("span");
