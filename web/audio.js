@@ -1,3 +1,20 @@
+const audioFold = document.querySelector('#audio-fold');
+function foldAudio(folded) {
+  document.querySelector('#audio-inputs').hidden = folded;
+  audioFold.setAttribute('aria-expanded', String(!folded));
+  audioFold.textContent = folded ? 'Show inputs ▾' : 'Hide inputs ▴';
+  try { localStorage.setItem('tarsier.audio.folded', String(folded)); } catch {}
+}
+try { foldAudio(localStorage.getItem('tarsier.audio.folded') === 'true'); } catch {}
+audioFold.onclick = () => foldAudio(audioFold.getAttribute('aria-expanded') === 'true');
+
+const reservationIcons = {
+  locked: '<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V6a4 4 0 0 1 8 0v4"/>',
+  unlocked: '<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V6a4 4 0 0 1 8 0"/>',
+  shared: '<circle cx="9" cy="7" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3M16 4a3 3 0 0 1 0 6M21 21v-3a6 6 0 0 0-4-5"/>',
+  pending: '<path d="M20 12a8 8 0 1 1-8-8"/>',
+  disconnected: '<path d="m4 4 16 16M9 9l-3 3a4 4 0 0 0 6 6l3-3M15 15l3-3a4 4 0 0 0-6-6"/>',
+};
 const tracks = new Map();
 const container = document.querySelector('#audio-tracks');
 const status = document.querySelector('#audio-status');
@@ -134,10 +151,10 @@ function renderReservation(track) {
   const actions = { locked: 'Unlock this microphone', unlocked: 'Lock this microphone',
     shared: 'Show applications and Kill controls. The input is busy or unavailable.' };
   const button = track.reserveButton;
-  button.textContent = labels[state];
+  if (button.dataset.state !== state) button.innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${reservationIcons[state]}</svg>`;
   button.dataset.state = state;
   button.disabled = state === 'pending' || state === 'disconnected';
-  button.title = actions[state] || labels[state];
+  button.title = `${labels[state]} · ${actions[state] || labels[state]}`;
   button.setAttribute('aria-label', `${labels[state]} · ${track.name}. ${actions[state] || ''}`);
   if (state === 'shared') button.setAttribute('aria-haspopup', 'dialog');
   else button.removeAttribute('aria-haspopup');
@@ -180,12 +197,14 @@ function renderOutput() {
   outputSource.value = selected;
   outputSource.disabled = virtualPending;
   document.querySelectorAll('[data-audio-output]').forEach((button) => {
-    const on = button.dataset.audioOutput === 'true';
-    button.setAttribute('aria-pressed', String(virtualState.enabled === on));
-    button.disabled = virtualPending || (on && !selected);
+    const on = virtualState.enabled;
+    button.setAttribute('aria-pressed', String(on));
+    button.textContent = on ? 'On' : 'Off';
+    button.disabled = virtualPending || (!on && !selected);
   });
   document.querySelectorAll('[data-audio-mute]').forEach((button) => {
-    button.setAttribute('aria-pressed', String(virtualState.muted === (button.dataset.audioMute === 'true')));
+    button.setAttribute('aria-pressed', String(virtualState.muted));
+    button.textContent = virtualState.muted ? 'On' : 'Off';
     button.disabled = virtualPending;
   });
   outputStatus.textContent = !virtualState.enabled ? 'Virtual microphone off'
@@ -223,10 +242,10 @@ async function updateOutput(patch) {
 }
 outputSource.onchange = () => { if (outputSource.value) void updateOutput({ source: outputSource.value }); };
 document.querySelectorAll('[data-audio-output]').forEach((button) => {
-  button.onclick = () => void updateOutput({ enabled: button.dataset.audioOutput === 'true' });
+  button.onclick = () => void updateOutput({ enabled: !virtualState.enabled });
 });
 document.querySelectorAll('[data-audio-mute]').forEach((button) => {
-  button.onclick = () => void updateOutput({ muted: button.dataset.audioMute === 'true' });
+  button.onclick = () => void updateOutput({ muted: !virtualState.muted });
 });
 
 export function syncAudioCapture(sources, output, currentReservations, released, busy) {
@@ -242,9 +261,10 @@ export function syncAudioCapture(sources, output, currentReservations, released,
 function syncTrack(track) {
   renderReservation(track);
   track.enabled = track.id === virtualId ? virtualState.enabled : enabledSources?.has(track.id) ?? track.enabled;
-  track.buttons.forEach((button, index) => {
-    button.setAttribute('aria-pressed', String(index === (track.enabled ? 0 : 1)));
-    button.disabled = track.pending || (index === 0 && track.unavailable);
+  track.buttons.forEach((button) => {
+    button.setAttribute('aria-pressed', String(track.enabled));
+    button.textContent = track.enabled ? 'On' : 'Off';
+    button.disabled = track.pending || (!track.enabled && track.unavailable);
   });
   if (!track.enabled) {
     stop(track, track.unavailable ? 'Disconnected' : 'Input off');
@@ -278,7 +298,8 @@ function stop(track, label = 'Input off') {
   track.socket = null;
   socket?.close();
   track.label.textContent = label;
-  track.buttons.forEach((button, index) => button.setAttribute('aria-pressed', String(index === (track.enabled ? 0 : 1))));
+  track.buttons[0].setAttribute('aria-pressed', String(track.enabled));
+  track.buttons[0].textContent = track.enabled ? 'On' : 'Off';
   track.level = null;
 }
 
@@ -286,7 +307,8 @@ function start(track) {
   stop(track);
   track.retryAt = Date.now() + 5000;
   track.label.textContent = 'Connecting…';
-  track.buttons.forEach((button, index) => button.setAttribute('aria-pressed', String(index === 0)));
+  track.buttons[0].setAttribute('aria-pressed', 'true');
+  track.buttons[0].textContent = 'On';
   const url = new URL('/api/v1/audio/meter', location.href);
   url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   url.searchParams.set('source', track.id);
@@ -315,7 +337,7 @@ function create(source) {
   const row = document.createElement('div');
   row.className = 'audio-track';
   row.innerHTML = `<div class="audio-track-header"><strong></strong><span class="audio-track-state"></span>
-    <div class="segmented-control" role="group"><button type="button" class="secondary compact" aria-pressed="false">On</button><button type="button" class="secondary compact" aria-pressed="true">Off</button></div></div>
+    <div class="segmented-control" role="group"><button type="button" class="secondary compact" aria-pressed="false">On</button></div></div>
     <div class="audio-visual"><canvas role="img"></canvas><div class="audio-meters">
     <div><span>L</span><meter min="-60" max="0" low="-18" high="-6" optimum="-24" value="-60"></meter></div>
     <div><span>R</span><meter min="-60" max="0" low="-18" high="-6" optimum="-24" value="-60"></meter></div>
@@ -331,8 +353,7 @@ function create(source) {
   row.querySelector('[role="group"]').setAttribute('aria-label', `${source.name} capture`);
   track.canvas.setAttribute('aria-label', `${source.name}: amplitude envelope over the last 10 seconds`);
   track.meters.forEach((meter, index) => meter.setAttribute('aria-label', `${source.name} ${index ? 'right' : 'left'} peak in dBFS`));
-  track.buttons[0].onclick = () => void setCapture(track, true);
-  track.buttons[1].onclick = () => void setCapture(track, false);
+  track.buttons[0].onclick = () => void setCapture(track, !track.enabled);
   stop(track);
   if (source.id !== virtualId) {
     const reservation = document.createElement('div');
@@ -344,7 +365,8 @@ function create(source) {
       if (track.reserveButton.dataset.state === 'shared') showApplications(track);
       else void setExclusive(track);
     };
-    row.append(reservation);
+    row.querySelector('[role="group"]').append(reservation);
+    row.append(track.reservationMessage);
     renderReservation(track);
   }
   if (source.id === virtualId) {

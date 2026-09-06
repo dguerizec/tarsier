@@ -868,7 +868,9 @@ listener triggers discovery on source arrival/removal; a five-second scan also
 recovers missed events. Tarsier's own virtual output and speaker monitor sources
 are excluded, so applications can share **Tarsier Microphone**.
 
-Each input has one reservation button: green **Locked** releases the microphone,
+The input list can be collapsed while keeping the output visible; this preference
+is saved in the browser. Capture, virtual output, and mute each use one toggle
+button. Each input has one reservation icon beside its capture toggle: green **Locked** releases the microphone,
 blue **Unlocked** requests exclusive capture, and red **Shared** opens an overlay listing
 applications currently connected to that input, with executable and PID when
 available. Each application with a verifiable local process has a **Kill -15**
