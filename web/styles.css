@@ -186,6 +186,5 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 #resolution-picker::backdrop { background: #0004; }
 .resolution-options { display: grid; gap: .4rem; margin: .8rem 0; }
 .resolution-options button { text-align: left; }
-.resolution-options button[aria-pressed="true"] { border-color: var(--green); color: var(--green); }
 #resolution-picker p { color: var(--muted); font-size: .75rem; line-height: 1.4; }
 #resolution-status:not(:empty) { margin-top: .6rem; color: var(--amber); }
