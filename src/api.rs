@@ -470,6 +470,24 @@ async fn set_camera_power(
         }
     } else {
         if camera.is_powered_on() {
+            let source = state.runtime.state().await.audio_virtual.source;
+            if source
+                .as_deref()
+                .is_some_and(|source| !crate::audio::is_camera_source(source))
+            {
+                let response = set_virtual_audio(
+                    State(state.clone()),
+                    Json(VirtualAudioRequest {
+                        enabled: None,
+                        source: None,
+                        muted: Some(true),
+                    }),
+                )
+                .await;
+                if !response.status().is_success() {
+                    return response;
+                }
+            }
             if let Err(error) = camera.set_face_tracking_speed(0, 0, 0.0).await {
                 record_camera_power_error(&state, &error).await;
                 return command_error(error);
@@ -3565,6 +3583,8 @@ mod tests {
         let runtime = Runtime::new();
         runtime
             .update(|state| {
+                state.audio_virtual.enabled = true;
+                state.audio_virtual.source = Some("alsa_input.usb-DJI_MIC_MINI".into());
                 state.pipeline.enabled = true;
                 state.pipeline.running = true;
             })
@@ -3601,6 +3621,34 @@ mod tests {
         assert_eq!(state.camera.powered_on, Some(false));
         assert!(!state.pipeline.enabled);
         assert!(!state.pipeline.running);
+        assert!(state.audio_virtual.muted);
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/audio/virtual")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"muted":false}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!runtime.state().await.audio_virtual.muted);
+        assert_eq!(runtime.state().await.camera.powered_on, Some(false));
+
+        // Repeating Power Off must not override an explicit unmute while asleep.
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/camera/power")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"enabled":false}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert!(!runtime.state().await.audio_virtual.muted);
 
         let response = app
             .clone()
@@ -3661,9 +3709,10 @@ mod tests {
             .into_iter()
             .filter(|event| event.kind == "camera.power")
             .collect::<Vec<_>>();
-        assert_eq!(power_events.len(), 2);
+        assert_eq!(power_events.len(), 3);
         assert_eq!(power_events[0].data["enabled"], false);
-        assert_eq!(power_events[1].data["enabled"], true);
+        assert_eq!(power_events[1].data["enabled"], false);
+        assert_eq!(power_events[2].data["enabled"], true);
     }
 
     #[tokio::test]

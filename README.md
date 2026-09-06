@@ -696,8 +696,9 @@ run before unattended use.
 - the V4L2 loopback device must be created before startup;
 - while camera power is off, physical video capture, preview, and perception
   stop. The virtual camera keeps streaming black frames and the enabled virtual
-  microphone sends silence, so connected applications can resume without
-  reopening their devices. Audio source, capture, and mute preferences are preserved;
+  microphone stays connected. Power Off mutes a selected independent microphone;
+  it can be explicitly unmuted while the camera sleeps. OBSBOT audio stays silent
+  until camera wake. Source and capture preferences are preserved;
 - absolute movement is safely bounded but has not been calibrated for precise
   agreement between requested and settled angles;
 - the previous `0x0043` live attitude query reset the tested camera during an

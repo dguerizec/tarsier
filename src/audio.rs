@@ -24,6 +24,11 @@ use tokio::{
 };
 
 pub const VIRTUAL_SOURCE: &str = "tarsier_microphone";
+
+pub(crate) fn is_camera_source(source: &str) -> bool {
+    source.to_ascii_lowercase().contains("obsbot")
+}
+
 const BLOCK_BYTES: usize = 960 * 4;
 const MAX_AGE: Duration = Duration::from_millis(120);
 
@@ -553,8 +558,7 @@ impl AudioHub {
                 input = selected.as_ref().map(|id| self.channel(id).subscribe());
             }
             let frame = input.as_mut().and_then(next_frame);
-            let allowed = state.camera.powered_on != Some(false)
-                && settings.enabled
+            let allowed = settings.enabled
                 && !settings.muted
                 && selected
                     .as_ref()
