@@ -107,8 +107,8 @@ main { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(17rem, .85
 .zoom-control input:disabled { cursor: not-allowed; opacity: .45; }
 .zoom-scale { display: flex; justify-content: space-between; margin-right: 5.1rem; color: var(--muted); font-size: .65rem; }
 .control-hint { margin-top: .25rem; color: var(--muted); font-size: .68rem; }
-.image-settings-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); align-items: start; gap: .65rem; margin-top: .65rem; }
-.image-settings-group { min-width: 0; padding: .7rem; border: 1px solid var(--panel-edge); border-radius: .7rem; background: #0a0e0c; }
+.image-settings-groups { columns: 2 14rem; column-gap: .65rem; margin-top: .65rem; }
+.image-settings-group { display: inline-block; width: 100%; min-width: 0; margin-bottom: .65rem; break-inside: avoid; padding: .7rem; border: 1px solid var(--panel-edge); border-radius: .7rem; background: #0a0e0c; }
 .image-settings-group > summary { color: var(--green); cursor: pointer; }
 .image-settings-group > summary:focus-visible { outline: 2px solid var(--green); outline-offset: 4px; border-radius: .15rem; }
 .image-settings-group[open] > summary { margin-bottom: .35rem; }
@@ -163,7 +163,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   .pan-tilt-bar { min-height: 6.5rem; }
   .pan-tilt-controls { gap: .5rem; }
   .feature-control { grid-template-columns: minmax(6.5rem, 1fr) 4rem auto; }
-  .image-settings-groups { grid-template-columns: 1fr; }
+  .image-settings-groups { columns: 1; }
 }
 
 @media (max-width: 520px) {
