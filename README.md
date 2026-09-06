@@ -153,7 +153,7 @@ sudo apt install \
 Load a loopback device matching the example configuration:
 
 ```sh
-sudo modprobe v4l2loopback video_nr=42 card_label=Tarsier exclusive_caps=1
+sudo modprobe v4l2loopback video_nr=42 'card_label=Tarsier Camera' exclusive_caps=1
 ```
 
 The physical camera and `/dev/video42` must be free before the daemon starts.
