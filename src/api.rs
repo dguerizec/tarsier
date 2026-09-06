@@ -53,6 +53,7 @@ struct ApiState {
     video_output_control: Arc<Mutex<()>>,
     daemon_restart: Option<DaemonRestart>,
     user_settings: Option<UserSettingsStore>,
+    audio_settings_control: Arc<Mutex<()>>,
     shutdown: watch::Receiver<bool>,
 }
 
@@ -138,6 +139,7 @@ pub fn router_with_controls(
         video_output_control: Arc::new(Mutex::new(())),
         daemon_restart: options.daemon_restart,
         user_settings: options.user_settings,
+        audio_settings_control: Arc::new(Mutex::new(())),
         shutdown,
     };
     Router::new()
@@ -3013,6 +3015,7 @@ async fn set_audio_capture(
     State(state): State<ApiState>,
     Json(request): Json<AudioCaptureRequest>,
 ) -> Response {
+    let _guard = state.audio_settings_control.lock().await;
     if request.enabled {
         match crate::audio::sources().await {
             Ok(sources) if sources.iter().any(|source| source.id == request.source) => {}
@@ -3020,18 +3023,24 @@ async fn set_audio_capture(
             Err(error) => return command_error(error),
         }
     }
-    state
-        .runtime
-        .update(|current| {
-            current
-                .audio_capture_sources
-                .retain(|source| source != &request.source);
-            if request.enabled {
-                current.audio_capture_sources.push(request.source.clone());
-                current.audio_capture_sources.sort();
-            }
-        })
-        .await;
+    let mut next = state.runtime.state().await;
+    {
+        let current = &mut next;
+        current
+            .audio_capture_sources
+            .retain(|source| source != &request.source);
+        if request.enabled {
+            current.audio_capture_sources.push(request.source.clone());
+            current.audio_capture_sources.sort();
+        }
+    }
+    let audio = crate::settings::AudioSettings::from_state(&next);
+    if let Some(settings) = &state.user_settings
+        && let Err(error) = settings.set_audio(audio.clone()).await
+    {
+        return user_settings_error(error);
+    }
+    state.runtime.update(|current| audio.apply(current)).await;
     Json(json!({"source": request.source, "enabled": request.enabled})).into_response()
 }
 
@@ -3077,6 +3086,7 @@ async fn set_virtual_audio(
     State(state): State<ApiState>,
     Json(request): Json<VirtualAudioRequest>,
 ) -> Response {
+    let _guard = state.audio_settings_control.lock().await;
     if let Some(source) = &request.source {
         match crate::audio::sources().await {
             Ok(sources) if sources.iter().any(|s| &s.id == source) => {}
@@ -3090,28 +3100,34 @@ async fn set_virtual_audio(
             Err(e) => return command_error(e),
         }
     }
-    state
-        .runtime
-        .update(|s| {
-            if let Some(source) = &request.source {
-                s.audio_virtual.source = Some(source.clone());
-            }
-            if let Some(enabled) = request.enabled {
-                s.audio_virtual.enabled = enabled;
-            }
-            if let Some(muted) = request.muted {
-                s.audio_virtual.muted = muted;
-            }
-            if s.audio_virtual.enabled
-                && (request.enabled == Some(true) || request.source.is_some())
-                && let Some(source) = &s.audio_virtual.source
-                && !s.audio_capture_sources.contains(source)
-            {
-                s.audio_capture_sources.push(source.clone());
-                s.audio_capture_sources.sort();
-            }
-        })
-        .await;
+    let mut next = state.runtime.state().await;
+    {
+        let s = &mut next;
+        if let Some(source) = &request.source {
+            s.audio_virtual.source = Some(source.clone());
+        }
+        if let Some(enabled) = request.enabled {
+            s.audio_virtual.enabled = enabled;
+        }
+        if let Some(muted) = request.muted {
+            s.audio_virtual.muted = muted;
+        }
+        if s.audio_virtual.enabled
+            && (request.enabled == Some(true) || request.source.is_some())
+            && let Some(source) = &s.audio_virtual.source
+            && !s.audio_capture_sources.contains(source)
+        {
+            s.audio_capture_sources.push(source.clone());
+            s.audio_capture_sources.sort();
+        }
+    }
+    let audio = crate::settings::AudioSettings::from_state(&next);
+    if let Some(settings) = &state.user_settings
+        && let Err(error) = settings.set_audio(audio.clone()).await
+    {
+        return user_settings_error(error);
+    }
+    state.runtime.update(|current| audio.apply(current)).await;
     Json(state.runtime.state().await.audio_virtual).into_response()
 }
 
@@ -3994,7 +4010,7 @@ mod tests {
             unix_ms()
         ));
         let fallback = UserSettings::from_config(&config);
-        let (settings, _) = UserSettingsStore::load(path.clone(), fallback)
+        let (settings, _) = UserSettingsStore::load(path.clone(), fallback.clone())
             .await
             .unwrap();
         let runtime = Runtime::new();
@@ -4026,7 +4042,7 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), status);
         }
-        let (_, restored) = UserSettingsStore::load(path.clone(), fallback)
+        let (_, restored) = UserSettingsStore::load(path.clone(), fallback.clone())
             .await
             .unwrap();
         assert_eq!(restored.video_transform.rotation, 90);
@@ -4070,7 +4086,7 @@ mod tests {
             unix_ms()
         ));
         let fallback = UserSettings::from_config(&config);
-        let (settings, _) = UserSettingsStore::load(path.clone(), fallback)
+        let (settings, _) = UserSettingsStore::load(path.clone(), fallback.clone())
             .await
             .unwrap();
         let runtime = Runtime::new();
@@ -4112,7 +4128,7 @@ mod tests {
             assert_eq!(response.status(), StatusCode::ACCEPTED);
         }
 
-        let (_, restored) = UserSettingsStore::load(path.clone(), fallback)
+        let (_, restored) = UserSettingsStore::load(path.clone(), fallback.clone())
             .await
             .unwrap();
         assert_eq!(restored.video_identity, VideoIdentity::Stylized3d);

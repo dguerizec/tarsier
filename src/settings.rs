@@ -34,8 +34,37 @@ impl VideoResolution {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct AudioSettings {
+    pub capture_sources: Vec<String>,
+    pub output_source: Option<String>,
+    pub output_enabled: bool,
+    pub output_muted: bool,
+}
+
+impl AudioSettings {
+    pub fn from_state(state: &crate::model::RuntimeState) -> Self {
+        Self {
+            capture_sources: state.audio_capture_sources.clone(),
+            output_source: state.audio_virtual.source.clone(),
+            output_enabled: state.audio_virtual.enabled,
+            output_muted: state.audio_virtual.muted,
+        }
+    }
+
+    pub fn apply(&self, state: &mut crate::model::RuntimeState) {
+        state.audio_capture_sources = self.capture_sources.clone();
+        state.audio_virtual.source = self.output_source.clone();
+        state.audio_virtual.enabled = self.output_enabled;
+        state.audio_virtual.muted = self.output_muted;
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct UserSettings {
+    #[serde(default)]
+    pub audio: AudioSettings,
     #[serde(default)]
     pub network_lan_access: Option<bool>,
     #[serde(default)]
@@ -56,6 +85,7 @@ pub struct UserSettings {
 impl UserSettings {
     pub fn from_config(config: &Config) -> Self {
         Self {
+            audio: AudioSettings::default(),
             version: SETTINGS_VERSION,
             network_lan_access: None,
             video_resolution: None,
@@ -69,7 +99,7 @@ impl UserSettings {
         }
     }
 
-    pub fn output_mode(self) -> VideoOutputMode {
+    pub fn output_mode(&self) -> VideoOutputMode {
         match self.video_identity {
             VideoIdentity::Camera => VideoOutputMode::Camera,
             VideoIdentity::DepthMap => VideoOutputMode::DepthMap,
@@ -77,7 +107,7 @@ impl UserSettings {
         }
     }
 
-    pub fn avatar_engine(self) -> Option<AvatarEngine> {
+    pub fn avatar_engine(&self) -> Option<AvatarEngine> {
         match self.video_identity {
             VideoIdentity::Stylized3d => Some(AvatarEngine::Stylized3d),
             VideoIdentity::Liveportrait => Some(AvatarEngine::Liveportrait),
@@ -151,10 +181,14 @@ impl UserSettingsStore {
         Ok((
             Self {
                 path: Arc::new(path),
-                current: Arc::new(Mutex::new(settings)),
+                current: Arc::new(Mutex::new(settings.clone())),
             },
             settings,
         ))
+    }
+
+    pub async fn set_audio(&self, audio: AudioSettings) -> Result<()> {
+        self.replace(|settings| settings.audio = audio).await
     }
 
     pub async fn set_video_identity(&self, identity: VideoIdentity) -> Result<()> {
@@ -229,10 +263,11 @@ impl UserSettingsStore {
 
     async fn replace(&self, update: impl FnOnce(&mut UserSettings)) -> Result<()> {
         let mut current = self.current.lock().await;
-        let mut next = *current;
+        let mut next = current.clone();
         update(&mut next);
         let path = Arc::clone(&self.path);
-        tokio::task::spawn_blocking(move || persist(&path, next))
+        let to_write = next.clone();
+        tokio::task::spawn_blocking(move || persist(&path, to_write))
             .await
             .context("user settings writer stopped unexpectedly")??;
         *current = next;
@@ -336,16 +371,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn audio_preferences_restore_without_runtime_status_or_reservations() {
+        let path = test_path("audio");
+        let fallback = UserSettings::from_config(&Config::default());
+        let mut legacy = serde_json::to_value(&fallback).unwrap();
+        legacy.as_object_mut().unwrap().remove("audio");
+        assert_eq!(
+            serde_json::from_value::<UserSettings>(legacy)
+                .unwrap()
+                .audio,
+            AudioSettings::default()
+        );
+        let (store, _) = UserSettingsStore::load(path.clone(), fallback.clone())
+            .await
+            .unwrap();
+        let audio = AudioSettings {
+            capture_sources: vec!["disconnected-mic".into()],
+            output_source: Some("disabled-mic".into()),
+            output_enabled: true,
+            output_muted: true,
+        };
+        store.set_audio(audio.clone()).await.unwrap();
+        store.set_network_lan_access(true).await.unwrap();
+        let (_, restored) = UserSettingsStore::load(path.clone(), fallback.clone())
+            .await
+            .unwrap();
+        assert_eq!(restored.audio, audio);
+        let mut state = crate::model::RuntimeState::default();
+        restored.audio.apply(&mut state);
+        assert_eq!(AudioSettings::from_state(&state), audio);
+        assert!(!state.audio_virtual.running);
+        assert!(state.audio_released_sources.is_empty());
+        store.set_audio(AudioSettings::default()).await.unwrap();
+        let (_, restored) = UserSettingsStore::load(path.clone(), fallback)
+            .await
+            .unwrap();
+        assert_eq!(restored.audio, AudioSettings::default());
+        assert_eq!(restored.network_lan_access, Some(true));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
     async fn network_access_persists_both_choices() {
         let path = test_path("network");
         let fallback = UserSettings::from_config(&Config::default());
         assert_eq!(fallback.network_lan_access, None);
-        let (store, _) = UserSettingsStore::load(path.clone(), fallback)
+        let (store, _) = UserSettingsStore::load(path.clone(), fallback.clone())
             .await
             .unwrap();
         for enabled in [true, false] {
             store.set_network_lan_access(enabled).await.unwrap();
-            let (_, restored) = UserSettingsStore::load(path.clone(), fallback)
+            let (_, restored) = UserSettingsStore::load(path.clone(), fallback.clone())
                 .await
                 .unwrap();
             assert_eq!(restored.network_lan_access, Some(enabled));
@@ -357,7 +433,7 @@ mod tests {
     async fn resolution_persists_and_4k_resets_effects() {
         let path = test_path("resolution");
         let fallback = UserSettings::from_config(&Config::default());
-        let (store, _) = UserSettingsStore::load(path.clone(), fallback)
+        let (store, _) = UserSettingsStore::load(path.clone(), fallback.clone())
             .await
             .unwrap();
         store
@@ -375,7 +451,7 @@ mod tests {
             })
             .await
             .unwrap();
-        let (_, restored) = UserSettingsStore::load(path.clone(), fallback)
+        let (_, restored) = UserSettingsStore::load(path.clone(), fallback.clone())
             .await
             .unwrap();
         assert_eq!(
@@ -404,7 +480,7 @@ mod tests {
     async fn settings_are_atomically_persisted_and_loaded() {
         let path = test_path("round-trip");
         let fallback = UserSettings::from_config(&Config::default());
-        let (store, loaded) = UserSettingsStore::load(path.clone(), fallback)
+        let (store, loaded) = UserSettingsStore::load(path.clone(), fallback.clone())
             .await
             .unwrap();
         assert_eq!(loaded, fallback);
@@ -420,7 +496,7 @@ mod tests {
         store.set_face_tracking(true).await.unwrap();
         store.set_auto_zoom(true).await.unwrap();
 
-        let (_, restored) = UserSettingsStore::load(path.clone(), fallback)
+        let (_, restored) = UserSettingsStore::load(path.clone(), fallback.clone())
             .await
             .unwrap();
         assert_eq!(restored.video_identity, VideoIdentity::Liveportrait);
@@ -484,14 +560,14 @@ mod tests {
     async fn disabling_face_tracking_also_disables_auto_zoom() {
         let path = test_path("tracking-dependency");
         let fallback = UserSettings::from_config(&Config::default());
-        let (store, _) = UserSettingsStore::load(path.clone(), fallback)
+        let (store, _) = UserSettingsStore::load(path.clone(), fallback.clone())
             .await
             .unwrap();
         store.set_face_tracking(true).await.unwrap();
         store.set_auto_zoom(true).await.unwrap();
         store.set_face_tracking(false).await.unwrap();
 
-        let (_, restored) = UserSettingsStore::load(path.clone(), fallback)
+        let (_, restored) = UserSettingsStore::load(path.clone(), fallback.clone())
             .await
             .unwrap();
         assert!(!restored.face_tracking_enabled);
@@ -503,14 +579,14 @@ mod tests {
     async fn local_tracking_modes_are_persisted_exclusively() {
         let path = test_path("exclusive-local-tracking");
         let fallback = UserSettings::from_config(&Config::default());
-        let (store, _) = UserSettingsStore::load(path.clone(), fallback)
+        let (store, _) = UserSettingsStore::load(path.clone(), fallback.clone())
             .await
             .unwrap();
         store.set_face_tracking(true).await.unwrap();
         store.set_auto_zoom(true).await.unwrap();
 
         store.set_hands_tracking(true).await.unwrap();
-        let (_, hands_restored) = UserSettingsStore::load(path.clone(), fallback)
+        let (_, hands_restored) = UserSettingsStore::load(path.clone(), fallback.clone())
             .await
             .unwrap();
         assert!(hands_restored.hands_tracking_enabled);
@@ -518,7 +594,7 @@ mod tests {
         assert!(!hands_restored.auto_zoom_enabled);
 
         store.set_face_tracking(true).await.unwrap();
-        let (_, face_restored) = UserSettingsStore::load(path.clone(), fallback)
+        let (_, face_restored) = UserSettingsStore::load(path.clone(), fallback.clone())
             .await
             .unwrap();
         assert!(face_restored.face_tracking_enabled);

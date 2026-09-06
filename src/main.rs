@@ -123,6 +123,7 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
     );
     runtime
         .update(|state| {
+            user_settings.audio.apply(state);
             state.video_effects.transform = user_settings.video_transform;
             state.video_effects.output_mode = output_mode;
             state.video_effects.avatar_engine = avatar_engine;

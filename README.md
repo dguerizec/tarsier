@@ -917,8 +917,10 @@ The output waveform meters the published virtual source, including any mute or
 volume applied in the system mixer. Select **Tarsier Microphone** separately from
 the camera in your call app. Tarsier does not change the system's default input.
 Turning virtual output **Off** removes that virtual device; input capture controls
-remain independent. These settings are shared across browser clients but reset to
-off on daemon restart, while input reservations are automatically reacquired.
+remain independent. Input capture choices, selected output source, output enablement, and mute are
+shared across browser clients and saved in the user settings file. They are
+restored on daemon restart, including choices for disconnected inputs. Input
+reservations are automatically reacquired; release choices remain session-only.
 Recordings remain video-only; agent audio is future work.
 
 Dependencies: `pactl` and `parec` (PulseAudio utilities), `pw-cli`, `pw-link`, `pw-dump`, and
