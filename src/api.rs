@@ -1366,7 +1366,8 @@ fn read_saved_photo(directory: &std::path::Path, filename: &str) -> std::io::Res
     use std::{io::Read, os::unix::fs::OpenOptionsExt};
     let valid = filename
         .strip_prefix("photo-")
-        .and_then(|name| name.strip_suffix(".jpg"))
+        .unwrap_or(filename)
+        .strip_suffix(".jpg")
         .is_some_and(|name| {
             let parts: Vec<_> = name.split('-').collect();
             parts.len() == 3
@@ -1483,9 +1484,8 @@ fn save_photo(directory: &std::path::Path, bytes: &[u8]) -> anyhow::Result<std::
     std::fs::create_dir_all(directory)?;
     loop {
         let path = directory.join(format!(
-            "photo-{}-{}-{}.jpg",
-            unix_ms(),
-            std::process::id(),
+            "{}-{}.jpg",
+            chrono::Local::now().format("%Y%m%d-%H%M%S"),
             SEQUENCE.fetch_add(1, Ordering::Relaxed),
         ));
         let mut file = match std::fs::OpenOptions::new()
@@ -2847,6 +2847,14 @@ mod tests {
         let first = save_photo(&directory, b"first JPEG").unwrap();
         let second = save_photo(&directory, b"second JPEG").unwrap();
         assert_ne!(first, second);
+        let name = first.file_stem().unwrap().to_str().unwrap();
+        let parts: Vec<_> = name.split('-').collect();
+        assert_eq!(parts.len(), 3);
+        chrono::NaiveDateTime::parse_from_str(
+            &format!("{}-{}", parts[0], parts[1]),
+            "%Y%m%d-%H%M%S",
+        )
+        .unwrap();
         assert_eq!(
             read_saved_photo(&directory, first.file_name().unwrap().to_str().unwrap()).unwrap(),
             b"first JPEG"

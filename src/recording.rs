@@ -38,7 +38,8 @@ pub fn directory() -> Result<PathBuf> {
 
 pub fn valid_filename(name: &str) -> bool {
     name.strip_prefix("video-")
-        .and_then(|name| name.strip_suffix(".mp4"))
+        .unwrap_or(name)
+        .strip_suffix(".mp4")
         .is_some_and(|name| {
             let parts: Vec<_> = name.split('-').collect();
             parts.len() == 3
@@ -91,12 +92,17 @@ impl Recorder {
         tokio::fs::create_dir_all(&directory).await?;
         let started = unix_ms();
         static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let filename = format!(
-            "video-{started}-{}-{}.mp4",
-            std::process::id(),
-            SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        );
-        let path = directory.join(&filename);
+        let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
+        let (filename, path) = loop {
+            let filename = format!(
+                "{timestamp}-{}.mp4",
+                SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            );
+            let path = directory.join(&filename);
+            if !tokio::fs::try_exists(&path).await? {
+                break (filename, path);
+            }
+        };
         let child = Command::new("ffmpeg")
             .args([
                 "-hide_banner",
@@ -185,6 +191,7 @@ mod tests {
     #[test]
     fn recording_names_are_confined() {
         assert!(valid_filename("video-123-456-0.mp4"));
+        assert!(valid_filename("20260906-143025-7.mp4"));
         for name in [
             "../video-123-456-0.mp4",
             "video-1-2-3.mp4/other",

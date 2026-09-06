@@ -796,3 +796,8 @@ through `POST /api/v1/video/recordings/{filename}/open` with `{}`, like saved ph
 
 Folder actions use `gdbus` and the desktop `org.freedesktop.FileManager1.ShowItems`
 interface, available through the daemon user's desktop session.
+
+New photos and videos use `YYYYMMDD-HHMMSS-N.jpg` / `.mp4` in local time.
+`N` is the per-daemon capture counter (separate for photos and videos), starting
+at zero; existing names are skipped to avoid overwriting. Legacy filenames
+remain accessible through the media endpoints.
