@@ -273,7 +273,7 @@ function syncTrack(track) {
       : track.pending || (!track.enabled && track.unavailable);
   });
   if (!track.enabled) {
-    stop(track, track.unavailable ? 'Disconnected' : 'Input off');
+    stop(track, track.unavailable ? 'Disconnected' : '');
   } else if (!track.socket && Date.now() >= track.retryAt && !track.unavailable) {
     start(track);
   }
@@ -299,7 +299,7 @@ async function setCapture(track, enabled) {
   }
 }
 
-function stop(track, label = 'Input off') {
+function stop(track, label = '') {
   const socket = track.socket;
   track.socket = null;
   socket?.close();
@@ -333,7 +333,7 @@ function start(track) {
     track.history.push(mutedOutput ? { ...reference, time: now, muted: true } : track.level);
     if (track.history.length > 500) track.history.splice(0, track.history.length - 500);
     if (level.clipped) track.clipUntil = now + 1500;
-    track.label.textContent = track.muted ? 'Source muted' : 'Capturing';
+    track.label.textContent = track.muted ? 'Source muted' : '';
   };
   socket.onclose = () => {
     if (track.socket === socket) stop(track, 'Capture stopped · Enable to retry');
