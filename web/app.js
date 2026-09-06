@@ -1,4 +1,4 @@
-import { createElement, FolderOpen } from "/assets/lucide.js";
+import { createElement, FolderOpen, FlipHorizontal2, Accessibility } from "/assets/lucide.js";
 
 const $ = (selector) => document.querySelector(selector);
 const connection = $("#connection");
@@ -493,7 +493,7 @@ function setSkeletonEnabled(enabled) {
   skeletonEnabled = enabled;
   localStorage.setItem("tarsier.skeletons", String(enabled));
   skeletonToggle.setAttribute("aria-pressed", String(enabled));
-  skeletonToggle.textContent = enabled ? "Hide skeletons" : "Skeletons";
+  skeletonToggle.title = enabled ? "Hide skeletons" : "Show skeletons";
   drawSkeletons();
 }
 
@@ -1561,6 +1561,9 @@ for (const button of document.querySelectorAll("[data-video-rotation]")) {
 }
 $("#video-mirror").addEventListener("change", (event) => void setVideoTransform({ ...videoTransform(), mirror: event.target.checked }));
 
+for (const [button, icon] of [[$("#preview-mirror"), FlipHorizontal2], [skeletonToggle, Accessibility]]) {
+  button.append(createElement(icon, { width: 20, height: 20, "aria-hidden": "true", focusable: "false" }));
+}
 $("#preview-mirror").addEventListener("click", () => setPreviewMirror(!previewMirrorEnabled));
 setPreviewMirror(previewMirrorEnabled);
 
