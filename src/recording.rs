@@ -8,7 +8,11 @@ use tokio::{
     sync::Mutex,
 };
 
-use crate::{config::VideoConfig, model::unix_ms};
+use crate::{
+    config::VideoConfig,
+    media_metadata::settings_metadata,
+    model::{RuntimeState, unix_ms},
+};
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct RecordingStatus {
@@ -76,7 +80,11 @@ impl Recorder {
         state.status.clone()
     }
 
-    pub async fn start(&self, config: &VideoConfig) -> Result<RecordingStatus> {
+    pub async fn start(
+        &self,
+        config: &VideoConfig,
+        settings: &RuntimeState,
+    ) -> Result<RecordingStatus> {
         let mut state = self.0.lock().await;
         Self::refresh(&mut state).await;
         if state.shutting_down {
@@ -103,6 +111,14 @@ impl Recorder {
                 break (filename, path);
             }
         };
+        let mut metadata = settings_metadata(
+            settings,
+            started,
+            "recording-start",
+            None,
+            (config.width, config.height),
+        );
+        metadata["output"]["recording_fps"] = serde_json::json!(config.fps);
         let child = Command::new("ffmpeg")
             .args([
                 "-hide_banner",
@@ -131,8 +147,10 @@ impl Recorder {
                 "-pix_fmt",
                 "yuv420p",
                 "-movflags",
-                "+faststart",
+                "+faststart+use_metadata_tags",
             ])
+            .arg("-metadata")
+            .arg(format!("tarsier_settings={metadata}"))
             .arg(&path)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
@@ -209,12 +227,17 @@ mod tests {
             loopback_enabled: false,
             ..Default::default()
         };
-        assert!(recorder.start(&config).await.is_err());
+        assert!(
+            recorder
+                .start(&config, &RuntimeState::default())
+                .await
+                .is_err()
+        );
         assert!(!recorder.status().await.active);
         recorder.shutdown().await;
         assert!(
             recorder
-                .start(&VideoConfig::default())
+                .start(&VideoConfig::default(), &RuntimeState::default())
                 .await
                 .unwrap_err()
                 .to_string()

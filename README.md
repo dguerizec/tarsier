@@ -813,3 +813,34 @@ New photos and videos use `YYYYMMDD-HHMMSS-N.jpg` / `.mp4` in local time.
 `N` is the per-daemon capture counter (separate for photos and videos), starting
 at zero; existing names are skipped to avoid overwriting. Legacy filenames
 remain accessible through the media endpoints.
+
+### Embedded capture settings
+
+New saved photos and API snapshots contain EXIF `Software`, `Orientation`, UTC
+`DateTimeOriginal` (with offset and milliseconds), and a JSON `UserComment`.
+The schema is `tarsier.capture-settings/v1`. It includes camera image controls,
+zoom, HDR, tracking switches, output dimensions, background effects and output
+transforms. JPEG pixels are preserved without another encoding pass; orientation
+is normal because output transforms are already applied to the pixels.
+
+Each JPEG retains the daemon settings observed when that JPEG was published,
+along with its frame ID, capture timestamp and settings observation timestamp.
+These are last-known daemon values, not guaranteed sensor measurements for the
+exact exposure: USB readback can lag, and automatic modes may change between
+polls. Individual image controls retain availability, activity, readback status
+and sample times. Unknown values stay null; raw UVC values are not converted to
+standard photographic exposure or ISO tags. Local paths, camera serials and
+runtime error messages are excluded. Browser-only preview mirroring is excluded.
+
+New MP4 recordings embed the same JSON schema in the `tarsier_settings` container
+tag using FFmpeg's `use_metadata_tags` muxer flag. Its scope is `recording-start`:
+it describes settings observed at startup, with no frame ID and no history of
+subsequent changes. Existing files are unchanged. Metadata may be removed by
+editing or sharing applications.
+
+Inspect the embedded data with:
+
+```bash
+exiftool -UserComment -b photo.jpg
+ffprobe -v error -show_entries format_tags=tarsier_settings -of json video.mp4
+```

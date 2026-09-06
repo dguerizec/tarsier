@@ -34,5 +34,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 opt-level = 2
 
 [dev-dependencies]
+kamadak-exif = "0.6"
 rmcp = { version = "3.2", features = ["client"] }
 tower = { version = "0.5", features = ["util"] }

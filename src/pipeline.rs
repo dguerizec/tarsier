@@ -19,6 +19,7 @@ use tokio::sync::watch;
 use crate::{
     config::{VideoConfig, VideoSource},
     effects::VideoEffects,
+    media_metadata::CapturedImage,
     model::unix_ms,
     runtime::Runtime,
 };
@@ -27,7 +28,8 @@ use crate::{
 pub struct PreviewHub {
     output_tx: watch::Sender<Option<Bytes>>,
     perception_tx: watch::Sender<Option<PerceptionFrame>>,
-    photo_tx: watch::Sender<Option<PerceptionFrame>>,
+    photo_tx: watch::Sender<Option<CapturedImage>>,
+    snapshot_tx: watch::Sender<Option<CapturedImage>>,
     effects: VideoEffects,
 }
 
@@ -73,6 +75,7 @@ impl PreviewHub {
         let (perception_tx, _) = watch::channel(None);
         Self {
             photo_tx: watch::channel(None).0,
+            snapshot_tx: watch::channel(None).0,
             output_tx,
             perception_tx,
             effects: VideoEffects::new(),
@@ -87,18 +90,18 @@ impl PreviewHub {
         self.perception_tx.subscribe()
     }
 
-    pub fn latest(&self) -> Option<Bytes> {
-        self.output_tx.borrow().clone()
+    pub(crate) fn latest(&self) -> Option<CapturedImage> {
+        self.snapshot_tx.borrow().clone()
     }
 
-    pub(crate) fn latest_photo(&self) -> Option<PerceptionFrame> {
+    pub(crate) fn latest_photo(&self) -> Option<CapturedImage> {
         self.photo_tx
             .borrow()
             .clone()
-            .filter(|frame| unix_ms().saturating_sub(frame.captured_at_ms) <= 1000)
+            .filter(|frame| unix_ms().saturating_sub(frame.frame.captured_at_ms) <= 1000)
     }
 
-    pub(crate) fn publish_photo(&self, frame: PerceptionFrame) {
+    pub(crate) fn publish_photo(&self, frame: CapturedImage) {
         self.photo_tx.send_replace(Some(frame));
     }
 
@@ -106,8 +109,9 @@ impl PreviewHub {
         &self.effects
     }
 
-    fn publish_output(&self, frame: Bytes) {
-        self.output_tx.send_replace(Some(frame));
+    fn publish_output(&self, frame: CapturedImage) {
+        self.output_tx.send_replace(Some(frame.frame.bytes.clone()));
+        self.snapshot_tx.send_replace(Some(frame));
     }
 
     fn publish_perception(&self, frame: PerceptionFrame) {
@@ -116,6 +120,7 @@ impl PreviewHub {
 
     fn clear(&self) {
         self.photo_tx.send_replace(None);
+        self.snapshot_tx.send_replace(None);
         self.output_tx.send_replace(None);
         self.perception_tx.send_replace(None);
         self.effects.clear_mask();
@@ -274,16 +279,22 @@ impl ActivePipeline {
                 .new_sample({
                     let preview = preview.clone();
                     let capture_clock = Arc::clone(&capture_clock);
+                    let settings = runtime.subscribe_state();
+                    let dimensions = (config.width, config.height);
                     move |sink| {
                         let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
                         let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
                         let pts = buffer.pts().ok_or(gst::FlowError::Error)?.nseconds();
                         let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
-                        preview.publish_photo(PerceptionFrame {
-                            bytes: Bytes::copy_from_slice(map.as_slice()),
-                            frame_id: capture_clock.frame_id(pts),
-                            captured_at_ms: capture_clock.captured_at_ms(pts),
-                        });
+                        preview.publish_photo(CapturedImage::new(
+                            PerceptionFrame {
+                                bytes: Bytes::copy_from_slice(map.as_slice()),
+                                frame_id: capture_clock.frame_id(pts),
+                                captured_at_ms: capture_clock.captured_at_ms(pts),
+                            },
+                            settings.borrow().clone(),
+                            dimensions,
+                        ));
                         Ok(gst::FlowSuccess::Ok)
                     }
                 })
@@ -356,11 +367,23 @@ impl ActivePipeline {
                     let preview = preview.clone();
                     let frame_count = Arc::clone(&frame_count);
                     let last_frame_at_ms = Arc::clone(&last_frame_at_ms);
+                    let capture_clock = Arc::clone(&capture_clock);
+                    let settings = runtime.subscribe_state();
+                    let dimensions = (config.preview_width, config.preview_height);
                     move |sink| {
                         let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
                         let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
                         let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
-                        preview.publish_output(Bytes::copy_from_slice(map.as_slice()));
+                        let pts = buffer.pts().ok_or(gst::FlowError::Error)?.nseconds();
+                        preview.publish_output(CapturedImage::new(
+                            PerceptionFrame {
+                                bytes: Bytes::copy_from_slice(map.as_slice()),
+                                frame_id: capture_clock.frame_id(pts),
+                                captured_at_ms: capture_clock.captured_at_ms(pts),
+                            },
+                            settings.borrow().clone(),
+                            dimensions,
+                        ));
                         frame_count.fetch_add(1, Ordering::Relaxed);
                         last_frame_at_ms.store(unix_ms(), Ordering::Relaxed);
                         Ok(gst::FlowSuccess::Ok)

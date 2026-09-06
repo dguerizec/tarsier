@@ -4,6 +4,7 @@ mod config;
 mod effects;
 mod face_tracking;
 mod hands_tracking;
+mod media_metadata;
 mod model;
 mod perception;
 mod pipeline;

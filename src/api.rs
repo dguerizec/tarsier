@@ -1392,7 +1392,7 @@ async fn take_photo(State(state): State<ApiState>) -> Response {
     };
     let result = tokio::task::spawn_blocking(move || -> anyhow::Result<std::path::PathBuf> {
         let directory = photos_directory()?;
-        save_photo(&directory, &frame.bytes)
+        save_photo(&directory, &frame.jpeg()?)
     })
     .await;
     match result {
@@ -1576,6 +1576,12 @@ async fn snapshot(State(state): State<ApiState>) -> Response {
         )
             .into_response();
     };
+    let frame = match frame.jpeg() {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response();
+        }
+    };
     (
         [
             (header::CONTENT_TYPE, "image/jpeg"),
@@ -1758,7 +1764,8 @@ async fn recording_status(
 
 async fn start_recording(State(state): State<ApiState>, Json(_): Json<Value>) -> Response {
     let _guard = state.video_output_control.lock().await;
-    let pipeline = state.runtime.state().await.pipeline;
+    let settings = state.runtime.state().await;
+    let pipeline = &settings.pipeline;
     if !pipeline.running
         || pipeline
             .last_frame_at_ms
@@ -1770,7 +1777,7 @@ async fn start_recording(State(state): State<ApiState>, Json(_): Json<Value>) ->
         )
             .into_response();
     }
-    match state.recorder.start(&state.config.video).await {
+    match state.recorder.start(&state.config.video, &settings).await {
         Ok(status) => (StatusCode::CREATED, Json(status)).into_response(),
         Err(error) => command_error(error),
     }
@@ -2944,11 +2951,15 @@ mod tests {
         );
         for stale in [false, true] {
             if stale {
-                preview.publish_photo(PerceptionFrame {
-                    bytes: Bytes::from_static(b"stale JPEG"),
-                    frame_id: 1,
-                    captured_at_ms: unix_ms() - 2000,
-                });
+                preview.publish_photo(crate::media_metadata::CapturedImage::new(
+                    PerceptionFrame {
+                        bytes: Bytes::from_static(b"stale JPEG"),
+                        frame_id: 1,
+                        captured_at_ms: unix_ms() - 2000,
+                    },
+                    crate::model::RuntimeState::default(),
+                    (640, 480),
+                ));
             }
             let response = app
                 .clone()
