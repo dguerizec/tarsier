@@ -107,7 +107,8 @@ flowchart LR
     Mask --> Effects
     Avatar --> Effects
     Depth --> Effects
-    Effects -->|YUY2 720p30| Loopback[V4L2 loopback]
+    Effects -->|Latest BGRx frame| VirtualOutput[Persistent video output / black while off]
+    VirtualOutput -->|YUY2 720p30| Loopback[V4L2 loopback]
     Effects --> Preview[Final MJPEG preview]
     Preview --> UI[Local web UI]
 
@@ -693,9 +694,10 @@ run before unattended use.
   configured path and has synthetic EOS coverage, but a physical unplug/reset
   recovery cycle and long soak have not yet been revalidated;
 - the V4L2 loopback device must be created before startup;
-- while camera power is off, capture, preview, perception input, and virtual
-  camera production are intentionally stopped; consumers must tolerate the
-  stream pausing until the camera is switched back on;
+- while camera power is off, physical video capture, preview, and perception
+  stop. The virtual camera keeps streaming black frames and the enabled virtual
+  microphone sends silence, so connected applications can resume without
+  reopening their devices. Audio source, capture, and mute preferences are preserved;
 - absolute movement is safely bounded but has not been calibrated for precise
   agreement between requested and settled angles;
 - the previous `0x0043` live attitude query reset the tested camera during an

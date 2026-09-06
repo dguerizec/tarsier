@@ -553,7 +553,8 @@ impl AudioHub {
                 input = selected.as_ref().map(|id| self.channel(id).subscribe());
             }
             let frame = input.as_mut().and_then(next_frame);
-            let allowed = settings.enabled
+            let allowed = state.camera.powered_on != Some(false)
+                && settings.enabled
                 && !settings.muted
                 && selected
                     .as_ref()

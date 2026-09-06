@@ -1,11 +1,11 @@
 use std::{
     path::Path,
     sync::{
-        Arc, OnceLock,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread::JoinHandle,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail};
@@ -31,6 +31,7 @@ pub struct PreviewHub {
     photo_tx: watch::Sender<Option<CapturedImage>>,
     snapshot_tx: watch::Sender<Option<CapturedImage>>,
     effects: VideoEffects,
+    virtual_frame: Arc<Mutex<Option<(Instant, gst::Buffer)>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -79,6 +80,7 @@ impl PreviewHub {
             output_tx,
             perception_tx,
             effects: VideoEffects::new(),
+            virtual_frame: Arc::default(),
         }
     }
 
@@ -119,6 +121,7 @@ impl PreviewHub {
     }
 
     fn clear(&self) {
+        *self.virtual_frame.lock().unwrap() = None;
         self.photo_tx.send_replace(None);
         self.snapshot_tx.send_replace(None);
         self.output_tx.send_replace(None);
@@ -134,6 +137,7 @@ pub struct VideoPipeline {
     desired_running: Arc<AtomicBool>,
     runtime: Runtime,
     supervisor: Option<JoinHandle<()>>,
+    _virtual_output: Option<VirtualVideoOutput>,
 }
 
 #[derive(Clone)]
@@ -149,15 +153,144 @@ struct ActivePipeline {
     running: Arc<AtomicBool>,
 }
 
+// Own the virtual device independently of the physical capture pipeline.
+struct VirtualVideoOutput {
+    pipeline: gst::Pipeline,
+    running: Arc<AtomicBool>,
+    writer: Option<JoinHandle<()>>,
+}
+
+impl VirtualVideoOutput {
+    fn start(
+        config: &VideoConfig,
+        preview: PreviewHub,
+        capture_enabled: Arc<AtomicBool>,
+        runtime: Runtime,
+        sink: &str,
+    ) -> Result<Self> {
+        let pipeline = gst::parse::launch(&format!(
+            "appsrc name=frames is-live=true format=time block=false max-buffers=2 leaky-type=downstream ! \
+             video/x-raw,format=BGRx,width={},height={},framerate={}/1 ! videoconvert ! \
+             video/x-raw,format=YUY2 ! {sink}",
+            config.width, config.height, config.fps
+        ))?.downcast::<gst::Pipeline>().map_err(|_| anyhow::anyhow!("invalid virtual video pipeline"))?;
+        let source = pipeline
+            .by_name("frames")
+            .unwrap()
+            .downcast::<gst_app::AppSrc>()
+            .unwrap();
+        let mut output = Self {
+            pipeline,
+            running: Arc::new(AtomicBool::new(true)),
+            writer: None,
+        };
+        output
+            .pipeline
+            .set_state(gst::State::Playing)
+            .context("failed to start virtual video output")?;
+        let running = Arc::clone(&output.running);
+        let black = gst::Buffer::from_slice(vec![
+            0u8;
+            config.width as usize * config.height as usize * 4
+        ]);
+        let period = Duration::from_secs_f64(1.0 / config.fps as f64);
+        let bus = output
+            .pipeline
+            .bus()
+            .context("virtual video bus is missing")?;
+        let handle = tokio::runtime::Handle::current();
+        output.writer = Some(
+            std::thread::Builder::new()
+                .name("tarsier-virtual-video".into())
+                .spawn(move || {
+                    let started = Instant::now();
+                    let mut deadline = started;
+                    while running.load(Ordering::Relaxed) {
+                        let mut frame = if capture_enabled.load(Ordering::Relaxed) {
+                            preview
+                                .virtual_frame
+                                .lock()
+                                .unwrap()
+                                .as_ref()
+                                .filter(|(at, _)| at.elapsed() <= Duration::from_millis(500))
+                                .map(|(_, buffer)| buffer.clone())
+                                .unwrap_or_else(|| black.clone())
+                        } else {
+                            black.clone()
+                        };
+                        let buffer = frame.make_mut();
+                        buffer.set_pts(gst::ClockTime::from_nseconds(
+                            started.elapsed().as_nanos() as u64
+                        ));
+                        buffer.set_dts(None);
+                        buffer
+                            .set_duration(gst::ClockTime::from_nseconds(period.as_nanos() as u64));
+                        let push_error = source.push_buffer(frame).err();
+                        let bus_error = bus.pop_filtered(&[gst::MessageType::Error]);
+                        if push_error.is_some() || bus_error.is_some() {
+                            let error = format!(
+                                "virtual video output failed: {push_error:?} {bus_error:?}"
+                            );
+                            tracing::error!(%error);
+                            handle.spawn({
+                                let runtime = runtime.clone();
+                                async move {
+                                    runtime
+                                        .update(|state| state.pipeline.error = Some(error))
+                                        .await;
+                                }
+                            });
+                            break;
+                        }
+                        deadline += period;
+                        let now = Instant::now();
+                        if deadline > now {
+                            std::thread::sleep(deadline - now);
+                        } else {
+                            deadline = now;
+                        }
+                    }
+                })?,
+        );
+        output
+            .pipeline
+            .state(gst::ClockTime::from_seconds(3))
+            .0
+            .context("virtual video output failed to reach Playing")?;
+        Ok(output)
+    }
+}
+
+impl Drop for VirtualVideoOutput {
+    fn drop(&mut self) {
+        self.running.store(false, Ordering::Relaxed);
+        if let Some(writer) = self.writer.take() {
+            let _ = writer.join();
+        }
+        let _ = self.pipeline.set_state(gst::State::Null);
+    }
+}
+
 impl VideoPipeline {
     pub async fn start(config: VideoConfig, runtime: Runtime, preview: PreviewHub) -> Result<Self> {
         gst::init().context("failed to initialize GStreamer")?;
         validate_path(&config.input_device)?;
         validate_path(&config.output_device)?;
-        let pipeline =
-            ActivePipeline::start(&config, runtime.clone(), preview.clone(), false).await?;
         let supervisor_running = Arc::new(AtomicBool::new(true));
         let desired_running = Arc::new(AtomicBool::new(true));
+        let virtual_output = if config.loopback_enabled {
+            Some(VirtualVideoOutput::start(
+                &config,
+                preview.clone(),
+                Arc::clone(&desired_running),
+                runtime.clone(),
+                &format!("v4l2sink device=\"{}\" sync=false", config.output_device),
+            )?)
+        } else {
+            None
+        };
+        let pipeline =
+            ActivePipeline::start(&config, runtime.clone(), preview.clone(), false).await?;
         let supervisor = spawn_supervisor(
             pipeline,
             config,
@@ -171,6 +304,7 @@ impl VideoPipeline {
             desired_running,
             runtime,
             supervisor: Some(supervisor),
+            _virtual_output: virtual_output,
         })
     }
 
@@ -266,6 +400,23 @@ impl ActivePipeline {
         let effect_processor = pipeline
             .by_name("effect_processor")
             .context("effect processor is missing")?;
+
+        if let Some(sink) = pipeline.by_name("loopback_bridge") {
+            let sink = sink
+                .downcast::<gst_app::AppSink>()
+                .map_err(|_| anyhow::anyhow!("invalid loopback bridge"))?;
+            let frames = Arc::clone(&preview.virtual_frame);
+            sink.set_callbacks(
+                gst_app::AppSinkCallbacks::builder()
+                    .new_sample(move |sink| {
+                        let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                        let buffer = sample.buffer_owned().ok_or(gst::FlowError::Error)?;
+                        *frames.lock().unwrap() = Some((Instant::now(), buffer));
+                        Ok(gst::FlowSuccess::Ok)
+                    })
+                    .build(),
+            );
+        }
 
         let capture_clock = Arc::new(CaptureClock::new(unix_ms(), config.fps));
 
@@ -496,12 +647,10 @@ fn pipeline_description(config: &VideoConfig) -> String {
          appsink name=photo max-buffers=1 drop=true sync=false",
     );
     if config.loopback_enabled {
-        branches.push_str(&format!(
-            " stream. ! queue leaky=downstream max-size-buffers=2 ! videoconvert ! \
-             video/x-raw,format=YUY2,width={},height={},framerate={}/1 ! \
-             v4l2sink device=\"{}\" sync=false",
-            config.width, config.height, config.fps, config.output_device
-        ));
+        branches.push_str(
+            " stream. ! queue leaky=downstream max-size-buffers=2 ! \
+             appsink name=loopback_bridge max-buffers=1 drop=true sync=false",
+        );
     }
     branches
 }
@@ -566,8 +715,8 @@ fn spawn_supervisor(
                     let exit =
                         wait_for_pipeline_exit(current, &supervisor_running, &desired_running);
                     current.running.store(false, Ordering::Relaxed);
-                    preview.clear();
                     drop(active.take());
+                    preview.clear();
                     match exit {
                         PipelineExit::Shutdown => break,
                         PipelineExit::Disabled => {
@@ -783,6 +932,81 @@ fn wait_for_retry(running: &AtomicBool, desired_running: &AtomicBool, delay: Dur
 mod tests {
     use super::*;
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn virtual_video_keeps_streaming_black_across_capture_power_cycles() {
+        gst::init().unwrap();
+        let config = VideoConfig {
+            source: VideoSource::Test,
+            width: 64,
+            height: 48,
+            preview_width: 64,
+            preview_height: 48,
+            ..VideoConfig::default()
+        };
+        let preview = PreviewHub::new();
+        let enabled = Arc::new(AtomicBool::new(true));
+        let output = VirtualVideoOutput::start(
+            &config,
+            preview.clone(),
+            Arc::clone(&enabled),
+            Runtime::new(),
+            "appsink name=consumer max-buffers=1 drop=true sync=false",
+        )
+        .unwrap();
+        let consumer = output
+            .pipeline
+            .by_name("consumer")
+            .unwrap()
+            .downcast::<gst_app::AppSink>()
+            .unwrap();
+        let mut last_pts = None;
+        let mut read_until = |black: bool| {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                let sample = consumer
+                    .try_pull_sample(gst::ClockTime::from_seconds(1))
+                    .expect("the connected consumer must keep receiving frames");
+                let buffer = sample.buffer().unwrap();
+                let pts = buffer.pts().unwrap();
+                if let Some(previous) = last_pts {
+                    assert!(pts > previous);
+                }
+                last_pts = Some(pts);
+                let map = buffer.map_readable().unwrap();
+                let is_black = map
+                    .as_slice()
+                    .chunks_exact(4)
+                    .all(|pixel| pixel == [16, 128, 16, 128]);
+                if is_black == black {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "unexpected virtual video pixels");
+            }
+        };
+        let runtime = Runtime::new();
+        let capture = ActivePipeline::start(&config, runtime.clone(), preview.clone(), false)
+            .await
+            .unwrap();
+        read_until(false);
+        enabled.store(false, Ordering::Relaxed);
+        drop(capture);
+        preview.clear();
+        for _ in 0..5 {
+            read_until(true);
+        }
+        enabled.store(true, Ordering::Relaxed);
+        // Wake starts with black, never the previous capture's last frame.
+        read_until(true);
+        let capture = ActivePipeline::start(&config, runtime, preview.clone(), true)
+            .await
+            .unwrap();
+        read_until(false);
+        // A failed capture also falls back to black once its last frame expires.
+        drop(capture);
+        tokio::time::sleep(Duration::from_millis(550)).await;
+        read_until(true);
+    }
+
     #[test]
     fn capture_clock_maps_source_pts_to_one_wall_clock_timeline() {
         let clock = CaptureClock::new(1_725_000_000_000, 30);
@@ -902,7 +1126,8 @@ mod tests {
     fn camera_pipeline_keeps_loopback_branch_leaky() {
         let description = pipeline_description(&VideoConfig::default());
         assert!(description.contains("v4l2src device=\"/dev/video0\""));
-        assert!(description.contains("v4l2sink device=\"/dev/video42\""));
+        assert!(description.contains("appsink name=loopback_bridge"));
+        assert!(!description.contains("v4l2sink"));
         assert_eq!(description.matches("leaky=downstream").count(), 5);
     }
 }
