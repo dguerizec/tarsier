@@ -210,7 +210,7 @@ function renderOutput() {
   });
   document.querySelectorAll('[data-audio-mute]').forEach((button) => {
     button.setAttribute('aria-pressed', String(virtualState.muted));
-    const label = virtualState.muted ? 'Unmute output' : 'Mute output';
+    const label = virtualState.muted ? 'Unmute Tarsier Microphone' : 'Mute Tarsier Microphone';
     button.title = label;
     button.setAttribute('aria-label', label);
     if (button.dataset.muted !== String(virtualState.muted)) {
@@ -245,6 +245,8 @@ async function updateOutput(patch) {
     renderOutput();
   }
 }
+
+document.querySelector('#preview-audio-mute').onclick = () => void updateOutput({ muted: !virtualState.muted });
 
 export function syncAudioCapture(sources, output, currentReservations, released, busy) {
   reservations = currentReservations || {};
