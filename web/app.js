@@ -1602,13 +1602,14 @@ takePhoto.addEventListener("click", async () => {
 });
 
 document.addEventListener("keydown", (event) => {
-  if (event.code !== "Space" || event.altKey || event.ctrlKey || event.metaKey
+  if (event.code !== "Space" || event.altKey || event.metaKey
     || event.shiftKey || event.isComposing || event.defaultPrevented
     || blocksArrowControl(event.target)
-    || event.target?.closest?.("button, a, summary, [role='button'], [role='slider']")
+    || (!event.ctrlKey && event.target?.closest?.("button, a, summary, [role='button'], [role='slider']"))
     || document.querySelector("dialog[open]")) return;
   event.preventDefault();
-  if (!event.repeat && !takePhoto.disabled) takePhoto.click();
+  const button = event.ctrlKey ? recordVideo : takePhoto;
+  if (!event.repeat && !button.disabled) button.click();
 });
 
 const resolutionPicker = $("#resolution-picker");
