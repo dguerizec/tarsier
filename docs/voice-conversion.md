@@ -57,8 +57,8 @@ still determine whether the virtual microphone publishes audio.
 
 The initial profile used synthetic video and shared capture from main's virtual
 microphone, with experimental output blocked. After the user requested stopping
-main, this profile was extended to physical inputs. V4L2 loopback output and
-perception/avatar workers remain disabled. The current main binary attempts to
+main, this profile was extended to physical inputs. V4L2 loopback output remains disabled. Perception, background segmentation,
+depth, and all three avatar engines are enabled. The current main binary attempts to
 reserve newly created sources; keep main stopped while this experiment runs.
 
 ## RVC feasibility boundary
@@ -110,3 +110,27 @@ released the capture children; restoring the OBSBOT by-id path and both USB
 microphones survived the next supervised restart. Physical preview ran at
 approximately 30 FPS with no pipeline error. Audio output stayed disabled and
 main stayed inactive. Browser visual verification was unavailable in this session.
+
+
+## Perception and avatar setup
+
+The experimental worker has its own `worker/.venv`, installed with:
+
+```sh
+uv sync --project worker --locked --extra avatar --extra liveportrait --extra depth --link-mode hardlink
+```
+
+Shared pretrained model files in `~/.cache/tarsier/models` are verified by checksum
+and read in place. The personalized LivePortrait image and Personal 3D export
+are separate copies under `.voice-conversion/assets/liveportrait-source.png` and
+`.voice-conversion/assets/portrait/`. They are local, ignored data, not committed
+assets. Provision those files when preparing another checkout. The launcher
+checks their presence and isolates TorchInductor/ Triton caches under the
+experimental state directory. Compilation is disabled for predictable first use.
+
+After enabling the worker, live checks confirmed fresh depth frames and avatar
+frames for Stylized 3D, Personal 3D, and LivePortrait. LivePortrait continued
+publishing with a latest-frame age of 69 ms at the final check; this is frame
+freshness, not an end-to-end latency benchmark. The preview was restored to
+Camera after validation. Main remained inactive. RVC voice conversion remains
+separate, unfinished work.

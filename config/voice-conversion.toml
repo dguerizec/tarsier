@@ -22,12 +22,21 @@ adapter = "mock"
 control_device = "/dev/null"
 
 [perception]
-enabled = false
-supervise_worker = false
+enabled = true
+supervise_worker = true
+worker_project = "worker"
+source = "preview"
 device = "/dev/null"
 
 [avatar]
-enabled = false
+enabled = true
+profile = "assets/avatars/stylized-3d.json"
+portrait_model = ".voice-conversion/assets/portrait"
+source_image = ".voice-conversion/assets/liveportrait-source.png"
+fps = 30
+compile = false
 
 [depth]
-enabled = false
+enabled = true
+fps = 30
+input_height = 252

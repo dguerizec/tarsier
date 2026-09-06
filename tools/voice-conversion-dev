@@ -8,6 +8,9 @@ export TARSIER_USER_SETTINGS_PATH="$root/.voice-conversion/user-settings.json"
 export TARSIER_AUTH_PATH="$root/.voice-conversion/auth.json"
 export TARSIER_PHOTOS_DIR="$root/.voice-conversion/photos"
 export TARSIER_VIDEOS_DIR="$root/.voice-conversion/videos"
+export TORCHINDUCTOR_CACHE_DIR="$root/.voice-conversion/cache/torchinductor"
+export TRITON_CACHE_DIR="$root/.voice-conversion/cache/triton"
+export UV_LINK_MODE=hardlink
 unset TARSIER_API_TOKEN
 case "${1:-check}" in
   build) exec cargo build --locked -j 2 ;;
@@ -24,8 +27,11 @@ main_state = subprocess.check_output(['systemctl', '--user', 'show', 'tarsier.se
 assert main_state in ('inactive', 'failed'), 'Stop main before starting the physical-device experiment'
 assert c['video']['source'] == 'test' and not c['video']['loopback_enabled']
 assert c['camera']['adapter'] == 'mock'
-assert not c['perception']['enabled'] and not c['perception']['supervise_worker']
-assert not c['avatar']['enabled'] and not c['depth']['enabled']
+assert c['perception']['enabled'] and c['perception']['supervise_worker']
+assert c['perception']['source'] == 'preview' and c['perception']['worker_project'] == 'worker'
+assert c['avatar']['enabled'] and c['depth']['enabled']
+assert pathlib.Path(c['avatar']['source_image']).is_file(), 'Prepare the local avatar image first'
+assert pathlib.Path(c['avatar']['portrait_model'], 'manifest.json').is_file(), 'Prepare the local portrait export first'
 p = pathlib.Path(os.environ['TARSIER_USER_SETTINGS_PATH'])
 if p.exists():
     assert not json.loads(p.read_text()).get('network_lan_access'), 'Disable experimental LAN access before launch'
