@@ -30,7 +30,7 @@ def _score(categories: dict[str, float], name: str) -> float:
     return float(np.clip(categories.get(name, 0.0), 0.0, 1.0))
 
 
-def motion_from_mediapipe(result: Any) -> AvatarMotion | None:
+def motion_from_mediapipe(result: Any, *, limit_pose: bool = True) -> AvatarMotion | None:
     if not result.face_landmarks:
         return None
     categories = {
@@ -43,9 +43,11 @@ def motion_from_mediapipe(result: Any) -> AvatarMotion | None:
 
         matrix = np.asarray(result.facial_transformation_matrixes[0], dtype=np.float32)
         pitch_degrees, yaw_degrees, roll_degrees = cv2.RQDecomp3x3(matrix[:3, :3])[0]
-        pitch = float(np.clip(math.radians(pitch_degrees), -0.45, 0.45))
-        yaw = float(np.clip(math.radians(yaw_degrees), -0.65, 0.65))
-        roll = float(np.clip(math.radians(roll_degrees), -0.35, 0.35))
+        pitch, yaw, roll = map(math.radians, (pitch_degrees, yaw_degrees, roll_degrees))
+        if limit_pose:
+            pitch = float(np.clip(pitch, -0.45, 0.45))
+            yaw = float(np.clip(yaw, -0.65, 0.65))
+            roll = float(np.clip(roll, -0.35, 0.35))
     return AvatarMotion(
         pitch=pitch,
         yaw=yaw,

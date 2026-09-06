@@ -59,8 +59,8 @@ class Portrait3DAvatarEngine:
 
         self.width, self.height = width, height
         self.manifest, arrays = load_asset(directory)
-        self._reference = None
-        self._pose = np.zeros(3)
+        self._pose = None
+        self._last_frame = None
         self._last = time.monotonic()
         self.ctx = moderngl.create_standalone_context(backend="egl")
         self.ctx.enable(moderngl.DEPTH_TEST)
@@ -131,28 +131,31 @@ frag=vec4(c,1);}
             raise
 
     def render(self, motion: AvatarMotion | None) -> np.ndarray:
+        now = time.monotonic()
+        if motion is None:
+            self._last = now
+            # Keep the last rendered identity and its alpha while the driver is occluded.
+            if self._last_frame is not None:
+                return self._last_frame.copy()
+            return np.zeros((self.height, self.width, 4), np.uint8)
         self.frame.use()
         self.frame.clear(0, 0, 0, 0, depth=1)
-        if motion is None:
-            self._reference = None
-            self._pose[:] = 0
-            return np.zeros((self.height, self.width, 4), np.uint8)
         pose = np.array([motion.pitch, motion.yaw, -motion.roll])
-        if self._reference is None:
-            self._reference = pose.copy()
-        now = time.monotonic()
+        if self._pose is None:
+            self._pose = pose.copy()
+        # Use camera-relative angles, never a new neutral pose on reacquisition.
         # Stabilize pose only; rapid blinks and speech remain unfiltered.
         factor = 1 - math.exp(-min(now - self._last, 0.2) / 0.065)
         self._last = now
-        self._pose += (pose - self._reference - self._pose) * factor
+        self._pose += (pose - self._pose) * factor
         pitch, yaw, roll = self._pose
         cx, sx = math.cos(pitch), math.sin(pitch)
         cz, sz = math.cos(yaw), math.sin(yaw)
         cy, sy = math.cos(roll), math.sin(roll)
         rotation = (
-            np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]])
+            np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
+            @ np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]])
             @ np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]])
-            @ np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
         )
         self.program["rotation"].write(rotation.astype("f4").T.tobytes())
         weights = [
@@ -182,7 +185,8 @@ frag=vec4(c,1);}
         rgba[:, :, :3] = np.clip(
             rgba[:, :, :3].astype(np.float32) * 255 / np.maximum(alpha, 1), 0, 255
         ).astype(np.uint8)
-        return cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGRA)
+        self._last_frame = cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGRA)
+        return self._last_frame.copy()
 
     def close(self) -> None:
         for resource in reversed(self._resources):

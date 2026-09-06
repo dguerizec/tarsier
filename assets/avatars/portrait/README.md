@@ -1,10 +1,13 @@
 # Personal 3D identity
 
 Select **Personal 3D** in Identity. The local MediaPipe tracker drives head
-rotation, blinks, jaw opening, smiles, and eyebrows. Pose is calibrated on first
-tracking acquisition and smoothed; expressions are not smoothed. The first
+rotation, blinks, jaw opening, smiles, and eyebrows. Pose uses camera-relative
+orientation and is smoothed; expressions are not smoothed. The first
 version has fixed framing, approximate mouth deformation, and no independent
-eye gaze. Losing face tracking clears the portrait until tracking resumes.
+eye gaze. Losing face tracking holds the last portrait and silhouette until tracking
+resumes, without recalibrating the center. Before the first detection, the
+portrait is transparent. Extreme profiles can still exceed MediaPipe tracking
+coverage; the renderer does not invent motion while tracking is unavailable.
 
 The renderer sends straight BGRA pixels to `/api/v1/avatar/frame` with
 `X-Tarsier-Avatar-Pixel-Format: bgra`. Image and silhouette share one frame ID

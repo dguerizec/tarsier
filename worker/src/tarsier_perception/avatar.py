@@ -179,7 +179,8 @@ class MediaPipeFaceCropper:
 
 
 class MediaPipeAvatarTracker:
-    def __init__(self, model_dir: Path) -> None:
+    def __init__(self, model_dir: Path, *, limit_pose: bool = True) -> None:
+        self._limit_pose = limit_pose
         vision = mp.tasks.vision
         self._landmarker = vision.FaceLandmarker.create_from_options(
             vision.FaceLandmarkerOptions(
@@ -201,7 +202,9 @@ class MediaPipeAvatarTracker:
 
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
-        return motion_from_mediapipe(self._landmarker.detect_for_video(image, timestamp_ms))
+        return motion_from_mediapipe(
+            self._landmarker.detect_for_video(image, timestamp_ms), limit_pose=self._limit_pose
+        )
 
     def close(self) -> None:
         self._landmarker.close()
@@ -432,7 +435,9 @@ class AvatarProcessor:
                 raise RuntimeError("personal 3D avatar requires a model directory")
             from .portrait3d import Portrait3DAvatarEngine
 
-            tracker = resources.enter_context(MediaPipeAvatarTracker(self._model_dir))
+            tracker = resources.enter_context(
+                MediaPipeAvatarTracker(self._model_dir, limit_pose=False)
+            )
             engine = resources.enter_context(
                 Portrait3DAvatarEngine(self._portrait_model, self._width, self._height)
             )
