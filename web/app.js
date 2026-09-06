@@ -1,4 +1,4 @@
-import { createElement, FolderOpen, FlipHorizontal2, Accessibility } from "/assets/lucide.js";
+import { createElement, FolderOpen, FlipHorizontal2, Bone } from "/assets/lucide.js";
 
 const $ = (selector) => document.querySelector(selector);
 const connection = $("#connection");
@@ -1561,8 +1561,8 @@ for (const button of document.querySelectorAll("[data-video-rotation]")) {
 }
 $("#video-mirror").addEventListener("change", (event) => void setVideoTransform({ ...videoTransform(), mirror: event.target.checked }));
 
-for (const [button, icon] of [[$("#preview-mirror"), FlipHorizontal2], [skeletonToggle, Accessibility]]) {
-  button.append(createElement(icon, { width: 20, height: 20, "aria-hidden": "true", focusable: "false" }));
+for (const [button, icon] of [[$("#preview-mirror"), FlipHorizontal2], [skeletonToggle, Bone]]) {
+  button.append(createElement(icon, { width: 10, height: 10, "aria-hidden": "true", focusable: "false" }));
 }
 $("#preview-mirror").addEventListener("click", () => setPreviewMirror(!previewMirrorEnabled));
 setPreviewMirror(previewMirrorEnabled);
