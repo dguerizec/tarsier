@@ -794,7 +794,13 @@ license alongside the generated bundle.
 
 Use **Record video** beside **Take photo** to record the final virtual-camera
 output at the selected resolution, including current effects and output
-transforms. This records video only, without audio. **Stop recording** finalizes
+transforms. Frames are shared directly by the daemon, so recording also works
+while a browser or call application uses the virtual camera. When audio output is enabled, the MP4 includes **Tarsier Microphone** as a 48 kHz
+stereo AAC track, respecting the selected input and output mute (including system
+mixer settings). With audio output off at start, the recording is video-only.
+An enabled but unavailable output reports an error instead of silently omitting
+audio. Input changes and mute remain live during recording; stop recording before
+turning audio output off, or use mute to record silence. **Stop recording** finalizes
 an H.264 MP4 and displays a link to play or download it. Files are saved in
 `~/Videos/Tarsier` (override with `TARSIER_VIDEOS_DIR`). The live timer and stop
 button are restored when the page reloads. Only one recording runs at a time.
@@ -940,7 +946,7 @@ remain independent. Input capture choices, selected output source, output enable
 shared across browser clients and saved in the user settings file. They are
 restored on daemon restart, including choices for disconnected inputs. Input
 reservations are automatically reacquired; release choices remain session-only.
-Recordings remain video-only; agent audio is future work.
+Video recordings include the enabled virtual output; agent audio is future work.
 
 Dependencies: `pactl` and `parec` (PulseAudio utilities), `pw-cli`, `pw-link`, `pw-dump`, and
 `libpipewire-module-pipe-tunnel` (PipeWire), a working user PipeWire/PulseAudio
@@ -950,7 +956,8 @@ in a daemon-owned child process with a private runtime FIFO. Stopping the child
 removes the source; no permanent PipeWire configuration or kernel module is needed.
 Audio failures do not stop video. Each physical source has one capture process,
 regardless of the number of viewers. The UI receives only amplitude summaries;
-raw audio stays on the daemon host and is neither saved nor played on speakers.
+raw audio stays on the daemon host and is not played on speakers. Video recording
+saves the enabled virtual output in the MP4.
 
 - `GET /api/v1/audio/sources`: source IDs, names, mute state, and capture enablement.
 - `POST /api/v1/audio/capture`: `{ "source": "<id>", "enabled": true }`.

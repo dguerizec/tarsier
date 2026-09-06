@@ -32,6 +32,7 @@ pub struct PreviewHub {
     snapshot_tx: watch::Sender<Option<CapturedImage>>,
     effects: VideoEffects,
     virtual_frame: Arc<Mutex<Option<(Instant, gst::Buffer)>>>,
+    recording_tx: watch::Sender<Option<gst::Buffer>>,
 }
 
 #[derive(Clone, Debug)]
@@ -81,7 +82,12 @@ impl PreviewHub {
             perception_tx,
             effects: VideoEffects::new(),
             virtual_frame: Arc::default(),
+            recording_tx: watch::channel(None).0,
         }
+    }
+
+    pub(crate) fn subscribe_recording(&self) -> watch::Receiver<Option<gst::Buffer>> {
+        self.recording_tx.subscribe()
     }
 
     pub fn subscribe(&self) -> watch::Receiver<Option<Bytes>> {
@@ -225,6 +231,7 @@ impl VirtualVideoOutput {
                         buffer.set_dts(None);
                         buffer
                             .set_duration(gst::ClockTime::from_nseconds(period.as_nanos() as u64));
+                        preview.recording_tx.send_replace(Some(frame.clone()));
                         let push_error = source.push_buffer(frame).err();
                         let bus_error = bus.pop_filtered(&[gst::MessageType::Error]);
                         if push_error.is_some() || bus_error.is_some() {
@@ -1005,6 +1012,54 @@ mod tests {
         drop(capture);
         tokio::time::sleep(Duration::from_millis(550)).await;
         read_until(true);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn recording_receives_final_frames_and_privacy_black_without_a_device_reader() {
+        gst::init().unwrap();
+        let config = VideoConfig {
+            width: 64,
+            height: 48,
+            ..VideoConfig::default()
+        };
+        let preview = PreviewHub::new();
+        let mut frames = preview.subscribe_recording();
+        let pixels = [40, 80, 120, 0].repeat(64 * 48);
+        *preview.virtual_frame.lock().unwrap() =
+            Some((Instant::now(), gst::Buffer::from_slice(pixels.clone())));
+        let enabled = Arc::new(AtomicBool::new(true));
+        let _output = VirtualVideoOutput::start(
+            &config,
+            preview,
+            enabled.clone(),
+            Runtime::new(),
+            "fakesink sync=false",
+        )
+        .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), frames.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        let frame = frames.borrow_and_update().clone().unwrap();
+        assert_eq!(frame.map_readable().unwrap().as_slice(), pixels);
+        enabled.store(false, Ordering::Relaxed);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                frames.changed().await.unwrap();
+                let frame = frames.borrow_and_update().clone().unwrap();
+                if frame
+                    .map_readable()
+                    .unwrap()
+                    .as_slice()
+                    .iter()
+                    .all(|byte| *byte == 0)
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("recording must receive the same privacy black as virtual output");
     }
 
     #[test]

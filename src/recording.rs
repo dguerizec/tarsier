@@ -5,7 +5,8 @@ use serde::Serialize;
 use tokio::{
     io::AsyncWriteExt,
     process::{Child, Command},
-    sync::Mutex,
+    sync::{Mutex, watch},
+    task::JoinHandle,
 };
 
 use crate::{
@@ -17,6 +18,7 @@ use crate::{
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct RecordingStatus {
     pub active: bool,
+    pub audio: bool,
     pub started_at_ms: Option<u64>,
     pub path: Option<PathBuf>,
     pub url: Option<String>,
@@ -27,6 +29,7 @@ pub struct RecordingStatus {
 struct State {
     shutting_down: bool,
     child: Option<Child>,
+    writer: Option<JoinHandle<()>>,
     status: RecordingStatus,
 }
 
@@ -61,6 +64,9 @@ impl Recorder {
         match child.try_wait() {
             Ok(Some(status)) => {
                 state.child = None;
+                if let Some(writer) = state.writer.take() {
+                    writer.abort();
+                }
                 state.status.active = false;
                 if !status.success() {
                     state.status.error = Some(format!(
@@ -84,6 +90,7 @@ impl Recorder {
         &self,
         config: &VideoConfig,
         settings: &RuntimeState,
+        mut frames: watch::Receiver<Option<gstreamer::Buffer>>,
     ) -> Result<RecordingStatus> {
         let mut state = self.0.lock().await;
         Self::refresh(&mut state).await;
@@ -95,6 +102,12 @@ impl Recorder {
         }
         if !config.loopback_enabled {
             bail!("Video recording requires the virtual camera output");
+        }
+        let audio = settings.audio_virtual.enabled;
+        if audio && !settings.audio_virtual.running {
+            bail!(
+                "Tarsier Microphone is unavailable; wait for audio output or turn it off to record video only"
+            );
         }
         let directory = directory()?;
         tokio::fs::create_dir_all(&directory).await?;
@@ -119,25 +132,61 @@ impl Recorder {
             (config.width, config.height),
         );
         metadata["output"]["recording_fps"] = serde_json::json!(config.fps);
-        let child = Command::new("ffmpeg")
+        metadata["output"]["recording_audio"] = serde_json::json!(audio);
+        let mut command = Command::new("ffmpeg");
+        command
             .args([
                 "-hide_banner",
                 "-loglevel",
                 "error",
                 "-n",
+                "-thread_queue_size",
+                "512",
                 "-f",
-                "v4l2",
-                "-input_format",
-                "yuyv422",
+                "rawvideo",
+                "-use_wallclock_as_timestamps",
+                "1",
+                "-pixel_format",
+                "bgr0",
                 "-video_size",
             ])
             .arg(format!("{}x{}", config.width, config.height))
             .arg("-framerate")
             .arg(config.fps.to_string())
             .arg("-i")
-            .arg(&config.output_device)
+            .arg("pipe:0");
+        if audio {
+            command.args([
+                "-thread_queue_size",
+                "512",
+                "-f",
+                "pulse",
+                "-isync",
+                "0",
+                "-name",
+                "Tarsier recording",
+                "-sample_rate",
+                "48000",
+                "-channels",
+                "2",
+                "-i",
+                crate::audio::VIRTUAL_SOURCE,
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "192k",
+                "-af",
+                "aresample=async=1",
+            ]);
+        } else {
+            command.args(["-map", "0:v:0", "-an"]);
+        }
+        let mut child = command
             .args([
-                "-an",
                 "-c:v",
                 "libx264",
                 "-preset",
@@ -158,9 +207,30 @@ impl Recorder {
             .kill_on_drop(true)
             .spawn()
             .context("Could not start FFmpeg")?;
+        let mut stdin = child
+            .stdin
+            .take()
+            .context("FFmpeg video input is missing")?;
+        state.writer = Some(tokio::spawn(async move {
+            loop {
+                if frames.changed().await.is_err() {
+                    break;
+                }
+                let frame = frames.borrow_and_update().clone();
+                if let Some(frame) = frame {
+                    let Ok(map) = frame.into_mapped_buffer_readable() else {
+                        break;
+                    };
+                    if stdin.write_all(map.as_slice()).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        }));
         state.child = Some(child);
         state.status = RecordingStatus {
             active: true,
+            audio,
             started_at_ms: Some(started),
             path: Some(path),
             url: Some(format!("/api/v1/video/recordings/{filename}")),
@@ -186,13 +256,20 @@ impl Recorder {
         let Some(mut child) = state.child.take() else {
             return Ok(state.status.clone());
         };
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(b"q\n").await;
+        // The owned, unreaped child cannot have its PID reused. SIGINT asks
+        // FFmpeg to flush both encoders and write the MP4 trailer.
+        if let Some(pid) = child.id() {
+            unsafe {
+                nix::libc::kill(pid as i32, nix::libc::SIGINT);
+            }
+        }
+        if let Some(writer) = state.writer.take() {
+            writer.abort();
         }
         let result = tokio::time::timeout(Duration::from_secs(20), child.wait()).await;
         state.status.active = false;
         match result {
-            Ok(Ok(status)) if status.success() => {}
+            Ok(Ok(status)) if status.success() || status.code() == Some(255) => {}
             other => {
                 let _ = child.kill().await;
                 state.status.url = None;
@@ -220,6 +297,23 @@ mod tests {
         }
     }
     #[tokio::test]
+    async fn unavailable_enabled_audio_is_not_silently_omitted() {
+        let recorder = Recorder::default();
+        let mut settings = RuntimeState::default();
+        settings.audio_virtual.enabled = true;
+        let error = recorder
+            .start(&VideoConfig::default(), &settings, watch::channel(None).1)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Tarsier Microphone is unavailable")
+        );
+        assert!(!recorder.status().await.active);
+    }
+
+    #[tokio::test]
     async fn stop_is_idle_safe_and_missing_loopback_is_rejected() {
         let recorder = Recorder::default();
         assert!(!recorder.stop().await.unwrap().active);
@@ -229,7 +323,7 @@ mod tests {
         };
         assert!(
             recorder
-                .start(&config, &RuntimeState::default())
+                .start(&config, &RuntimeState::default(), watch::channel(None).1)
                 .await
                 .is_err()
         );
@@ -237,7 +331,11 @@ mod tests {
         recorder.shutdown().await;
         assert!(
             recorder
-                .start(&VideoConfig::default(), &RuntimeState::default())
+                .start(
+                    &VideoConfig::default(),
+                    &RuntimeState::default(),
+                    watch::channel(None).1
+                )
                 .await
                 .unwrap_err()
                 .to_string()

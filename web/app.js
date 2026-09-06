@@ -1736,7 +1736,9 @@ function renderRecording() {
   recordVideo.textContent = recordingPending ? (active ? "Saving video…" : "Starting…") : active ? `Stop recording · ${elapsed}` : "Record video";
   if (active) {
     recordingStatus.hidden = false;
-    recordingStatus.textContent = "Recording video without audio · Includes current video effects.";
+    recordingStatus.textContent = recordingState.audio
+      ? "Recording video with Tarsier Microphone · Includes current video effects."
+      : "Recording video without audio · Audio output was off at start.";
     recordingStatusKey = null;
   } else if (recordingState?.error) {
     recordingStatus.hidden = false;

@@ -1850,7 +1850,15 @@ async fn start_recording(State(state): State<ApiState>, Json(_): Json<Value>) ->
         )
             .into_response();
     }
-    match state.recorder.start(&state.config.video, &settings).await {
+    match state
+        .recorder
+        .start(
+            &state.config.video,
+            &settings,
+            state.preview.subscribe_recording(),
+        )
+        .await
+    {
         Ok(status) => (StatusCode::CREATED, Json(status)).into_response(),
         Err(error) => command_error(error),
     }
@@ -3123,7 +3131,15 @@ async fn set_virtual_audio(
     State(state): State<ApiState>,
     Json(request): Json<VirtualAudioRequest>,
 ) -> Response {
+    let _video_guard = state.video_output_control.lock().await;
     let _guard = state.audio_settings_control.lock().await;
+    let recording = state.recorder.status().await;
+    if request.enabled == Some(false) && recording.active && recording.audio {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "Mute output to silence the recording, or stop recording before turning audio output off"})),
+        ).into_response();
+    }
     if let Some(source) = &request.source {
         match crate::audio::sources().await {
             Ok(sources) if sources.iter().any(|s| &s.id == source) => {}
