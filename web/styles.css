@@ -197,7 +197,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 #record-video.recording { background: var(--red); color: #0a0d0a; }
 
 .preview-overlay-tools { position: absolute; bottom: .5rem; right: .5rem; z-index: 3; display: flex; flex-direction: column; gap: .25rem; }
-.preview-overlay-tools button { display: grid; place-items: center; width: 1.25rem; height: 1.25rem; padding: 0; border: 1px solid #ffffff30; border-radius: .3rem; background: #111713d9; color: #f2f5ef; backdrop-filter: blur(8px); box-shadow: 0 2px 8px #0004; }
+.preview-overlay-tools button { display: grid; place-items: center; width: 1.875rem; height: 1.875rem; padding: 0; border: 1px solid #ffffff30; border-radius: .45rem; background: #111713d9; color: #f2f5ef; backdrop-filter: blur(8px); box-shadow: 0 2px 8px #0004; }
 .preview-overlay-tools button:hover:not(:disabled) { background: #273229; }
 .preview-overlay-tools button[aria-pressed="true"] { background: var(--green); border-color: var(--green); color: #0a0d0a; }
 .preview-overlay-tools button[aria-pressed="true"]:hover:not(:disabled) { background: #c9f59e; }

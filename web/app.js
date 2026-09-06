@@ -1562,7 +1562,7 @@ for (const button of document.querySelectorAll("[data-video-rotation]")) {
 $("#video-mirror").addEventListener("change", (event) => void setVideoTransform({ ...videoTransform(), mirror: event.target.checked }));
 
 for (const [button, icon] of [[$("#preview-mirror"), FlipHorizontal2], [skeletonToggle, Bone]]) {
-  button.append(createElement(icon, { width: 10, height: 10, "aria-hidden": "true", focusable: "false" }));
+  button.append(createElement(icon, { width: 15, height: 15, "aria-hidden": "true", focusable: "false" }));
 }
 $("#preview-mirror").addEventListener("click", () => setPreviewMirror(!previewMirrorEnabled));
 setPreviewMirror(previewMirrorEnabled);
