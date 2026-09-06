@@ -4,6 +4,7 @@ const audioFold = document.querySelector('#audio-fold');
 audioFold.prepend(createElement(ChevronDown, { width: 18, height: 18, 'aria-hidden': 'true', focusable: 'false' }));
 function foldAudio(folded) {
   document.querySelector('#audio-inputs').hidden = folded;
+  document.querySelector('#audio-folded-source').hidden = !folded;
   audioFold.setAttribute('aria-expanded', String(!folded));
   audioFold.title = folded ? 'Show audio inputs' : 'Hide audio inputs';
   try { localStorage.setItem('tarsier.audio.folded', String(folded)); } catch {}
@@ -191,6 +192,10 @@ let virtualPending = false;
 
 function renderOutput() {
   const selected = virtualState.source || '';
+  const sourceLabel = document.querySelector('#audio-folded-source');
+  const input = tracks.get(selected);
+  sourceLabel.textContent = selected ? `${input?.name || selected}${input?.unavailable ? ' · Disconnected' : ''}` : 'No input selected';
+  sourceLabel.title = sourceLabel.textContent;
   for (const track of tracks.values()) {
     if (track.outputRadio) {
       track.outputRadio.checked = track.id === selected;
@@ -411,9 +416,9 @@ async function refresh() {
     if (!response.ok) throw new Error(sources.error || 'Audio discovery unavailable');
     status.textContent = sources.length ? '' : 'No microphones detected. Connect an audio input to get started.';
     status.hidden = sources.length > 0;
-    renderOutput();
     for (const source of sources) {
       const track = tracks.get(source.id) || create(source);
+      track.name = source.name;
       track.row.querySelector('strong').textContent = source.name;
       track.row.querySelector('strong').title = source.name;
       track.muted = source.muted;
@@ -428,6 +433,7 @@ async function refresh() {
         syncTrack(track);
       }
     }
+    renderOutput();
   } catch (error) {
     status.hidden = false;
     status.textContent = error.message;

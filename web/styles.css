@@ -287,3 +287,5 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 
 .audio-source-choice { display: inline-flex; align-items: center; justify-content: center; align-self: center; flex: 0 0 18px; height: 18px; pointer-events: auto; cursor: pointer; }
 .audio-source-choice input { width: 12px; height: 12px; margin: 0; accent-color: var(--green); cursor: pointer; }
+
+#audio-folded-source { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .75rem; color: var(--muted); }
