@@ -157,6 +157,7 @@ pub fn router_with_controls(
         )
         .route("/api/v1/audio/sources", get(audio_sources))
         .route("/api/v1/audio/meter", get(audio_meter))
+        .route("/api/v1/audio/capture", post(set_audio_capture))
         .route("/assets/lucide.js", get(lucide_js))
         .route("/assets/styles.css", get(styles_css))
         .route("/api/v1/health", get(health))
@@ -1410,7 +1411,12 @@ async fn take_photo(State(state): State<ApiState>) -> Response {
         Ok(Ok(path)) => {
             let filename = path.file_name().unwrap().to_string_lossy();
             let url = format!("/api/v1/camera/photos/{filename}");
-            (StatusCode::CREATED, Json(json!({"path": path, "url": url}))).into_response()
+            let photo = json!({"path": path, "url": url});
+            state
+                .runtime
+                .update(|current| current.last_photo = Some(photo.clone()))
+                .await;
+            (StatusCode::CREATED, Json(photo)).into_response()
         }
         Ok(Err(error)) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -2846,15 +2852,61 @@ async fn activate_scenario(state: &ApiState, scenario: &ScenarioConfig, trigger_
         .await;
 }
 
-async fn audio_sources() -> Response {
+async fn audio_sources(State(state): State<ApiState>) -> Response {
     match crate::audio::sources().await {
-        Ok(sources) => Json(sources).into_response(),
+        Ok(sources) => {
+            let enabled = state.runtime.state().await.audio_capture_sources;
+            Json(
+                sources
+                    .into_iter()
+                    .map(|source| {
+                        json!({
+                            "id": source.id, "name": source.name, "muted": source.muted,
+                            "enabled": enabled.contains(&source.id),
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .into_response()
+        }
         Err(error) => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({"error": error.to_string()})),
         )
             .into_response(),
     }
+}
+
+#[derive(Deserialize)]
+struct AudioCaptureRequest {
+    source: String,
+    enabled: bool,
+}
+
+async fn set_audio_capture(
+    State(state): State<ApiState>,
+    Json(request): Json<AudioCaptureRequest>,
+) -> Response {
+    if request.enabled {
+        match crate::audio::sources().await {
+            Ok(sources) if sources.iter().any(|source| source.id == request.source) => {}
+            Ok(_) => return StatusCode::NOT_FOUND.into_response(),
+            Err(error) => return command_error(error),
+        }
+    }
+    state
+        .runtime
+        .update(|current| {
+            current
+                .audio_capture_sources
+                .retain(|source| source != &request.source);
+            if request.enabled {
+                current.audio_capture_sources.push(request.source.clone());
+                current.audio_capture_sources.sort();
+            }
+        })
+        .await;
+    Json(json!({"source": request.source, "enabled": request.enabled})).into_response()
 }
 
 async fn audio_meter(
@@ -2868,7 +2920,13 @@ async fn audio_meter(
     match crate::audio::sources().await {
         Ok(sources) if sources.iter().any(|item| &item.id == source) => {
             let source = source.clone();
-            websocket.on_upgrade(move |socket| crate::audio::stream(socket, source, state.shutdown))
+            let states = state.runtime.subscribe_state();
+            if !states.borrow().audio_capture_sources.contains(&source) {
+                return StatusCode::CONFLICT.into_response();
+            }
+            websocket.on_upgrade(move |socket| {
+                crate::audio::stream(socket, source, state.shutdown, states)
+            })
         }
         Ok(_) => StatusCode::NOT_FOUND.into_response(),
         Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
@@ -2879,13 +2937,23 @@ async fn events_socket(
     websocket: WebSocketUpgrade,
     State(state): State<ApiState>,
 ) -> impl IntoResponse {
-    websocket.on_upgrade(move |socket| stream_events(socket, state.runtime, state.shutdown))
+    websocket.on_upgrade(move |socket| {
+        stream_events(socket, state.runtime, state.shutdown, state.recorder)
+    })
 }
 
-async fn stream_events(socket: WebSocket, runtime: Runtime, mut shutdown: watch::Receiver<bool>) {
+async fn stream_events(
+    socket: WebSocket,
+    runtime: Runtime,
+    mut shutdown: watch::Receiver<bool>,
+    recorder: crate::recording::Recorder,
+) {
     let (mut sender, mut receiver) = socket.split();
     let mut events = runtime.subscribe_events();
     let mut states = runtime.subscribe_state();
+    let mut recording_tick = tokio::time::interval(std::time::Duration::from_millis(250));
+    recording_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut last_recording = None;
 
     let initial = json!({"type": "state", "data": states.borrow().clone()});
     if sender
@@ -2901,6 +2969,16 @@ async fn stream_events(socket: WebSocket, runtime: Runtime, mut shutdown: watch:
             changed = shutdown.changed() => {
                 if changed.is_err() || *shutdown.borrow() {
                     break;
+                }
+            },
+            _ = recording_tick.tick() => {
+                let recording = recorder.status().await;
+                if last_recording.as_ref() != Some(&recording) {
+                    let payload = json!({"type": "recording", "data": recording});
+                    if sender.send(Message::Text(payload.to_string().into())).await.is_err() {
+                        break;
+                    }
+                    last_recording = Some(recording);
                 }
             },
             event = events.recv() => match event {
@@ -2945,6 +3023,59 @@ mod tests {
 
     use super::*;
     use crate::{camera, config::CameraAdapter, settings::UserSettings};
+
+    #[tokio::test]
+    async fn disabling_disconnected_audio_updates_all_clients_and_reconnects() {
+        let runtime = Runtime::new();
+        runtime
+            .update(|state| {
+                state.audio_capture_sources = vec!["disconnected-mic".into(), "other-mic".into()];
+                state.last_photo =
+                    Some(json!({"path": "/photos/test.jpg", "url": "/photos/test.jpg"}));
+            })
+            .await;
+        let mut first = runtime.subscribe_state();
+        let mut second = runtime.subscribe_state();
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = router(
+            Config::default(),
+            runtime.clone(),
+            PreviewHub::new(),
+            None,
+            shutdown_rx,
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/audio/capture")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"source":"disconnected-mic","enabled":false}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        for client in [&mut first, &mut second] {
+            tokio::time::timeout(Duration::from_secs(1), client.changed())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(client.borrow().audio_capture_sources, vec!["other-mic"]);
+            assert_eq!(
+                client.borrow().last_photo.as_ref().unwrap()["url"],
+                "/photos/test.jpg"
+            );
+        }
+        let reconnected = runtime.subscribe_state();
+        assert_eq!(
+            reconnected.borrow().audio_capture_sources,
+            vec!["other-mic"]
+        );
+        assert_eq!(reconnected.borrow().last_photo, first.borrow().last_photo);
+    }
 
     #[test]
     fn photos_are_saved_without_overwriting_and_write_errors_are_reported() {

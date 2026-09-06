@@ -76,7 +76,15 @@ fn measure(bytes: &[u8]) -> Level {
     level
 }
 
-pub async fn stream(socket: WebSocket, source: String, mut shutdown: watch::Receiver<bool>) {
+pub async fn stream(
+    socket: WebSocket,
+    source: String,
+    mut shutdown: watch::Receiver<bool>,
+    mut states: watch::Receiver<crate::model::RuntimeState>,
+) {
+    if !states.borrow().audio_capture_sources.contains(&source) {
+        return;
+    }
     let (mut sender, mut receiver) = socket.split();
     let mut child = match Command::new("parec")
         .args([
@@ -112,6 +120,11 @@ pub async fn stream(socket: WebSocket, source: String, mut shutdown: watch::Rece
     loop {
         tokio::select! {
             _ = shutdown.changed() => break,
+            changed = states.changed() => {
+                if changed.is_err() || !states.borrow_and_update().audio_capture_sources.contains(&source) {
+                    break;
+                }
+            },
             incoming = receiver.next() => match incoming {
                 None | Some(Err(_)) | Some(Ok(Message::Close(_))) => break,
                 _ => {}

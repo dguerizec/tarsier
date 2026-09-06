@@ -12,6 +12,10 @@ pub struct RuntimeState {
     pub video_effects: VideoEffectsState,
     pub perception: PerceptionState,
     pub last_scenario: Option<ScenarioActivation>,
+    #[serde(default)]
+    pub audio_capture_sources: Vec<String>,
+    #[serde(default)]
+    pub last_photo: Option<Value>,
 }
 
 impl Default for RuntimeState {
@@ -24,6 +28,8 @@ impl Default for RuntimeState {
             video_effects: VideoEffectsState::default(),
             perception: PerceptionState::default(),
             last_scenario: None,
+            audio_capture_sources: Vec::new(),
+            last_photo: None,
         }
     }
 }

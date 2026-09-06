@@ -14,7 +14,7 @@ use crate::{
     model::{RuntimeState, unix_ms},
 };
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct RecordingStatus {
     pub active: bool,
     pub started_at_ms: Option<u64>,

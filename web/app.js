@@ -1,4 +1,4 @@
-import "/assets/audio.js";
+import { syncAudioCapture } from "/assets/audio.js";
 import { createElement, FolderOpen, FlipHorizontal2, Bone } from "/assets/lucide.js";
 
 const $ = (selector) => document.querySelector(selector);
@@ -771,6 +771,8 @@ function renderBackground(videoEffects) {
 function render(next) {
   observeDaemon(next.started_at_ms);
   state = next;
+  syncAudioCapture(next.audio_capture_sources || []);
+  if (next.last_photo) renderSavedPhoto(next.last_photo);
   renderVideoTransform();
   const camera = next.camera;
   const pipeline = next.pipeline;
@@ -900,10 +902,16 @@ function connect() {
   socket.addEventListener("message", ({ data }) => {
     const message = JSON.parse(data);
     if (message.type === "state") render(message.data);
+    if (message.type === "recording") {
+      recordingState = message.data;
+      renderRecording();
+    }
     if (message.type === "event") appendEvent(message.data);
   });
   socket.addEventListener("close", () => {
     socketConnected = false;
+    recordingState = null;
+    renderRecording();
     pipelineWasRunning = true;
     stopPreview();
     pipelineWasRunning = false;
@@ -1577,6 +1585,19 @@ loadPresets().catch(console.error);
 connect();
 checkDaemonInstance();
 
+let photoStatusKey = null;
+function renderSavedPhoto(photo) {
+  if (!photo?.url || photoStatusKey === photo.url) return;
+  const link = document.createElement("a");
+  link.href = photo.url;
+  link.textContent = photo.path;
+  link.target = "_blank";
+  link.rel = "noopener";
+  photoStatus.classList.remove("error");
+  photoStatus.replaceChildren("Saved: ", link, " ", ...localMediaOpenControls(photo.url, "photo"));
+  photoStatusKey = photo.url;
+}
+
 takePhoto.addEventListener("click", async () => {
   if (photoPending) return;
   photoPending = true;
@@ -1587,12 +1608,7 @@ takePhoto.addEventListener("click", async () => {
     const response = await fetch("/api/v1/camera/photos", { method: "POST" });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "Could not save photo");
-    const photoLink = document.createElement("a");
-    photoLink.href = payload.url;
-    photoLink.textContent = payload.path;
-    photoLink.target = "_blank";
-    photoLink.rel = "noopener";
-    photoStatus.replaceChildren("Saved: ", photoLink, " ", ...localMediaOpenControls(payload.url, "photo"));
+    renderSavedPhoto(payload);
   } catch (error) {
     photoStatus.classList.add("error");
     photoStatus.textContent = error instanceof Error ? error.message : String(error);
@@ -1695,22 +1711,6 @@ function renderRecording() {
   }
 }
 
-async function pollRecording() {
-  try {
-    if (!recordingPending) {
-      const response = await fetch("/api/v1/video/recording", { cache: "no-store" });
-      if (response.ok && !recordingPending) {
-        recordingState = await response.json();
-        renderRecording();
-      }
-    }
-  } catch {
-    // The daemon may be reconnecting after a restart.
-  } finally {
-    setTimeout(pollRecording, 1000);
-  }
-}
-
 recordVideo.addEventListener("click", async () => {
   if (recordingPending || !recordingState) return;
   recordingPending = true;
@@ -1729,7 +1729,7 @@ recordVideo.addEventListener("click", async () => {
     renderRecording();
   }
 });
-void pollRecording();
+
 
 function localMediaOpenControls(url, mediaName) {
   const fileLink = document.createElement("button");

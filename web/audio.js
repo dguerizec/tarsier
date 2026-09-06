@@ -1,18 +1,58 @@
 const tracks = new Map();
 const container = document.querySelector('#audio-tracks');
 const status = document.querySelector('#audio-status');
+let enabledSources = null;
+
+export function syncAudioCapture(sources) {
+  enabledSources = new Set(sources);
+  for (const track of tracks.values()) syncTrack(track);
+}
+
+function syncTrack(track) {
+  track.enabled = enabledSources?.has(track.id) ?? track.enabled;
+  track.buttons.forEach((button, index) => {
+    button.setAttribute('aria-pressed', String(index === (track.enabled ? 0 : 1)));
+    button.disabled = track.pending || (index === 0 && track.unavailable);
+  });
+  if (!track.enabled) {
+    stop(track);
+  } else if (!track.socket && Date.now() >= track.retryAt && !track.unavailable) {
+    start(track);
+  }
+}
+
+async function setCapture(track, enabled) {
+  if (track.pending) return;
+  track.pending = true;
+  track.retryAt = 0;
+  syncTrack(track);
+  try {
+    const response = await fetch('/api/v1/audio/capture', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source: track.id, enabled }),
+    });
+    if (!response.ok) throw new Error('Could not update audio capture');
+    // The shared state stream is authoritative, including concurrent changes.
+  } catch (error) {
+    track.label.textContent = error.message;
+  } finally {
+    track.pending = false;
+    syncTrack(track);
+  }
+}
 
 function stop(track, label = 'Capture off') {
   const socket = track.socket;
   track.socket = null;
   socket?.close();
   track.label.textContent = label;
-  track.buttons.forEach((button, index) => button.setAttribute('aria-pressed', String(index === 1)));
+  track.buttons.forEach((button, index) => button.setAttribute('aria-pressed', String(index === (track.enabled ? 0 : 1))));
   track.level = null;
 }
 
 function start(track) {
   stop(track);
+  track.retryAt = Date.now() + 5000;
   track.label.textContent = 'Connecting…';
   track.buttons.forEach((button, index) => button.setAttribute('aria-pressed', String(index === 0)));
   const url = new URL('/api/v1/audio/meter', location.href);
@@ -50,6 +90,7 @@ function create(source) {
     <span class="audio-peak">−∞ dBFS</span></div></div>`;
   const track = {
     id: source.id, row, history: [], level: null, socket: null, clipUntil: 0,
+    enabled: source.enabled === true, pending: false, unavailable: false, retryAt: 0,
     label: row.querySelector('.audio-track-state'), canvas: row.querySelector('canvas'),
     buttons: [...row.querySelectorAll('button')], meters: [...row.querySelectorAll('meter')],
     peak: row.querySelector('.audio-peak'),
@@ -57,8 +98,8 @@ function create(source) {
   row.querySelector('[role="group"]').setAttribute('aria-label', `${source.name} capture`);
   track.canvas.setAttribute('aria-label', `${source.name}: amplitude envelope over the last 10 seconds`);
   track.meters.forEach((meter, index) => meter.setAttribute('aria-label', `${source.name} ${index ? 'right' : 'left'} peak in dBFS`));
-  track.buttons[0].onclick = () => start(track);
-  track.buttons[1].onclick = () => stop(track);
+  track.buttons[0].onclick = () => void setCapture(track, true);
+  track.buttons[1].onclick = () => void setCapture(track, false);
   stop(track);
   container.append(row);
   tracks.set(source.id, track);
@@ -76,13 +117,15 @@ async function refresh() {
       const track = tracks.get(source.id) || create(source);
       track.row.querySelector('strong').textContent = source.name;
       track.muted = source.muted;
-      track.buttons[0].disabled = false;
-      if (!track.socket) track.label.textContent = source.muted ? 'Source muted · Capture off' : 'Capture off';
+      track.unavailable = false;
+      if (enabledSources == null) track.enabled = source.enabled === true;
+      syncTrack(track);
     }
     for (const [id, track] of tracks) {
       if (!sources.some((source) => source.id === id)) {
+        track.unavailable = true;
         stop(track, 'Disconnected');
-        track.buttons[0].disabled = true;
+        syncTrack(track);
       }
     }
   } catch (error) {
