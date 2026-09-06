@@ -37,6 +37,7 @@ use crate::{
 
 #[derive(Clone)]
 struct ApiState {
+    auth: Option<crate::auth::Auth>,
     recorder: crate::recording::Recorder,
     audio: Option<crate::audio::AudioHub>,
     config: Config,
@@ -81,6 +82,7 @@ impl DaemonRestart {
 
 #[derive(Default)]
 pub struct ApiOptions {
+    pub auth: Option<crate::auth::Auth>,
     pub audio: Option<crate::audio::AudioHub>,
     pub recorder: crate::recording::Recorder,
     pub pipeline: Option<VideoPipelineControl>,
@@ -122,7 +124,9 @@ pub fn router_with_controls(
     face_tracking.set_auto_zoom_enabled(options.auto_zoom_enabled, unix_ms());
     let mut hands_tracking = HandsTrackingController::default();
     hands_tracking.set_enabled(options.hands_tracking_enabled);
+    let auth = options.auth.clone();
     let state = ApiState {
+        auth: options.auth,
         recorder: options.recorder,
         audio: options.audio,
         stabilizer: Arc::new(Mutex::new(OpenPalmStabilizer::new(&config.perception))),
@@ -142,7 +146,7 @@ pub fn router_with_controls(
         audio_settings_control: Arc::new(Mutex::new(())),
         shutdown,
     };
-    Router::new()
+    let router = Router::new()
         .route("/", get(index))
         .route("/settings", get(settings_page))
         .route("/assets/logo.svg", get(logo_svg))
@@ -260,7 +264,17 @@ pub fn router_with_controls(
             post(open_saved_photo),
         )
         .layer(TraceLayer::new_for_http())
-        .with_state(state)
+        .with_state(state);
+    if let Some(auth) = auth {
+        router
+            .merge(crate::auth::routes(auth.clone()))
+            .layer(axum::middleware::from_fn_with_state(
+                auth,
+                crate::auth::guard,
+            ))
+    } else {
+        router
+    }
 }
 
 async fn index() -> impl IntoResponse {
@@ -3217,11 +3231,19 @@ async fn set_virtual_audio_locked(state: ApiState, request: VirtualAudioRequest)
 }
 
 async fn events_socket(
+    headers: HeaderMap,
     websocket: WebSocketUpgrade,
     State(state): State<ApiState>,
 ) -> impl IntoResponse {
     websocket.on_upgrade(move |socket| {
-        stream_events(socket, state.runtime, state.shutdown, state.recorder)
+        stream_events(
+            socket,
+            state.runtime,
+            state.shutdown,
+            state.recorder,
+            state.auth,
+            headers,
+        )
     })
 }
 
@@ -3230,6 +3252,8 @@ async fn stream_events(
     runtime: Runtime,
     mut shutdown: watch::Receiver<bool>,
     recorder: crate::recording::Recorder,
+    auth: Option<crate::auth::Auth>,
+    headers: HeaderMap,
 ) {
     let (mut sender, mut receiver) = socket.split();
     let mut events = runtime.subscribe_events();
@@ -3237,6 +3261,7 @@ async fn stream_events(
     let mut recording_tick = tokio::time::interval(std::time::Duration::from_millis(250));
     recording_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut last_recording = None;
+    let mut auth_tick = tokio::time::interval(std::time::Duration::from_secs(1));
 
     let initial = json!({"type": "state", "data": states.borrow().clone()});
     if sender
@@ -3254,6 +3279,10 @@ async fn stream_events(
                     break;
                 }
             },
+            _ = auth_tick.tick() => {
+                if let Some(auth) = &auth
+                    && !auth.allowed(&headers, "/api/v1/events", "GET").await { break; }
+            }
             _ = recording_tick.tick() => {
                 let recording = recorder.status().await;
                 if last_recording.as_ref() != Some(&recording) {

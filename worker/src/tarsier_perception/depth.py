@@ -16,6 +16,7 @@ from typing import Any
 import cv2
 import numpy as np
 
+from .auth import authorize
 from .avatar import VideoIdentityClient
 
 LOGGER = logging.getLogger(__name__)
@@ -225,7 +226,9 @@ class DepthPublisher:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:  # noqa: S310
+            with urllib.request.urlopen(  # noqa: S310
+                authorize(request), timeout=self._timeout_seconds
+            ) as response:
                 if response.status != 204:
                     raise RuntimeError(f"daemon returned HTTP {response.status}")
         except urllib.error.URLError as error:

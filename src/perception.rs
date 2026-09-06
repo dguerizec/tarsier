@@ -27,6 +27,7 @@ impl PerceptionSupervisor {
         video: VideoConfig,
         server_address: SocketAddr,
         runtime: Runtime,
+        worker_token: String,
     ) -> Option<Self> {
         if !config.enabled || !config.supervise_worker {
             return None;
@@ -37,7 +38,7 @@ impl PerceptionSupervisor {
             avatar,
             depth,
             video,
-            server_address,
+            (server_address, worker_token),
             runtime,
             receiver,
         ));
@@ -55,10 +56,11 @@ async fn supervise(
     avatar: AvatarConfig,
     depth: DepthConfig,
     video: VideoConfig,
-    server_address: SocketAddr,
+    connection: (SocketAddr, String),
     runtime: Runtime,
     mut shutdown: watch::Receiver<bool>,
 ) {
+    let (server_address, worker_token) = connection;
     let daemon_url = worker_daemon_url(server_address);
     let mut states = runtime.subscribe_state();
     loop {
@@ -82,6 +84,7 @@ async fn supervise(
         }
         let mut command = Command::new("uv");
         command
+            .env("TARSIER_API_TOKEN", &worker_token)
             .args(worker_arguments(
                 &config,
                 &avatar,

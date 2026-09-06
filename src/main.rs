@@ -1,6 +1,7 @@
 mod api;
 mod audio;
 mod audio_gain;
+mod auth;
 mod camera;
 mod config;
 mod effects;
@@ -46,10 +47,26 @@ enum Command {
         #[arg(long, default_value = "http://127.0.0.1:8742")]
         url: String,
     },
+    /// Manage the optional master password locally, including forgotten-password recovery.
+    Auth {
+        #[command(subcommand)]
+        command: AuthCommand,
+    },
     /// Validate and print the effective configuration.
     Config {
         #[arg(long)]
         config: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AuthCommand {
+    /// Set or reset the master password using a hidden interactive prompt.
+    SetPassword,
+    /// Disable authentication and revoke every client token.
+    Disable {
+        #[arg(long)]
+        confirm: bool,
     },
 }
 
@@ -63,8 +80,38 @@ async fn main() -> Result<()> {
 
     match Cli::parse().command {
         Command::Serve { config } => serve(config).await,
+        Command::Auth { command } => {
+            let auth = auth::Auth::new(auth::default_path()?, &auth::worker_token())?;
+            match command {
+                AuthCommand::SetPassword => {
+                    let password = rpassword::prompt_password("New master password: ")?;
+                    let confirmation = rpassword::prompt_password("Confirm master password: ")?;
+                    if password != confirmation {
+                        bail!("Passwords do not match");
+                    }
+                    auth.reset_password(&password)?;
+                    println!(
+                        "Master password updated. Existing web sessions are invalidated; client tokens are preserved."
+                    );
+                }
+                AuthCommand::Disable { confirm } => {
+                    if !confirm {
+                        bail!("Use --confirm to disable authentication and revoke every token");
+                    }
+                    auth.disable()?;
+                    println!("Authentication disabled and all client tokens revoked.");
+                }
+            }
+            Ok(())
+        }
         Command::Status { url } => {
-            let state: serde_json::Value = reqwest::get(format!("{url}/api/v1/state"))
+            let client = reqwest::Client::new();
+            let mut request = client.get(format!("{url}/api/v1/state"));
+            if let Ok(token) = std::env::var("TARSIER_API_TOKEN") {
+                request = request.bearer_auth(token);
+            }
+            let state: serde_json::Value = request
+                .send()
                 .await
                 .context("failed to reach Tarsier daemon")?
                 .error_for_status()?
@@ -82,6 +129,8 @@ async fn main() -> Result<()> {
 }
 
 async fn serve(path: Option<PathBuf>) -> Result<()> {
+    let worker_token = auth::worker_token();
+    let auth = auth::Auth::new(auth::default_path()?, &worker_token)?;
     let mut config = Config::load(path.as_deref())?;
     config.validate()?;
     let settings_path = settings::default_path()?;
@@ -194,6 +243,7 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
         preview,
         camera,
         api::ApiOptions {
+            auth: Some(auth),
             audio: Some(audio),
             recorder: recorder.clone(),
             pipeline: Some(pipeline_control),
@@ -216,28 +266,32 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
         config.video.clone(),
         config.server.bind,
         runtime,
+        worker_token,
     );
     tracing::info!(address = %config.server.bind, "Tarsier control surface is ready");
     let restart_requested = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let graceful_restart_requested = std::sync::Arc::clone(&restart_requested);
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            tokio::select! {
-                () = shutdown_signal() => {},
-                () = restart_signal(restart_rx) => {
-                    graceful_restart_requested
-                        .store(true, std::sync::atomic::Ordering::Relaxed);
-                }
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        tokio::select! {
+            () = shutdown_signal() => {},
+            () = restart_signal(restart_rx) => {
+                graceful_restart_requested
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
             }
-            recorder.shutdown().await;
-            let _ = shutdown_tx.send(true);
-            let _ = audio_task.await;
-            if let Some(perception) = perception {
-                // Stop the worker before Axum drains any remaining requests.
-                perception.shutdown().await;
-            }
-        })
-        .await?;
+        }
+        recorder.shutdown().await;
+        let _ = shutdown_tx.send(true);
+        let _ = audio_task.await;
+        if let Some(perception) = perception {
+            // Stop the worker before Axum drains any remaining requests.
+            perception.shutdown().await;
+        }
+    })
+    .await?;
     if restart_requested.load(std::sync::atomic::Ordering::Relaxed) {
         bail!("daemon restart requested");
     }

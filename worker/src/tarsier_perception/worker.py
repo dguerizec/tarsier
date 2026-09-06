@@ -17,6 +17,7 @@ import cv2
 import mediapipe as mp
 import numpy as np
 
+from .auth import authorize
 from .avatar import AvatarInputFrame, AvatarProcessor
 from .depth import DepthInputFrame, DepthProcessor
 
@@ -283,7 +284,9 @@ class ObservationPublisher:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:  # noqa: S310
+            with urllib.request.urlopen(  # noqa: S310
+                authorize(request), timeout=self._timeout_seconds
+            ) as response:
                 if response.status != 204:
                     raise RuntimeError(f"daemon returned HTTP {response.status}")
         except urllib.error.URLError as error:
@@ -306,7 +309,9 @@ class ObservationPublisher:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:  # noqa: S310
+            with urllib.request.urlopen(  # noqa: S310
+                authorize(request), timeout=self._timeout_seconds
+            ) as response:
                 if response.status != 204:
                     raise RuntimeError(f"daemon returned HTTP {response.status}")
         except urllib.error.URLError as error:
@@ -464,7 +469,7 @@ def read_mjpeg_parts(stream: BinaryIO) -> Iterator[tuple[dict[str, str], bytes]]
 def capture_mjpeg_frames(source: str, width: int, height: int) -> Iterator[SourceFrame]:
     request = urllib.request.Request(source, headers={"Cache-Control": "no-store"})
     try:
-        with urllib.request.urlopen(request, timeout=5.0) as response:  # noqa: S310
+        with urllib.request.urlopen(authorize(request), timeout=5.0) as response:  # noqa: S310
             for headers, encoded in read_mjpeg_parts(response):
                 frame = cv2.imdecode(np.frombuffer(encoded, dtype=np.uint8), cv2.IMREAD_COLOR)
                 if frame is None:

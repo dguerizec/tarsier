@@ -944,7 +944,13 @@ function connect() {
     connection.textContent = "Reconnecting";
     connection.className = "status status-off";
     syncDaemonRestartControl();
-    setTimeout(connect, 1000);
+    fetch("/api/v1/auth/status", { cache: "no-store" })
+      .then(response => response.json())
+      .then(auth => {
+        if (auth.enabled && !auth.admin) location.assign("/login");
+        else setTimeout(connect, 1000);
+      })
+      .catch(() => setTimeout(connect, 1000));
   });
 }
 

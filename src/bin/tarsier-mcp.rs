@@ -67,7 +67,16 @@ impl TarsierGateway {
         if parsed.scheme() != "http" && parsed.scheme() != "https" {
             anyhow::bail!("daemon URL must use HTTP or HTTPS");
         }
-        let client = Client::builder().timeout(Duration::from_secs(5)).build()?;
+        let mut headers = reqwest::header::HeaderMap::new();
+        if let Ok(token) = std::env::var("TARSIER_API_TOKEN") {
+            let mut value = reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))?;
+            value.set_sensitive(true);
+            headers.insert(reqwest::header::AUTHORIZATION, value);
+        }
+        let client = Client::builder()
+            .default_headers(headers)
+            .timeout(Duration::from_secs(5))
+            .build()?;
         Ok(Self { client, daemon_url })
     }
 

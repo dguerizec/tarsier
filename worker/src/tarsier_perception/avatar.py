@@ -18,6 +18,8 @@ import cv2
 import mediapipe as mp
 import numpy as np
 
+from .auth import authorize
+
 LOGGER = logging.getLogger(__name__)
 
 
@@ -246,7 +248,9 @@ class AvatarPublisher:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:  # noqa: S310
+            with urllib.request.urlopen(  # noqa: S310
+                authorize(request), timeout=self._timeout_seconds
+            ) as response:
                 if response.status != 204:
                     raise RuntimeError(f"daemon returned HTTP {response.status}")
         except urllib.error.URLError as error:
@@ -292,7 +296,9 @@ class VideoIdentityClient:
         self._next_refresh = now + self._refresh_seconds
         request = urllib.request.Request(self._url, method="GET")
         try:
-            with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:  # noqa: S310
+            with urllib.request.urlopen(  # noqa: S310
+                authorize(request), timeout=self._timeout_seconds
+            ) as response:
                 payload = json.load(response)
             identity = payload.get("identity")
             if identity not in {"camera", "stylized-3d", "portrait3d", "liveportrait", "depth-map"}:

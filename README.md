@@ -410,10 +410,83 @@ The port stays as configured. From a laptop on the same network, open
 worker still connects over loopback. Select **Local only** to disable remote
 access. Network changes require supervision and are blocked while recording.
 
-There is no authentication: anyone able to reach the port can view the video,
-access saved media, and control the daemon. Use this configuration only on a
-trusted network; keep port 8742 off the public Internet. Folder buttons act on
-the camera host's desktop, even when clicked from another computer.
+Authentication is optional. Until a master password is set, anyone able to
+reach the port can view video, access saved media, and control the daemon.
+Configure access protection in **Settings** before sharing access. Folder
+buttons act on the camera host's desktop, even from another computer.
+
+### Master password and client tokens
+
+In **Settings → Access protection**, set, change, or disable the master
+password. The first password must be set from the camera computer over a
+loopback connection, or with the local CLI. Once set, protection applies
+immediately to all operator API routes, media, MJPEG, and WebSocket streams.
+The login page, static UI assets, and authentication status remain public.
+There are no user accounts.
+
+Web clients sign in with the master password and receive a 12-hour HttpOnly,
+SameSite=Strict session cookie (also Secure when signing in over HTTPS).
+Passwords use salted Argon2id hashes. Password changes invalidate all previous
+web sessions but preserve client tokens. Sessions also end on daemon restart.
+Disabling protection revokes all tokens and makes the API public again.
+
+In **Settings → API tokens**, create a named token for each client, such as
+Stream Deck or MCP. Copy it when created: only its SHA-256 hash is stored;
+the secret cannot be displayed again. Tokens allow operator API access but
+cannot administer passwords or tokens. Revoke a token to remove that client's
+access. Existing MJPEG and WebSocket connections recheck authorization every
+second. In-flight commands cannot be undone by revocation.
+
+Send client tokens in `Authorization: Bearer <token>`, never in a URL:
+
+```sh
+curl -fsS http://127.0.0.1:8742/api/v1/state \
+  -H "Authorization: Bearer $TARSIER_API_TOKEN"
+```
+
+Set `TARSIER_API_TOKEN` in the environment of `tarsier-mcp`, `tarsier status`,
+or a manually launched perception worker. The daemon automatically provisions
+its supervised worker with an ephemeral credential restricted to perception
+input/output and reading the selected video identity. It keeps working when
+protection is enabled, without a manually created token.
+
+For forgotten-password recovery, run the CLI as the same OS user as the daemon:
+
+```sh
+tarsier auth set-password
+```
+
+This prompts twice without echoing the password. It sets or resets the master
+password without requiring the old password, takes effect without restarting,
+and preserves API tokens. To explicitly remove all protection and revoke tokens:
+
+```sh
+tarsier auth disable --confirm
+```
+
+Credentials are written atomically with mode `0600` to `auth.json` beside the
+user settings file, normally `~/.local/state/tarsier/auth.json`. Set
+`TARSIER_AUTH_PATH` to override this location; daemon and CLI must use the same
+path. A malformed authentication file fails closed.
+
+HTTP does not encrypt passwords, cookies, or tokens. Use HTTPS through a
+reverse proxy or an encrypted tunnel on untrusted networks. A proxy must
+preserve the public Host header for same-origin checks. Do not expose the
+plain HTTP listener to the public Internet.
+
+| Method | Authentication path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/v1/auth/status` | Protection enabled and current browser admin-session status |
+| `POST` | `/api/v1/auth/login` | Sign in with `{ "password": "…" }` |
+| `POST` | `/api/v1/auth/logout` | End the current browser session |
+| `POST` | `/api/v1/auth/password` | Set/change password; include `current_password` when enabled; an empty new password disables protection |
+| `GET` / `POST` | `/api/v1/auth/tokens` | List tokens or create one with `{ "name": "Stream Deck" }`; requires a master session |
+| `POST` | `/api/v1/auth/tokens/{id}/revoke` | Revoke a token; requires a master session |
+
+Authentication POST routes require `X-Tarsier-Request: 1` and JSON. Browser
+requests must be same-origin. Login attempts are throttled to one per second.
+
+### Operator routes
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -741,7 +814,7 @@ run before unattended use.
   persisted, while transient telemetry and other hardware controls are not;
 - UI restart is offered only when systemd supervision is detected and relies on
   the unit's restart policy; it is deliberately unavailable for foreground runs;
-- the API has no authentication; wildcard binding is intended for trusted LAN
+- authentication is optional; unprotected wildcard binding is intended for trusted LAN
   access only;
 - there is no system service, release packaging, multi-camera support, or
   production soak test yet.

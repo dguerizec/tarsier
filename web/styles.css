@@ -208,7 +208,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .header-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: .75rem; }
 .header-actions .status { white-space: nowrap; }
 .settings-link { color: var(--green); font-size: .85rem; text-underline-offset: .2rem; }
-.settings-page { display: block; max-width: 48rem; margin: 0 auto; }
+.settings-page { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1rem; max-width: 48rem; margin: 0 auto; }
 .settings-page .panel { padding: 1.5rem; }
 .settings-page p { margin: .8rem 0; color: var(--muted); font-size: .85rem; line-height: 1.5; }
 .settings-page fieldset { border: 0; padding: 0; margin: 1.5rem 0 1rem; }
@@ -313,3 +313,23 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .audio-gain-controls button { font-size: .65rem; padding: .2rem .4rem; }
 
 .audio-meters .audio-max.clipping { color: #f37878; }
+
+/* Authentication controls share the settings panel palette and spacing. */
+.settings-page label:has(input[type="password"]),
+#token-form > label { display: grid; gap: .4rem; color: var(--muted); font-size: .85rem; }
+.settings-page input[type="password"],
+#token-form input, #token-value {
+  display: block; width: 100%; box-sizing: border-box; padding: .7rem .8rem;
+  background: #0a0e0c; color: #f2f5ef; border: 1px solid var(--panel-edge);
+  border-radius: .5rem; font: inherit;
+}
+.settings-page input:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+#token-form { display: flex; gap: .75rem; align-items: end; flex-wrap: wrap; }
+#token-form > label { flex: 1 1 12rem; }
+#password-form > button, #new-token > button { margin: .3rem .25rem .3rem 0; }
+#password-disable { background: #301c19; color: var(--red); }
+#auth-logout, #token-dismiss, #token-list button { background: #273229; color: #f2f5ef; }
+#token-list { list-style: none; padding: 0; }
+#token-list li { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .8rem 0; border-bottom: 1px solid var(--panel-edge); }
+#token-list span { overflow-wrap: anywhere; min-width: 0; font-size: .85rem; }
+#login-form > button { margin-top: 1rem; }

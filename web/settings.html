@@ -13,6 +13,36 @@
       <a class="settings-link" href="/">Back to preview</a>
     </header>
     <main class="settings-page">
+      <section class="panel" aria-labelledby="security-heading">
+        <h2 id="security-heading">Access protection</h2>
+        <p id="auth-summary">Loading access settings…</p>
+        <form id="password-form">
+          <p id="current-password-row" hidden><label>Current master password <input name="current_password" type="password" autocomplete="current-password" maxlength="1024"></label></p>
+          <p><label>New master password <input name="password" type="password" autocomplete="new-password" minlength="12" maxlength="1024" required></label></p>
+          <p><label>Confirm new password <input name="confirmation" type="password" autocomplete="new-password" minlength="12" maxlength="1024" required></label></p>
+          <p>Use at least 12 characters. Enabling protection requires all clients to authenticate immediately.</p>
+          <button id="password-save" type="submit" disabled>Set master password</button>
+          <button id="password-disable" type="button" hidden>Disable protection</button>
+          <button id="auth-logout" type="button" hidden>Sign out</button>
+        </form>
+        <p id="auth-status" role="status" aria-live="polite"></p>
+      </section>
+      <section class="panel" aria-labelledby="tokens-heading">
+        <h2 id="tokens-heading">API tokens</h2>
+        <p>Set a master password to create tokens. Tokens can control Tarsier and access media, but cannot manage passwords or tokens.</p>
+        <form id="token-form">
+          <label>Client name <input name="name" required maxlength="80" placeholder="Stream Deck"></label>
+          <button id="token-create" type="submit" disabled>Create token</button>
+        </form>
+        <div id="new-token" hidden>
+          <p>Copy this token now. It will only be shown once.</p>
+          <input id="token-value" aria-label="New API token" readonly style="width:100%;font-family:monospace">
+          <button id="token-copy" type="button">Copy token</button>
+          <button id="token-dismiss" type="button">Done</button>
+        </div>
+        <ul id="token-list"></ul>
+        <p id="token-status" role="status" aria-live="polite"></p>
+      </section>
       <section class="panel" aria-labelledby="network-heading">
         <h2 id="network-heading">Network access</h2>
         <p>Choose which devices can open the preview and camera controls.</p>
@@ -25,7 +55,7 @@
             </div>
           </fieldset>
           <p id="network-description">Loading settings…</p>
-          <p class="network-notice">There is no password protection. Network access includes the live video, saved media, and camera controls. Use a trusted network.</p>
+          <p class="network-notice">Network access includes live video, saved media, and camera controls. Enable access protection before sharing access. HTTP does not encrypt passwords or tokens; use HTTPS or an encrypted tunnel on untrusted networks.</p>
           <p id="network-address"></p>
           <button id="network-save" type="submit" disabled>Save and restart</button>
           <p id="network-status" role="status" aria-live="polite"></p>

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · Tarsier</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <header><div><p class="eyebrow">TARSIER</p><h1>Sign in</h1></div></header>
+  <main class="settings-page"><section class="panel">
+    <form id="login-form">
+      <label>Master password <input name="password" type="password" autocomplete="current-password" required maxlength="1024"></label>
+      <button type="submit">Sign in</button>
+      <p id="login-status" role="status" aria-live="polite"></p>
+    </form>
+    <p>Forgot your password? On the camera computer, run <code>tarsier auth set-password</code>.</p>
+  </section></main>
+  <script type="module">
+    const form = document.querySelector('#login-form');
+    const status = document.querySelector('#login-status');
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      const button = form.querySelector('button');
+      button.disabled = true;
+      try {
+        const response = await fetch('/api/v1/auth/login', {
+          method: 'POST', headers: {'Content-Type': 'application/json', 'X-Tarsier-Request': '1'},
+          body: JSON.stringify({password: form.elements.password.value}),
+        });
+        if (!response.ok) throw new Error((await response.json()).error || 'Sign in failed');
+        form.reset();
+        location.replace('/settings');
+      } catch (error) { status.textContent = error.message; }
+      finally { button.disabled = false; }
+    });
+    fetch('/api/v1/auth/status').then(r => r.json()).then(state => {
+      if (!state.enabled || state.admin) location.replace('/settings');
+    }).catch(() => { status.textContent = 'Could not reach Tarsier'; });
+  </script>
+</body>
+</html>
