@@ -176,7 +176,7 @@ impl Recorder {
                 "-channels",
                 "2",
                 "-i",
-                crate::audio::VIRTUAL_SOURCE,
+                &settings.audio_virtual.output_id,
                 "-map",
                 "0:v:0",
                 "-map",

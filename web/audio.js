@@ -142,6 +142,12 @@ applicationsDialog.addEventListener('click', (event) => {
 
 function renderReservation(track) {
   if (track.id === virtualId) return;
+  if (!audioConfig.audio.reserve_inputs) {
+    track.reserveButton.disabled = true;
+    track.reserveButton.title = 'Shared input';
+    track.reserveButton.setAttribute('aria-label', 'Shared input');
+    return;
+  }
   const released = releasedSources.has(track.id);
   const reservation = reservations[track.id];
   const transitioning = track.reservationPending
@@ -186,7 +192,11 @@ async function setExclusive(track) {
     renderReservation(track);
   }
 }
-const virtualId = 'tarsier_microphone';
+const audioConfig = await fetch('/api/v1/config').then((response) => {
+  if (!response.ok) throw new Error('Could not load audio policy');
+  return response.json();
+});
+const virtualId = audioConfig.audio.virtual_source;
 const outputError = document.querySelector('#audio-output-error');
 let virtualState = { enabled: false, muted: false, source: null, running: false };
 let virtualPending = false;
@@ -207,7 +217,8 @@ function renderOutput() {
     const on = virtualState.enabled;
     button.setAttribute('aria-pressed', String(on));
     button.textContent = on ? 'On' : 'Off';
-    button.disabled = virtualPending || (!on && !selected);
+    button.disabled = !audioConfig.audio.virtual_output_enabled || virtualPending || (!on && !selected);
+    button.title = audioConfig.audio.virtual_output_enabled ? '' : 'Output unavailable in this development profile';
   });
   document.querySelectorAll('[data-audio-mute]').forEach((button) => {
     button.setAttribute('aria-pressed', String(virtualState.muted));
@@ -282,7 +293,7 @@ function syncTrack(track) {
     button.setAttribute('aria-pressed', String(track.enabled));
     button.textContent = track.enabled ? 'On' : 'Off';
     button.disabled = track.id === virtualId
-      ? virtualPending || (!virtualState.enabled && !virtualState.source)
+      ? !audioConfig.audio.virtual_output_enabled || virtualPending || (!virtualState.enabled && !virtualState.source)
       : track.pending || (!track.enabled && track.unavailable);
   });
   if (!track.enabled) {
@@ -523,7 +534,7 @@ function draw(now) {
   requestAnimationFrame(draw);
 }
 
-create({ id: virtualId, name: 'Tarsier Microphone · Output' });
+create({ id: virtualId, name: `${virtualId.replaceAll('_', ' ')} · Output` });
 refresh();
 const refreshTimer = setInterval(refresh, 5000);
 requestAnimationFrame(draw);

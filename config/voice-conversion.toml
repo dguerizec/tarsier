@@ -1,0 +1,35 @@
+# Isolated input-only baseline. Never publish on main's PipeWire graph yet:
+# main automatically attempts to reserve every newly discovered source.
+[server]
+bind = "127.0.0.1:8743"
+
+[audio]
+reserve_inputs = false
+allowed_sources = ["tarsier_microphone"]
+virtual_source = "tarsier_voice_conversion"
+virtual_output_enabled = false
+set_default_source = false
+
+[video]
+source = "test"
+input_device = "/dev/null"
+output_device = "/dev/null"
+loopback_enabled = false
+width = 1280
+height = 720
+fps = 30
+
+[camera]
+adapter = "mock"
+control_device = "/dev/null"
+
+[perception]
+enabled = false
+supervise_worker = false
+device = "/dev/null"
+
+[avatar]
+enabled = false
+
+[depth]
+enabled = false
