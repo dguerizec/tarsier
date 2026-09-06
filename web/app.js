@@ -171,8 +171,8 @@ const cameraControlsAvailable = (camera) => camera.available && cameraIsPowered(
 
 function buildImageSettingsUi() {
   imageSettingsGroups.innerHTML = imageSettingGroups.map((group) => `
-    <section class="image-settings-group" aria-labelledby="image-settings-${group.label.toLowerCase().replaceAll(" ", "-")}">
-      <h4 id="image-settings-${group.label.toLowerCase().replaceAll(" ", "-")}">${group.label}</h4>
+    <details class="image-settings-group" open>
+      <summary><h4>${group.label}</h4></summary>
       ${group.controls.map((definition) => `
         <div class="image-setting-row kind-${definition.kind}" data-image-setting-row="${definition.control}">
           <div class="image-setting-copy">
@@ -196,7 +196,7 @@ function buildImageSettingsUi() {
           </div>
         </div>
       `).join("")}
-    </section>
+    </details>
   `).join("");
 }
 
