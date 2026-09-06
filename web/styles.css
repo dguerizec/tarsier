@@ -292,7 +292,9 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 #preview-audio-mute[aria-pressed="true"], #preview-audio-mute[aria-pressed="true"]:hover:not(:disabled) { color: var(--red); border-color: var(--red); background: #301c19e8; }
 
 .audio-output-controls { margin-top: .7rem; padding-top: .6rem; row-gap: .4rem; }
-.audio-output-heading { flex: 0 0 100%; }
+.audio-output-heading { flex: 1; }
+#audio-output-applications { font-size: .68rem; color: var(--muted); padding: 0; }
+#audio-output-applications:hover { color: var(--green); }
 #audio-output-track .audio-track { margin-top: 0; }
 
 .audio-waveform .audio-source-choice { position: absolute; inset: 0; z-index: 1; width: 100%; padding: 0; border: 0; border-left: 3px solid transparent; border-radius: 0; background: transparent; }

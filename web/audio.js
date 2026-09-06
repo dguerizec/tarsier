@@ -246,9 +246,11 @@ async function updateOutput(patch) {
   }
 }
 
+document.querySelector('#audio-output-applications').onclick = () => showApplications(tracks.get(virtualId));
 document.querySelector('#preview-audio-mute').onclick = () => void updateOutput({ muted: !virtualState.muted });
 
-export function syncAudioCapture(sources, output, currentReservations, released, busy) {
+export function syncAudioCapture(sources, output, currentReservations, released, busy, outputApplications = 0) {
+  document.querySelector('#audio-output-applications').textContent = `${outputApplications} ${outputApplications === 1 ? 'app' : 'apps'}`;
   reservations = currentReservations || {};
   releasedSources = new Set(released || []);
   busySources = new Set(busy || []);

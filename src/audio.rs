@@ -835,13 +835,22 @@ async fn refresh_connections(runtime: &Runtime) -> Result<()> {
     }
     let graph: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout)?;
     let busy = busy_sources(&graph);
-    if runtime.state().await.audio_busy_sources != busy {
+    let output_applications = connected_applications(&graph, VIRTUAL_SOURCE)
+        .applications
+        .iter()
+        .filter(|app| !is_own_capture(app))
+        .count();
+    let current = runtime.state().await;
+    if current.audio_busy_sources != busy
+        || current.audio_output_applications != output_applications
+    {
         runtime
             .update(|state| {
                 state.audio_released_sources.retain(|source| {
                     !state.audio_busy_sources.contains(source) || busy.contains(source)
                 });
                 state.audio_busy_sources = busy;
+                state.audio_output_applications = output_applications;
             })
             .await;
     }

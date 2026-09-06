@@ -922,6 +922,10 @@ sends silence while preserving input capture. An unavailable, disabled, or stale
 input also produces silence; no other microphone is selected as a fallback.
 Reconnecting the same source lets capture retry automatically.
 
+The output heading shows the live count of external applications connected to
+Tarsier Microphone; click the count to inspect them in the application overlay.
+The count excludes internal captures and groups capture streams by application.
+
 The output waveform meters the published virtual source, including any mute or
 volume applied in the system mixer. Select **Tarsier Microphone** separately from
 the camera in your call app. Whenever its virtual microphone is created, Tarsier
