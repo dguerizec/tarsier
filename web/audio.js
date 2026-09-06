@@ -1,4 +1,4 @@
-import { createElement, ChevronDown } from "/assets/lucide.js";
+import { createElement, ChevronDown, Mic, MicOff } from "/assets/lucide.js";
 
 const audioFold = document.querySelector('#audio-fold');
 audioFold.prepend(createElement(ChevronDown, { width: 18, height: 18, 'aria-hidden': 'true', focusable: 'false' }));
@@ -207,7 +207,13 @@ function renderOutput() {
   });
   document.querySelectorAll('[data-audio-mute]').forEach((button) => {
     button.setAttribute('aria-pressed', String(virtualState.muted));
-    button.textContent = virtualState.muted ? 'On' : 'Off';
+    const label = virtualState.muted ? 'Unmute output' : 'Mute output';
+    button.title = label;
+    button.setAttribute('aria-label', label);
+    if (button.dataset.muted !== String(virtualState.muted)) {
+      button.replaceChildren(createElement(virtualState.muted ? MicOff : Mic, { width: 16, height: 16, 'aria-hidden': 'true', focusable: 'false' }));
+      button.dataset.muted = String(virtualState.muted);
+    }
     button.disabled = virtualPending;
   });
   outputStatus.textContent = !virtualState.enabled ? 'Virtual microphone off'
@@ -244,12 +250,6 @@ async function updateOutput(patch) {
   }
 }
 outputSource.onchange = () => { if (outputSource.value) void updateOutput({ source: outputSource.value }); };
-document.querySelectorAll('[data-audio-output]').forEach((button) => {
-  button.onclick = () => void updateOutput({ enabled: !virtualState.enabled });
-});
-document.querySelectorAll('[data-audio-mute]').forEach((button) => {
-  button.onclick = () => void updateOutput({ muted: !virtualState.muted });
-});
 
 export function syncAudioCapture(sources, output, currentReservations, released, busy) {
   reservations = currentReservations || {};
@@ -267,7 +267,9 @@ function syncTrack(track) {
   track.buttons.forEach((button) => {
     button.setAttribute('aria-pressed', String(track.enabled));
     button.textContent = track.enabled ? 'On' : 'Off';
-    button.disabled = track.pending || (!track.enabled && track.unavailable);
+    button.disabled = track.id === virtualId
+      ? virtualPending || (!virtualState.enabled && !virtualState.source)
+      : track.pending || (!track.enabled && track.unavailable);
   });
   if (!track.enabled) {
     stop(track, track.unavailable ? 'Disconnected' : 'Input off');
@@ -377,7 +379,17 @@ function create(source) {
     renderReservation(track);
   }
   if (source.id === virtualId) {
-    row.querySelector('[role="group"]').hidden = true;
+    const controls = row.querySelector('[role="group"]');
+    controls.setAttribute('aria-label', 'Virtual microphone output');
+    track.buttons[0].setAttribute('data-audio-output', '');
+    track.buttons[0].setAttribute('aria-label', 'Virtual microphone');
+    track.buttons[0].onclick = () => void updateOutput({ enabled: !virtualState.enabled });
+    const mute = document.createElement('button');
+    mute.type = 'button';
+    mute.className = 'secondary compact audio-mute';
+    mute.setAttribute('data-audio-mute', '');
+    mute.onclick = () => void updateOutput({ muted: !virtualState.muted });
+    controls.append(mute);
     document.querySelector('#audio-output-track').append(row);
   } else {
     container.append(row);

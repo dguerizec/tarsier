@@ -279,10 +279,11 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .audio-track-controls { display: flex; gap: .3rem; flex-shrink: 0; }
 .audio-track-controls > button { min-width: 2.5rem; }
 .audio-track-controls[hidden] { display: none; }
-#audio-output-track .audio-visual { grid-template-columns: minmax(0, 1fr) 105px; }
 @media (max-width: 600px) {
   .audio-visual { grid-template-columns: minmax(0, 1fr) 65px auto; gap: .4rem; }
-  #audio-output-track .audio-visual { grid-template-columns: minmax(0, 1fr) 65px; }
   .audio-meters meter { width: 48px; }
   .audio-track-state { display: none; }
 }
+
+.audio-track-controls .audio-mute { display: grid; place-items: center; width: 2rem; min-width: 2rem; height: 1.7rem; padding: 0; color: var(--green); }
+.audio-track-controls .audio-mute[aria-pressed="true"] { color: var(--red); background: #f37d6d18; }
