@@ -497,14 +497,14 @@ async fn set_camera_power(
                 .as_deref()
                 .is_some_and(|source| !crate::audio::is_camera_source(source))
             {
-                let response = set_virtual_audio(
-                    State(state.clone()),
-                    Json(VirtualAudioRequest {
+                let response = set_virtual_audio_locked(
+                    state.clone(),
+                    VirtualAudioRequest {
                         auto_gain: None,
                         enabled: None,
                         source: None,
                         muted: Some(true),
-                    }),
+                    },
                 )
                 .await;
                 if !response.status().is_success() {
@@ -3156,6 +3156,11 @@ async fn set_virtual_audio(
     Json(request): Json<VirtualAudioRequest>,
 ) -> Response {
     let _video_guard = state.video_output_control.lock().await;
+    set_virtual_audio_locked(state.clone(), request).await
+}
+
+// Callers must hold video_output_control before changing virtual audio.
+async fn set_virtual_audio_locked(state: ApiState, request: VirtualAudioRequest) -> Response {
     let _guard = state.audio_settings_control.lock().await;
     let recording = state.recorder.status().await;
     if request.enabled == Some(false) && recording.active && recording.audio {
