@@ -163,3 +163,94 @@ document.querySelector("#token-copy").addEventListener("click", async () => {
   catch { input.focus(); input.select(); tokenStatus.textContent = "Press Ctrl+C to copy the selected token."; }
 });
 loadAuth().catch(error => { authStatus.textContent = error.message; });
+
+
+const devicesForm = document.querySelector('#devices-form');
+const cameraSelect = document.querySelector('#device-camera');
+const outputSelect = document.querySelector('#device-output');
+const microphoneList = document.querySelector('#device-microphone-list');
+const devicesStatus = document.querySelector('#devices-status');
+const devicesSave = document.querySelector('#devices-save');
+const devicesRefresh = document.querySelector('#devices-refresh');
+let devicesState;
+let devicesPending = false;
+function deviceOption(select, value, label) {
+  const option = document.createElement('option');
+  option.value = value; option.textContent = label; select.append(option);
+}
+function selectedMicrophones() {
+  return [...microphoneList.querySelectorAll('input:checked')].map(input => input.value);
+}
+function renderDeviceOutput() {
+  const previous = outputSelect.value;
+  outputSelect.replaceChildren();
+  deviceOption(outputSelect, '', 'None');
+  for (const input of microphoneList.querySelectorAll('input:checked')) {
+    deviceOption(outputSelect, input.value, input.dataset.label);
+  }
+  outputSelect.value = selectedMicrophones().includes(previous) ? previous : '';
+}
+function setDevicesPending(pending) {
+  devicesPending = pending;
+  cameraSelect.disabled = outputSelect.disabled = devicesSave.disabled = pending || !devicesState?.can_apply;
+  document.querySelector('#device-microphones').disabled = pending || !devicesState?.can_apply;
+  devicesRefresh.disabled = pending;
+}
+async function loadDevices() {
+  const response = await fetch('/api/v1/settings/devices', {cache: 'no-store'});
+  if (!response.ok) throw new Error((await response.json()).error || 'Could not load devices');
+  devicesState = await response.json();
+  cameraSelect.replaceChildren();
+  deviceOption(cameraSelect, '', 'Synthetic video');
+  for (const camera of devicesState.cameras) deviceOption(cameraSelect, camera.id, `${camera.name} · ${camera.id.split('/').pop()}`);
+  if (devicesState.camera && !devicesState.cameras.some(camera => camera.id === devicesState.camera)) {
+    deviceOption(cameraSelect, devicesState.camera, `Disconnected · ${devicesState.camera}`);
+  }
+  cameraSelect.value = devicesState.camera;
+  microphoneList.replaceChildren();
+  const microphones = [...devicesState.microphones];
+  for (const id of devicesState.capture_sources) {
+    if (!microphones.some(mic => mic.id === id)) microphones.push({id, name: `Disconnected · ${id}`});
+  }
+  for (const mic of microphones) {
+    const label = document.createElement('label');
+    const row = document.createElement('p');
+    const input = document.createElement('input');
+    input.type = 'checkbox'; input.value = mic.id; input.dataset.label = mic.name;
+    input.checked = devicesState.capture_sources.includes(mic.id);
+    input.addEventListener('change', renderDeviceOutput);
+    label.append(input, document.createTextNode(` ${mic.name}`)); row.append(label); microphoneList.append(row);
+  }
+  outputSelect.replaceChildren();
+  renderDeviceOutput();
+  outputSelect.value = devicesState.output_source || '';
+  setDevicesPending(false);
+  devicesStatus.textContent = devicesState.can_apply ? '' : 'Device changes require the supervised Tarsier service.';
+}
+devicesRefresh.addEventListener('click', () => {
+  setDevicesPending(true);
+  loadDevices().catch(error => { setDevicesPending(false); devicesStatus.textContent = error.message; });
+});
+devicesForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  if (devicesPending || devicesSave.disabled) return;
+  const body = {camera: cameraSelect.value, capture_sources: selectedMicrophones(), output_source: outputSelect.value || null};
+  const previousStart = devicesState.started_at_ms;
+  setDevicesPending(true); devicesStatus.textContent = 'Saving and restarting…';
+  try {
+    const response = await fetch('/api/v1/settings/devices', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    if (!response.ok) throw new Error((await response.json()).error || 'Could not save devices');
+    const deadline = Date.now() + 30000;
+    while (Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      try {
+        const health = await fetch('/api/v1/health', {cache: 'no-store', signal: AbortSignal.timeout(2000)});
+        if (health.ok && (await health.json()).started_at_ms !== previousStart) {
+          await loadDevices(); devicesStatus.textContent = 'Devices saved. Tarsier has restarted.'; return;
+        }
+      } catch { /* Wait for the supervised daemon. */ }
+    }
+    throw new Error('Settings saved, but the service has not reconnected. Check the service and refresh this page.');
+  } catch (error) { setDevicesPending(false); devicesStatus.textContent = error.message; }
+});
+loadDevices().catch(error => { devicesStatus.textContent = error.message; });

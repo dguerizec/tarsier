@@ -191,6 +191,10 @@ pub fn router_with_controls(
                 )
             }),
         )
+        .route(
+            "/api/v1/settings/devices",
+            get(device_settings).post(set_device_settings),
+        )
         .route("/api/v1/audio/sources", get(audio_sources))
         .route("/api/v1/audio/meter", get(audio_meter))
         .route("/api/v1/audio/capture", post(set_audio_capture))
@@ -323,6 +327,109 @@ async fn settings_js() -> impl IntoResponse {
         ],
         include_str!("../web/settings.js"),
     )
+}
+
+async fn device_settings(State(state): State<ApiState>) -> Response {
+    let cameras = match crate::devices::cameras() {
+        Ok(devices) => devices,
+        Err(error) => return command_error(error.into()),
+    };
+    let microphones = match crate::audio::sources(&state.config.audio).await {
+        Ok(devices) => devices,
+        Err(error) => return command_error(error),
+    };
+    let runtime = state.runtime.state().await;
+    Json(json!({
+        "cameras": cameras, "microphones": microphones,
+        "camera": if state.config.video.source == crate::config::VideoSource::Camera { state.config.video.input_device.as_str() } else { "" },
+        "capture_sources": runtime.audio_capture_sources,
+        "output_source": runtime.audio_virtual.source,
+        "can_apply": state.daemon_restart.is_some() && state.user_settings.is_some(),
+        "started_at_ms": runtime.started_at_ms,
+    })).into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeviceSettingsRequest {
+    camera: String,
+    capture_sources: Vec<String>,
+    output_source: Option<String>,
+}
+
+async fn set_device_settings(
+    State(state): State<ApiState>,
+    Json(request): Json<DeviceSettingsRequest>,
+) -> Response {
+    let _video = state.video_output_control.lock().await;
+    let _audio = state.audio_settings_control.lock().await;
+    if state.recorder.status().await.active {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "Stop recording before changing devices"})),
+        )
+            .into_response();
+    }
+    let (Some(restart), Some(settings)) = (&state.daemon_restart, &state.user_settings) else {
+        return (StatusCode::CONFLICT, Json(json!({"error": "Device changes require a supervised daemon and persistent settings"}))).into_response();
+    };
+    let cameras = match crate::devices::cameras() {
+        Ok(c) => c,
+        Err(e) => return command_error(e.into()),
+    };
+    if !request.camera.is_empty()
+        && !cameras.iter().any(|c| c.id == request.camera)
+        && !(state.config.video.source == crate::config::VideoSource::Camera
+            && request.camera == state.config.video.input_device)
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "Select an available camera"})),
+        )
+            .into_response();
+    }
+    let microphones = match crate::audio::sources(&state.config.audio).await {
+        Ok(m) => m,
+        Err(e) => return command_error(e),
+    };
+    let current = state.runtime.state().await;
+    if request.capture_sources.iter().any(|id| {
+        !state.config.audio.allows(id)
+            || (!microphones.iter().any(|m| &m.id == id)
+                && !current.audio_capture_sources.contains(id))
+    }) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "Select available microphones"})),
+        )
+            .into_response();
+    }
+    if request
+        .output_source
+        .as_ref()
+        .is_some_and(|id| !request.capture_sources.contains(id))
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "The output microphone must be selected for capture"})),
+        )
+            .into_response();
+    }
+    let mut audio = crate::settings::AudioSettings::from_state(&current);
+    audio.capture_sources = request.capture_sources;
+    audio.capture_sources.sort();
+    audio.capture_sources.dedup();
+    audio.output_source = request.output_source;
+    if audio.output_source.is_none() {
+        audio.output_enabled = false;
+    }
+    if let Err(error) = settings.set_devices(request.camera, audio).await {
+        return user_settings_error(error);
+    }
+    if let Err(error) = restart.request().await {
+        return (StatusCode::CONFLICT, Json(json!({"error": error}))).into_response();
+    }
+    (StatusCode::ACCEPTED, Json(json!({"restarting": true}))).into_response()
 }
 
 async fn network_settings(State(state): State<ApiState>) -> Json<Value> {

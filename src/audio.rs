@@ -408,13 +408,18 @@ impl AudioHub {
             if let Some(sources) = discovered
                 && sources != last_inventory
             {
-                reconcile_reservations(&runtime, &sources, self.config.reserve_inputs).await;
+                reconcile_reservations(&runtime, &sources, &self.config).await;
                 last_inventory = sources;
             }
             let state = runtime.state().await;
             let mut wanted: HashMap<String, bool> = last_inventory
                 .iter()
                 .filter_map(|source| {
+                    if self.config.capture_selected_only
+                        && !state.audio_capture_sources.contains(&source.id)
+                    {
+                        return None;
+                    }
                     let exclusive = self.config.reserve_inputs
                         && !state.audio_released_sources.contains(&source.id);
                     (exclusive || state.audio_capture_sources.contains(&source.id))
@@ -856,14 +861,27 @@ fn reservation_inventory(
     next
 }
 
-async fn reconcile_reservations(runtime: &Runtime, sources: &[Source], reserve: bool) {
+async fn reconcile_reservations(
+    runtime: &Runtime,
+    sources: &[Source],
+    config: &crate::config::AudioConfig,
+) {
     runtime
         .update(|s| {
             s.audio_reservations = reservation_inventory(
                 &s.audio_reservations,
                 sources,
-                &if reserve {
-                    s.audio_released_sources.clone()
+                &if config.reserve_inputs {
+                    let mut released = s.audio_released_sources.clone();
+                    if config.capture_selected_only {
+                        released.extend(
+                            sources
+                                .iter()
+                                .filter(|source| !s.audio_capture_sources.contains(&source.id))
+                                .map(|source| source.id.clone()),
+                        );
+                    }
+                    released
                 } else {
                     sources.iter().map(|s| s.id.clone()).collect()
                 },

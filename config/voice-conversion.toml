@@ -1,13 +1,11 @@
-# Isolated input-only baseline. Never publish on main's PipeWire graph yet:
-# main automatically attempts to reserve every newly discovered source.
+# Development profile for physical device selection while main is stopped.
 [server]
 bind = "127.0.0.1:8743"
 
 [audio]
 reserve_inputs = false
-allowed_sources = ["tarsier_microphone"]
 virtual_source = "tarsier_voice_conversion"
-virtual_output_enabled = false
+virtual_output_enabled = true
 set_default_source = false
 
 [video]

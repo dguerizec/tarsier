@@ -161,6 +161,7 @@ fn valid_identifier(identifier: &str) -> bool {
 #[serde(default)]
 pub struct AudioConfig {
     pub reserve_inputs: bool,
+    pub capture_selected_only: bool,
     pub allowed_sources: Option<Vec<String>>,
     pub virtual_source: String,
     pub virtual_output_enabled: bool,
@@ -171,6 +172,7 @@ impl Default for AudioConfig {
     fn default() -> Self {
         Self {
             reserve_inputs: true,
+            capture_selected_only: false,
             allowed_sources: None,
             virtual_source: "tarsier_microphone".into(),
             virtual_output_enabled: true,
@@ -437,9 +439,9 @@ mod tests {
         .unwrap();
         assert!(!config.audio.reserve_inputs);
         assert!(!config.audio.set_default_source);
-        assert!(!config.audio.virtual_output_enabled);
+        assert!(config.audio.virtual_output_enabled);
         assert!(config.audio.allows("tarsier_microphone"));
-        assert!(!config.audio.allows("physical_microphone"));
+        assert!(config.audio.allows("physical_microphone"));
         assert!(!config.audio.allows(&config.audio.virtual_source));
         assert_eq!(config.video.source, VideoSource::Test);
         assert!(!config.video.loopback_enabled);
