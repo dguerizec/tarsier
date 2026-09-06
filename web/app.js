@@ -1,6 +1,6 @@
 import { installPreviewDrag, sourcePanTiltDirection } from "/assets/preview-drag.js";
 import { syncAudioCapture } from "/assets/audio.js";
-import { createElement, FolderOpen, FlipHorizontal2, Bone, Power, ChevronDown } from "/assets/lucide.js";
+import { createElement, FolderOpen, FlipHorizontal2, Bone, Power, ChevronDown, ScanFace, Hand, ZoomIn } from "/assets/lucide.js";
 
 const $ = (selector) => document.querySelector(selector);
 const connection = $("#connection");
@@ -573,7 +573,10 @@ function renderZoom(camera) {
     : displayed == null ? "Unknown" : magnification(displayed);
   zoomSlider.disabled = !cameraControlsAvailable(camera);
   zoomReset.disabled = !cameraControlsAvailable(camera) || zoomPending;
-  autoZoomToggle.checked = autoZoomDraft ?? autoZoom.enabled === true;
+  const autoZoomEnabled = autoZoomDraft ?? autoZoom.enabled === true;
+  autoZoomToggle.setAttribute("aria-pressed", String(autoZoomEnabled));
+  autoZoomToggle.title = !faceTracking.enabled ? "Auto zoom needs face tracking" : autoZoomPending ? "Switching auto zoom…" : autoZoomEnabled ? "Stop auto zoom" : "Enable auto zoom";
+  autoZoomToggle.setAttribute("aria-label", autoZoomToggle.title);
   autoZoomToggle.disabled = !cameraControlsAvailable(camera) || !faceTracking.enabled
     || autoZoomPending || faceTrackingPending || handsTrackingPending;
   $("#auto-zoom-readback").textContent = autoZoomPending
@@ -625,9 +628,9 @@ function renderFaceTracking(camera) {
   faceTrackingToggle.disabled = !cameraControlsAvailable(camera) || faceTrackingPending
     || handsTrackingPending || trackingPending;
   faceTrackingToggle.setAttribute("aria-pressed", String(tracking.enabled === true));
-  faceTrackingToggle.textContent = faceTrackingPending
+  faceTrackingToggle.setAttribute("aria-label", faceTrackingPending
     ? "Switching…"
-    : tracking.enabled ? "Stop face tracking" : "Face tracking";
+    : tracking.enabled ? "Stop face tracking" : "Face tracking");
   faceTrackingToggle.title = tracking.error
     || (tracking.enabled
       ? tracking.target_visible ? `Tracking from detected ${targetName}` : "Waiting for a face or shoulders"
@@ -639,9 +642,9 @@ function renderHandsTracking(camera) {
   handsTrackingToggle.disabled = !cameraControlsAvailable(camera) || handsTrackingPending
     || faceTrackingPending || trackingPending;
   handsTrackingToggle.setAttribute("aria-pressed", String(tracking.enabled === true));
-  handsTrackingToggle.textContent = handsTrackingPending
+  handsTrackingToggle.setAttribute("aria-label", handsTrackingPending
     ? "Switching…"
-    : tracking.enabled ? "Stop hands tracking" : "Hands tracking";
+    : tracking.enabled ? "Stop hands tracking" : "Hands tracking");
   handsTrackingToggle.title = tracking.error
     || (tracking.enabled
       ? tracking.rapid_motion ? "Rapid hand movement detected; camera motion is frozen"
@@ -1501,10 +1504,10 @@ zoomReset.addEventListener("click", () => {
   scheduleZoom();
 });
 
-autoZoomToggle.addEventListener("change", async () => {
+autoZoomToggle.addEventListener("click", async () => {
   if (autoZoomPending || !state || !cameraControlsAvailable(state.camera)
     || !state.camera.face_tracking?.enabled) return;
-  const enabled = autoZoomToggle.checked;
+  const enabled = state.camera.face_tracking.auto_zoom?.enabled !== true;
   autoZoomPending = true;
   autoZoomDraft = enabled;
   cameraControlError = null;
@@ -1603,6 +1606,10 @@ for (const button of document.querySelectorAll("[data-video-rotation]")) {
   button.addEventListener("click", () => void setVideoTransform({ ...videoTransform(), rotation: Number(button.dataset.videoRotation) }));
 }
 $("#video-mirror").addEventListener("change", (event) => void setVideoTransform({ ...videoTransform(), mirror: event.target.checked }));
+
+for (const [button, icon] of [[faceTrackingToggle, ScanFace], [handsTrackingToggle, Hand], [autoZoomToggle, ZoomIn]]) {
+  button.append(createElement(icon, { width: 18, height: 18, "aria-hidden": "true", focusable: "false" }));
+}
 
 cameraPowerToggle.append(createElement(Power, { width: 18, height: 18, "aria-hidden": "true", focusable: "false" }));
 

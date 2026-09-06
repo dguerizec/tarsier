@@ -73,13 +73,9 @@
           <canvas id="landmark-overlay" aria-hidden="true"></canvas>
           <div id="preview-placeholder">Waiting for video</div>
           <div class="tracking-mode-controls" role="group" aria-label="Camera tracking">
-            <button id="face-tracking-toggle" class="secondary compact" type="button" aria-pressed="false">Face tracking</button>
-            <button id="hands-tracking-toggle" class="secondary compact" type="button" aria-pressed="false">Hands tracking</button>
-            <label class="toggle-switch tracking-auto-zoom-switch" for="auto-zoom-toggle">
-              <strong>Auto zoom</strong>
-              <input id="auto-zoom-toggle" type="checkbox" role="switch" disabled>
-              <span class="switch-track" aria-hidden="true"></span>
-            </label>
+            <button id="face-tracking-toggle" class="secondary compact" type="button" aria-pressed="false" aria-label="Face tracking" title="Face tracking"></button>
+            <button id="hands-tracking-toggle" class="secondary compact" type="button" aria-pressed="false" aria-label="Hands tracking" title="Hands tracking"></button>
+            <button id="auto-zoom-toggle" class="secondary compact" type="button" aria-pressed="false" aria-label="Auto zoom" title="Auto zoom" disabled></button>
           </div>
           <div class="preview-overlay-tools" role="group" aria-label="Preview controls">
             <button id="preview-audio-mute" type="button" data-audio-mute aria-label="Mute Tarsier Microphone" aria-pressed="false" title="Mute Tarsier Microphone"></button>

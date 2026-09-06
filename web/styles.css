@@ -54,8 +54,6 @@ main { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(17rem, .85
 .preview-stage:hover .tracking-mode-controls, .tracking-mode-controls:focus-within { opacity: 1; pointer-events: auto; }
 @media (hover: none) { .tracking-mode-controls { opacity: 1; pointer-events: auto; } }
 #face-tracking-toggle, #hands-tracking-toggle { min-width: 0; white-space: nowrap; }
-.tracking-auto-zoom-switch { justify-content: space-between; padding: 0 .2rem; color: #f2f5ef; }
-.tracking-auto-zoom-switch strong { font-size: .72rem; white-space: nowrap; }
 .direction-pad { display: grid; grid-template: repeat(3, 2rem) / repeat(3, 2rem); gap: .25rem; }
 .direction-pad button { display: grid; place-items: center; min-width: 0; padding: 0; border-radius: .5rem; font-size: 1rem; touch-action: none; user-select: none; }
 .direction-pad button[aria-pressed="true"] { background: var(--green); color: #0a0d0a; }
@@ -302,3 +300,5 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .audio-waveform .audio-source-choice:hover:not(:disabled) { background: #b7ef7a08; }
 .audio-source-choice:focus-visible { outline: 1px solid var(--green); outline-offset: 2px; }
 #audio-tracks .audio-track-overlay { left: .5rem; }
+
+.tracking-mode-controls button { display: grid; place-items: center; width: 1.875rem; height: 1.875rem; padding: 0; border-radius: .45rem; }
