@@ -86,6 +86,8 @@
             <button id="skeleton-toggle" type="button" aria-label="Skeletons" aria-pressed="false" title="Show skeletons"></button>
           </div>
         </div>
+        <p id="photo-status" class="photo-status" role="status" aria-live="polite">Space: photo · Ctrl+Space: start/stop video · Includes current video effects.</p>
+        <p id="recording-status" class="photo-status" role="status" aria-live="polite" hidden></p>
         <section class="audio-panel" aria-labelledby="audio-heading">
           <div class="panel-title"><h2 id="audio-heading"><button id="audio-fold" type="button" aria-expanded="true" aria-controls="audio-inputs">Audio</button></h2></div>
           <div id="audio-inputs">
@@ -104,8 +106,7 @@
             <p class="hint">Select “Tarsier Microphone” in your call app. Missing inputs produce silence.</p>
           </div>
         </section>
-        <p id="photo-status" class="photo-status" role="status" aria-live="polite">Space: photo · Ctrl+Space: start/stop video · Includes current video effects.</p>
-        <p id="recording-status" class="photo-status" role="status" aria-live="polite" hidden></p>
+
         <div class="pan-tilt-bar">
           <div class="pan-tilt-copy">
             <strong>Pan / tilt</strong>

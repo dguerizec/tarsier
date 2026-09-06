@@ -339,13 +339,16 @@ function start(track) {
 function create(source) {
   const row = document.createElement('div');
   row.className = 'audio-track';
-  row.innerHTML = `<div class="audio-track-header"><strong></strong><span class="audio-track-state"></span>
-    <div class="segmented-control" role="group"><button type="button" class="secondary compact" aria-pressed="false">On</button></div></div>
-    <div class="audio-visual"><canvas role="img"></canvas><div class="audio-meters">
+  row.innerHTML = `<div class="audio-visual">
+    <div class="audio-waveform"><canvas role="img"></canvas>
+      <div class="audio-track-overlay"><strong></strong><span class="audio-track-state"></span></div>
+    </div><div class="audio-meters">
     <div><span>L</span><meter min="-60" max="0" low="-18" high="-6" optimum="-24" value="-60"></meter></div>
     <div><span>R</span><meter min="-60" max="0" low="-18" high="-6" optimum="-24" value="-60"></meter></div>
-    <span class="audio-peak">−∞ dBFS</span></div></div>`;
+    <span class="audio-peak">−∞ dBFS</span></div>
+    <div class="audio-track-controls segmented-control" role="group"><button type="button" class="secondary compact" aria-pressed="false">On</button></div></div>`;
   row.querySelector('strong').textContent = source.name;
+  row.querySelector('strong').title = source.name;
   const track = {
     id: source.id, name: source.name, row, history: [], level: null, socket: null, clipUntil: 0,
     enabled: source.enabled === true, pending: false, unavailable: false, retryAt: 0,
@@ -397,6 +400,7 @@ async function refresh() {
     for (const source of sources) {
       const track = tracks.get(source.id) || create(source);
       track.row.querySelector('strong').textContent = source.name;
+      track.row.querySelector('strong').title = source.name;
       track.muted = source.muted;
       track.unavailable = false;
       if (enabledSources == null) track.enabled = source.enabled === true;
