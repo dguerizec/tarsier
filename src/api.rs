@@ -1983,7 +1983,9 @@ async fn set_identity(
     Json(request): Json<IdentityRequest>,
 ) -> Response {
     match request.identity {
-        VideoIdentity::Stylized3d | VideoIdentity::Liveportrait if !state.config.avatar.enabled => {
+        VideoIdentity::Stylized3d | VideoIdentity::Portrait3d | VideoIdentity::Liveportrait
+            if !state.config.avatar.enabled =>
+        {
             return (
                 StatusCode::CONFLICT,
                 Json(json!({"error": "avatar output is disabled in the daemon configuration"})),
@@ -2003,6 +2005,7 @@ async fn set_identity(
     let (mode, engine) = match request.identity {
         VideoIdentity::Camera => (VideoOutputMode::Camera, None),
         VideoIdentity::Stylized3d => (VideoOutputMode::ComicAvatar, Some(AvatarEngine::Stylized3d)),
+        VideoIdentity::Portrait3d => (VideoOutputMode::ComicAvatar, Some(AvatarEngine::Portrait3d)),
         VideoIdentity::Liveportrait => (
             VideoOutputMode::ComicAvatar,
             Some(AvatarEngine::Liveportrait),
@@ -2136,7 +2139,21 @@ async fn avatar_frame(State(state): State<ApiState>, headers: HeaderMap, body: B
         Ok(value) => value,
         Err(error) => return unprocessable_entity(error),
     };
-    let avatar = match AvatarFrame::new(frame_id, captured_at_ms, width, height, body.to_vec()) {
+    let has_alpha = match headers
+        .get("x-tarsier-avatar-pixel-format")
+        .and_then(|h| h.to_str().ok())
+    {
+        Some("bgra") => true,
+        None | Some("bgrx") if engine != AvatarEngine::Portrait3d => false,
+        _ => {
+            return unprocessable_entity(
+                "portrait3d requires bgra with a synchronized foreground mask".into(),
+            );
+        }
+    };
+    let avatar = match AvatarFrame::new(frame_id, captured_at_ms, width, height, body.to_vec())
+        .map(|frame| frame.with_alpha(has_alpha))
+    {
         Ok(avatar) => avatar,
         Err(error) => return unprocessable_entity(error.to_string()),
     };
@@ -2171,6 +2188,7 @@ fn video_identity(mode: VideoOutputMode, engine: Option<AvatarEngine>) -> VideoI
     match (mode, engine) {
         (VideoOutputMode::Camera, _) => VideoIdentity::Camera,
         (VideoOutputMode::DepthMap, _) => VideoIdentity::DepthMap,
+        (VideoOutputMode::ComicAvatar, Some(AvatarEngine::Portrait3d)) => VideoIdentity::Portrait3d,
         (VideoOutputMode::ComicAvatar, Some(AvatarEngine::Liveportrait)) => {
             VideoIdentity::Liveportrait
         }
@@ -2381,6 +2399,7 @@ fn required_avatar_engine_header(headers: &HeaderMap) -> Result<AvatarEngine, St
         .map_err(|_| format!("invalid {name} header"))?;
     match value {
         "stylized-3d" => Ok(AvatarEngine::Stylized3d),
+        "portrait3d" => Ok(AvatarEngine::Portrait3d),
         "liveportrait" => Ok(AvatarEngine::Liveportrait),
         _ => Err(format!("invalid {name} header")),
     }
@@ -4137,6 +4156,58 @@ mod tests {
         assert!(restored.face_tracking_enabled);
         assert!(restored.auto_zoom_enabled);
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn personal_identity_requires_an_atomic_alpha_frame() {
+        let mut config = Config::default();
+        config.avatar.enabled = true;
+        let runtime = Runtime::new();
+        let preview = PreviewHub::new();
+        let (_tx, rx) = watch::channel(false);
+        let app = router(config, runtime.clone(), preview.clone(), None, rx);
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/video/identity")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"identity":"portrait3d"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        for (format, expected) in [
+            ("bgrx", StatusCode::UNPROCESSABLE_ENTITY),
+            ("bgra", StatusCode::NO_CONTENT),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post("/api/v1/avatar/frame")
+                        .header("x-tarsier-avatar-engine", "portrait3d")
+                        .header("x-tarsier-avatar-pixel-format", format)
+                        .header("x-tarsier-frame-id", "90")
+                        .header("x-tarsier-captured-at-ms", unix_ms().to_string())
+                        .header("x-tarsier-avatar-width", "1")
+                        .header("x-tarsier-avatar-height", "1")
+                        .body(Body::from(vec![10, 20, 30, 0]))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+        }
+        preview
+            .effects()
+            .set_background(true, BackgroundEffect::GreenScreen);
+        let mut output = vec![213; 4];
+        preview.effects().apply_output(&mut output, 1, 1, unix_ms());
+        assert_eq!(output, vec![0, 255, 0, 0]);
+        assert_eq!(
+            runtime.state().await.video_effects.avatar_engine,
+            Some(AvatarEngine::Portrait3d)
+        );
     }
 
     #[tokio::test]

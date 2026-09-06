@@ -282,6 +282,7 @@ fn worker_arguments(
             "--avatar-engine".into(),
             match avatar.engine {
                 AvatarEngine::Stylized3d => "stylized-3d".into(),
+                AvatarEngine::Portrait3d => "portrait3d".into(),
                 AvatarEngine::Liveportrait => "liveportrait".into(),
             },
             "--avatar-fps".into(),
@@ -290,6 +291,10 @@ fn worker_arguments(
             video.width.to_string(),
             "--avatar-height".into(),
             video.height.to_string(),
+            "--portrait-model".into(),
+            project_path(&avatar.portrait_model)
+                .to_string_lossy()
+                .into_owned(),
             "--avatar-profile".into(),
             project_path(&avatar.profile).to_string_lossy().into_owned(),
             "--avatar-source".into(),
@@ -424,6 +429,7 @@ mod tests {
             enabled: true,
             engine: AvatarEngine::Liveportrait,
             profile: "assets/avatars/stylized-3d.json".into(),
+            portrait_model: "assets/avatars/portrait/current".into(),
             source_image: "assets/avatars/liveportrait-source.png".into(),
             fps: 15,
             compile: true,
@@ -468,6 +474,7 @@ mod tests {
             enabled: true,
             engine: AvatarEngine::Stylized3d,
             profile: "assets/avatars/stylized-3d.json".into(),
+            portrait_model: "assets/avatars/portrait/current".into(),
             source_image: "assets/avatars/liveportrait-source.png".into(),
             fps: 30,
             compile: true,

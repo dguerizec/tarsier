@@ -744,8 +744,8 @@ function renderOutputMode(videoEffects) {
     : outputModePending ? "Switching…"
     : identity === "camera" ? "Real camera"
     : identity === "depth-map" ? (depthFresh ? "Relative depth active" : "Privacy fallback · waiting for depth")
-    : avatarFresh ? (identity === "stylized-3d" ? "Stylized 3D active" : "LivePortrait active")
-    : `Privacy fallback · waiting for ${identity === "stylized-3d" ? "3D renderer" : "LivePortrait"}`;
+    : avatarFresh ? (identity === "portrait3d" ? "Personal 3D active" : identity === "stylized-3d" ? "Stylized 3D active" : "LivePortrait active")
+    : `Privacy fallback · waiting for ${identity !== "liveportrait" ? "3D renderer" : "LivePortrait"}`;
   $("#output-status").textContent = status;
   $("#output-error").hidden = !outputModeError;
   $("#output-error").textContent = outputModeError || "";
@@ -757,8 +757,14 @@ function renderBackground(videoEffects) {
     && Date.now() - videoEffects.mask_published_at_ms <= 200;
   const capturedFresh = videoEffects.mask_captured_at_ms != null
     && Date.now() - videoEffects.mask_captured_at_ms <= 200;
-  const maskFresh = publishedFresh && capturedFresh;
-  const alternateOutputActive = videoEffects.output_mode !== "camera";
+  const portraitActive = videoEffects.output_mode === "comic-avatar"
+    && videoEffects.avatar_engine === "portrait3d";
+  const maskFresh = portraitActive
+    ? videoEffects.avatar_available
+      && Date.now() - (videoEffects.avatar_captured_at_ms || 0) <= 500
+      && Date.now() - (videoEffects.avatar_published_at_ms || 0) <= 500
+    : publishedFresh && capturedFresh;
+  const alternateOutputActive = videoEffects.output_mode !== "camera" && !portraitActive;
   backgroundToggle.disabled = backgroundPending || alternateOutputActive || cameraOnly4k();
   backgroundToggle.checked = current.enabled;
   for (const input of backgroundEffectInputs) {
@@ -773,7 +779,7 @@ function renderBackground(videoEffects) {
   }[current.effect] || "Green screen";
   const status = backgroundError
     ? "Change failed"
-    : (alternateOutputActive ? "Available only for the real camera"
+    : (alternateOutputActive ? "Available for Camera and Personal 3D"
       : backgroundPending ? `Applying ${effectLabel.toLowerCase()}…`
       : !current.enabled ? "Off"
       : !maskFresh ? "Privacy fallback · waiting for a fresh mask"

@@ -100,3 +100,10 @@ little-endian `float32`. Response headers provide its width, height,
 capture/publication timestamps, frame id, representation, and the display-only
 far/near bounds. The pinned Hugging Face Depth Anything V2 Small checkpoint and
 Transformers integration are Apache-2.0 licensed.
+
+Personal 3D (`--avatar-engine portrait3d --portrait-model /path/to/export`)
+uses the same optional `avatar` dependencies and a local photographic mesh.
+Its BGRA output carries the rendered silhouette atomically with the image,
+allowing daemon background effects after Identity. See the
+[portrait export workflow](../assets/avatars/portrait/README.md) for model
+updates and current animation limitations.

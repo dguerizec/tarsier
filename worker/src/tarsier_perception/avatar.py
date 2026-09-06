@@ -236,6 +236,7 @@ class AvatarPublisher:
                 "X-Tarsier-Frame-Id": str(frame_id),
                 "X-Tarsier-Captured-At-Ms": str(captured_at_ms),
                 "X-Tarsier-Avatar-Engine": engine,
+                "X-Tarsier-Avatar-Pixel-Format": "bgra" if engine == "portrait3d" else "bgrx",
                 "X-Tarsier-Avatar-Width": str(width),
                 "X-Tarsier-Avatar-Height": str(height),
             },
@@ -271,7 +272,7 @@ class VideoIdentityClient:
 
     def selected_avatar_engine(self) -> str | None:
         identity = self.selected_identity()
-        return identity if identity in {"stylized-3d", "liveportrait"} else None
+        return identity if identity in {"stylized-3d", "portrait3d", "liveportrait"} else None
 
     def depth_usage(self) -> str | None:
         identity = self.selected_identity()
@@ -291,7 +292,7 @@ class VideoIdentityClient:
             with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:  # noqa: S310
                 payload = json.load(response)
             identity = payload.get("identity")
-            if identity not in {"camera", "stylized-3d", "liveportrait", "depth-map"}:
+            if identity not in {"camera", "stylized-3d", "portrait3d", "liveportrait", "depth-map"}:
                 raise ValueError(f"invalid video identity: {identity!r}")
             self._identity = identity
             self._background_enabled = payload.get("background_enabled") is True
@@ -322,12 +323,14 @@ class AvatarProcessor:
         height: int,
         *,
         compile_models: bool,
+        portrait_model: Path | None = None,
     ) -> None:
         self._daemon_url = daemon_url
         self._model_dir = model_dir
         self._engine = engine
         self._source_image = source_image
         self._profile = profile
+        self._portrait_model = portrait_model
         self._width = width
         self._height = height
         self._compile_models = compile_models
@@ -371,7 +374,7 @@ class AvatarProcessor:
 
     def _run(self) -> None:
         try:
-            if self._engine not in {"stylized-3d", "liveportrait"}:
+            if self._engine not in {"stylized-3d", "portrait3d", "liveportrait"}:
                 raise RuntimeError(f"unsupported avatar engine: {self._engine}")
             self._run_switchable()
         except BaseException as error:
@@ -424,6 +427,21 @@ class AvatarProcessor:
         resources: ExitStack,
         engine_name: str,
     ) -> Callable[[AvatarInputFrame], np.ndarray | None]:
+        if engine_name == "portrait3d":
+            if self._portrait_model is None:
+                raise RuntimeError("personal 3D avatar requires a model directory")
+            from .portrait3d import Portrait3DAvatarEngine
+
+            tracker = resources.enter_context(MediaPipeAvatarTracker(self._model_dir))
+            engine = resources.enter_context(
+                Portrait3DAvatarEngine(self._portrait_model, self._width, self._height)
+            )
+
+            def render_portrait(frame: AvatarInputFrame) -> np.ndarray:
+                return engine.render(tracker.track(frame.frame_bgr, frame.timestamp_ms))
+
+            return render_portrait
+
         if engine_name == "stylized-3d":
             if self._profile is None:
                 raise RuntimeError("stylized 3D avatar requires a profile")

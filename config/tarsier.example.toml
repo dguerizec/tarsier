@@ -51,6 +51,8 @@ face_release_ms = 500
 enabled = true
 engine = "stylized-3d"
 profile = "assets/avatars/stylized-3d.json"
+# Optional versioned runtime export for the Personal 3D identity.
+portrait_model = "assets/avatars/portrait/current"
 # Kept ready for the optional LivePortrait fallback.
 source_image = "assets/avatars/liveportrait-source.png"
 fps = 30

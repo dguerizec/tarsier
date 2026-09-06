@@ -254,8 +254,11 @@ draws a cel-shaded head and bust in a simple virtual room at the output
 resolution. Its colors are editable in
 `assets/avatars/stylized-3d.json`; no camera pixels are used in the final
 avatar frame. Selecting an alternate identity replaces the whole image in both
-the web preview and `/dev/video42`. Background effects are disabled in the UI
-outside Camera because the alternate output is already complete. A switch
+the web preview and `/dev/video42`. Personal 3D (`portrait3d`) loads a local scanned portrait and supplies a synchronized
+alpha silhouette to the background stage. Green screen and Pixel Party can
+replace its backdrop; Off and Blur use a neutral synthetic background. Other
+alternate identities already contain a complete background. See
+[the portrait asset workflow](assets/avatars/portrait/README.md) for updates. A switch
 immediately clears the previous generated frame, and Tarsier accepts new frames
 only for the selected identity. If initialization or inference takes more than
 500 ms, it holds the last successfully generated image until a fresh matching
@@ -433,7 +436,7 @@ the camera host's desktop, even when clicked from another computer.
 | `POST` | `/api/v1/camera/tracking` | Enable or disable built-in tracking |
 | `POST` | `/api/v1/camera/face-tracking` | Enable or disable Tarsier face tracking |
 | `POST` | `/api/v1/camera/hands-tracking` | Enable or disable slow two-hand framing with one-hand zoom freeze |
-| `GET`, `POST` | `/api/v1/video/identity` | Read or select `camera`, `depth-map`, `stylized-3d`, or `liveportrait` |
+| `GET`, `POST` | `/api/v1/video/identity` | Read or select `camera`, `depth-map`, `stylized-3d`, `portrait3d`, or `liveportrait` |
 | `POST` | `/api/v1/video/output-mode` | Compatibility selector for the underlying output mode |
 | `POST` | `/api/v1/video/background` | Enable one final-output background effect with `{"enabled": bool, "effect": string}`; accepted effects are `green-screen`, `blur`, and `pixel-party` |
 | `POST` | `/api/v1/video/green-screen` | Compatibility control that selects and enables or disables Green screen |

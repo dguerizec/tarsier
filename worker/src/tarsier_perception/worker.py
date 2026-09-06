@@ -529,6 +529,7 @@ def run_worker(
     avatar_engine: str | None = None,
     avatar_source: Path | None = None,
     avatar_profile: Path | None = None,
+    portrait_model: Path | None = None,
     avatar_fps: float = 15.0,
     avatar_width: int = 1280,
     avatar_height: int = 720,
@@ -575,6 +576,7 @@ def run_worker(
                     avatar_width,
                     avatar_height,
                     compile_models=avatar_compile,
+                    portrait_model=portrait_model,
                 )
             )
             if avatar_engine is not None

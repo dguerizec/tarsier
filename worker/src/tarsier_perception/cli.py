@@ -30,9 +30,10 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--mask-fps", type=float, default=30.0)
     serve.add_argument("--minimum-confidence", type=float, default=0.5)
     serve.add_argument("--model-dir", type=Path, default=default_model_dir())
-    serve.add_argument("--avatar-engine", choices=("stylized-3d", "liveportrait"))
+    serve.add_argument("--avatar-engine", choices=("stylized-3d", "portrait3d", "liveportrait"))
     serve.add_argument("--avatar-source", type=Path)
     serve.add_argument("--avatar-profile", type=Path)
+    serve.add_argument("--portrait-model", type=Path)
     serve.add_argument("--avatar-fps", type=float, default=15.0)
     serve.add_argument("--avatar-width", type=int, default=1280)
     serve.add_argument("--avatar-height", type=int, default=720)
@@ -129,6 +130,7 @@ def main() -> None:
             avatar_engine=args.avatar_engine,
             avatar_source=args.avatar_source,
             avatar_profile=args.avatar_profile,
+            portrait_model=args.portrait_model,
             avatar_fps=args.avatar_fps,
             avatar_width=args.avatar_width,
             avatar_height=args.avatar_height,

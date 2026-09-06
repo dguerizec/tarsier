@@ -70,6 +70,7 @@ pub enum AvatarEngine {
     #[default]
     #[serde(rename = "stylized-3d")]
     Stylized3d,
+    Portrait3d,
     Liveportrait,
 }
 
@@ -80,6 +81,7 @@ pub enum VideoIdentity {
     Camera,
     #[serde(rename = "stylized-3d")]
     Stylized3d,
+    Portrait3d,
     Liveportrait,
     DepthMap,
 }

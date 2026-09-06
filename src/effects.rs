@@ -38,6 +38,7 @@ pub struct VideoMask {
     pub width: u32,
     pub height: u32,
     pixels: Arc<[u8]>,
+    coverage: bool,
 }
 
 impl VideoMask {
@@ -62,7 +63,16 @@ impl VideoMask {
             width,
             height,
             pixels: pixels.into(),
+            coverage: false,
         })
+    }
+
+    fn alpha(&self, index: usize) -> u8 {
+        if self.coverage {
+            self.pixels[index]
+        } else {
+            feather_alpha(self.pixels[index])
+        }
     }
 
     fn is_fresh(&self, now_ms: u64) -> bool {
@@ -79,6 +89,7 @@ pub struct AvatarFrame {
     pub width: u32,
     pub height: u32,
     pixels: Arc<[u8]>,
+    mask: Option<VideoMask>,
 }
 
 impl AvatarFrame {
@@ -103,7 +114,28 @@ impl AvatarFrame {
             width,
             height,
             pixels: pixels.into(),
+            mask: None,
         })
+    }
+
+    pub fn with_alpha(mut self, enabled: bool) -> Self {
+        if enabled {
+            self.mask = Some(VideoMask {
+                coverage: true,
+                frame_id: self.frame_id,
+                captured_at_ms: self.captured_at_ms,
+                published_at_ms: self.published_at_ms,
+                width: self.width,
+                height: self.height,
+                pixels: self
+                    .pixels
+                    .chunks_exact(4)
+                    .map(|p| p[3])
+                    .collect::<Vec<_>>()
+                    .into(),
+            });
+        }
+        self
     }
 
     fn is_fresh(&self, now_ms: u64) -> bool {
@@ -400,6 +432,49 @@ impl VideoEffects {
                 match (expected_len, avatar) {
                     (Some(expected_len), Some(avatar)) if frame.len() >= expected_len => {
                         frame[..expected_len].copy_from_slice(&avatar.pixels);
+                        if let Some(mask) = &avatar.mask {
+                            let background = self.background_effect();
+                            if self.background_enabled() && background != BackgroundEffect::Blur {
+                                match background {
+                                    BackgroundEffect::GreenScreen => apply_green_screen(
+                                        frame,
+                                        width as usize,
+                                        height as usize,
+                                        mask,
+                                    ),
+                                    BackgroundEffect::PixelParty => {
+                                        let mut scratch =
+                                            self.scratch.lock().unwrap_or_else(|e| e.into_inner());
+                                        apply_pixel_party(
+                                            frame,
+                                            width as usize,
+                                            height as usize,
+                                            mask,
+                                            now_ms,
+                                            &mut scratch,
+                                        );
+                                    }
+                                    BackgroundEffect::Blur => unreachable!(),
+                                }
+                            } else {
+                                // A synthetic neutral backdrop also remains neutral when blurred.
+                                // Never composite the camera beneath an avatar identity.
+                                for (pixel, alpha) in
+                                    frame.chunks_exact_mut(4).zip(mask.pixels.iter())
+                                {
+                                    for (channel, background) in [33u16, 28, 26].iter().enumerate()
+                                    {
+                                        pixel[channel] = ((pixel[channel] as u16 * *alpha as u16
+                                            + background * (255 - *alpha as u16))
+                                            / 255)
+                                            as u8;
+                                    }
+                                }
+                            }
+                            for pixel in frame.chunks_exact_mut(4) {
+                                pixel[3] = 0;
+                            }
+                        }
                         Some(true)
                     }
                     _ => None,
@@ -640,7 +715,7 @@ fn apply_green_screen(frame: &mut [u8], width: usize, height: usize, mask: &Vide
         let mut mask_x_error = 0;
         for x in 0..width {
             let offset = (y * width + x) * 4;
-            let alpha = feather_alpha(mask.pixels[mask_row + mask_x]) as u16;
+            let alpha = mask.alpha(mask_row + mask_x) as u16;
             match alpha {
                 0 => {
                     frame[offset] = 0;
@@ -723,7 +798,7 @@ fn apply_background_blur(
         for x in 0..width {
             let offset = (y * width + x) * 4;
             let reduced_offset = (reduced_y * reduced_width + x / BLUR_DOWNSAMPLE) * 3;
-            let alpha = feather_alpha(mask.pixels[mask_row + mask_x]) as u16;
+            let alpha = mask.alpha(mask_row + mask_x) as u16;
             match alpha {
                 0 => frame[offset..offset + 3]
                     .copy_from_slice(&reduced[reduced_offset..reduced_offset + 3]),
@@ -790,7 +865,7 @@ fn apply_pixel_party(
         for x in 0..width {
             let offset = (y * width + x) * 4;
             let reduced_offset = (reduced_y * reduced_width + x / PIXEL_PARTY_BLOCK_SIZE) * 3;
-            let alpha = feather_alpha(mask.pixels[mask_row + mask_x]) as u16;
+            let alpha = mask.alpha(mask_row + mask_x) as u16;
             match alpha {
                 0 => frame[offset..offset + 3]
                     .copy_from_slice(&scratch.reduced[reduced_offset..reduced_offset + 3]),
@@ -958,6 +1033,42 @@ fn feather_alpha(probability: u8) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn avatar_alpha_composites_background_without_camera_or_perception_mask() {
+        let effects = VideoEffects::default();
+        effects.set_output_mode(VideoOutputMode::ComicAvatar);
+        let now = unix_ms();
+        effects.publish_avatar(
+            AvatarFrame::new(
+                7,
+                now,
+                3,
+                1,
+                vec![10, 20, 30, 255, 80, 90, 100, 0, 100, 100, 100, 128],
+            )
+            .unwrap()
+            .with_alpha(true),
+        );
+        effects.set_background(true, BackgroundEffect::GreenScreen);
+        let mut frame = vec![213; 12];
+        effects.apply_output(&mut frame, 3, 1, now);
+        assert_eq!(&frame[..4], &[10, 20, 30, 0]);
+        assert_eq!(&frame[4..8], &[0, 255, 0, 0]);
+        assert_eq!(&frame[8..12], &[50, 177, 50, 0]);
+        effects.set_background(false, BackgroundEffect::GreenScreen);
+        effects.apply_output(&mut frame, 3, 1, now);
+        assert_eq!(&frame[4..8], &[33, 28, 26, 0]);
+        effects.set_background(true, BackgroundEffect::PixelParty);
+        effects.apply_output(&mut frame, 3, 1, now);
+        assert_eq!(&frame[..4], &[10, 20, 30, 0]);
+        assert_ne!(&frame[4..8], &[213; 4]);
+        effects.clear_avatar();
+        effects.set_background(true, BackgroundEffect::GreenScreen);
+        frame.fill(213);
+        effects.apply_output(&mut frame, 3, 1, now);
+        assert_eq!(frame, vec![0; 12]);
+    }
 
     #[test]
     fn validates_mask_dimensions_and_length() {
