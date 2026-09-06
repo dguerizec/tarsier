@@ -1,3 +1,4 @@
+import "/assets/audio.js";
 import { createElement, FolderOpen, FlipHorizontal2, Bone } from "/assets/lucide.js";
 
 const $ = (selector) => document.querySelector(selector);

@@ -146,6 +146,17 @@ pub fn router_with_controls(
             get(network_settings).post(set_network_settings),
         )
         .route("/assets/app.js", get(app_js))
+        .route(
+            "/assets/audio.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/javascript")],
+                    include_str!("../web/audio.js"),
+                )
+            }),
+        )
+        .route("/api/v1/audio/sources", get(audio_sources))
+        .route("/api/v1/audio/meter", get(audio_meter))
         .route("/assets/lucide.js", get(lucide_js))
         .route("/assets/styles.css", get(styles_css))
         .route("/api/v1/health", get(health))
@@ -2833,6 +2844,35 @@ async fn activate_scenario(state: &ApiState, scenario: &ScenarioConfig, trigger_
             serde_json::to_value(activation).unwrap_or(Value::Null),
         )
         .await;
+}
+
+async fn audio_sources() -> Response {
+    match crate::audio::sources().await {
+        Ok(sources) => Json(sources).into_response(),
+        Err(error) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+async fn audio_meter(
+    websocket: WebSocketUpgrade,
+    State(state): State<ApiState>,
+    axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let Some(source) = query.get("source") else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    match crate::audio::sources().await {
+        Ok(sources) if sources.iter().any(|item| &item.id == source) => {
+            let source = source.clone();
+            websocket.on_upgrade(move |socket| crate::audio::stream(socket, source, state.shutdown))
+        }
+        Ok(_) => StatusCode::NOT_FOUND.into_response(),
+        Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    }
 }
 
 async fn events_socket(

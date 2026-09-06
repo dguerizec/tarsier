@@ -61,6 +61,12 @@
             <button id="skeleton-toggle" type="button" aria-label="Skeletons" aria-pressed="false" title="Show skeletons"></button>
           </div>
         </div>
+        <section class="audio-panel" aria-labelledby="audio-heading">
+          <div class="panel-title"><h2 id="audio-heading">Audio</h2><span>Waveform · Last 10 seconds</span></div>
+          <p class="hint">Enable a source to view its levels. Audio is not recorded or played back.</p>
+          <p id="audio-status" class="hint" role="status">Looking for microphones…</p>
+          <div id="audio-tracks"></div>
+        </section>
         <p id="photo-status" class="photo-status" role="status" aria-live="polite">Space: photo · Ctrl+Space: start/stop video · Includes current video effects.</p>
         <p id="recording-status" class="photo-status" role="status" aria-live="polite" hidden></p>
         <div class="pan-tilt-bar">

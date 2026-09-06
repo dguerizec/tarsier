@@ -218,3 +218,18 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .settings-page .network-notice { color: var(--amber); }
 
 .image-setting-editor .segmented-control button { min-width: 2.25rem; padding: .3rem .4rem; font-size: .65rem; }
+
+.audio-panel { margin-top: 1rem; padding: 1rem; border: 1px solid var(--panel-edge); border-radius: .75rem; background: #0a0e0c; }
+.audio-panel .panel-title { margin-bottom: .4rem; }
+.audio-panel .hint { margin: .4rem 0; }
+.audio-track { margin-top: .8rem; }
+.audio-track-header { display: flex; align-items: center; gap: .7rem; flex-wrap: wrap; margin-bottom: .5rem; }
+.audio-track-header strong { font-size: .8rem; overflow-wrap: anywhere; }
+.audio-track-state { color: var(--muted); font-size: .72rem; flex: 1; }
+.audio-visual { display: grid; grid-template-columns: minmax(0, 1fr) 105px; gap: .8rem; align-items: center; }
+.audio-visual canvas { display: block; width: 100%; height: 64px; background: #080c0a; border-radius: .3rem; }
+.audio-meters > div { display: flex; align-items: center; gap: .4rem; }
+.audio-meters span { font-size: .65rem; color: var(--muted); }
+.audio-meters meter { width: 85px; height: 13px; }
+.audio-meters .audio-peak { display: block; text-align: right; font-variant-numeric: tabular-nums; margin-top: .25rem; }
+.audio-meters .clipping { color: #f37878; }

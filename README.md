@@ -851,3 +851,29 @@ Inspect the embedded data with:
 exiftool -UserComment -b photo.jpg
 ffprobe -v error -show_entries format_tags=tarsier_settings -of json video.mp4
 ```
+
+
+### Audio level panel
+
+The panel below the preview lists the daemon host's microphone sources by name.
+Enable each source with **On** to see a scrolling ten-second amplitude envelope,
+left/right peak meters in dBFS, and a full-scale clipping indicator. **Off** stops
+that panel's capture; it does not mute the system microphone or other applications.
+Sources start off when opening or reloading the page. Closing the page releases
+its capture streams. Device discovery refreshes every five seconds and excludes
+speaker monitor sources. Stereo channels share an envelope without phase cancellation;
+mono sources are converted to stereo for the display.
+
+The daemon requires `pactl` and `parec` from the PulseAudio utilities package and
+access to the user's PulseAudio-compatible server (including PipeWire-Pulse).
+Capture uses 48 kHz stereo PCM and sends only 50 ms amplitude summaries to the UI.
+Raw audio is neither sent to the browser nor saved. Existing video recordings
+remain video-only; virtual microphone output and agent audio are future work.
+
+- `GET /api/v1/audio/sources`: available source IDs, descriptions, and mute state.
+- `WS /api/v1/audio/meter?source=<encoded-source-id>`: on-demand amplitude summaries
+  (`min`, `max`, stereo `peak` and `rms`, `clipped`); closes on capture failure.
+
+Each open meter owns a capture stream, released on disconnect or daemon shutdown.
+Multiple enabled microphones can be displayed simultaneously. With LAN access
+enabled, this panel follows the same access boundary as the camera preview.

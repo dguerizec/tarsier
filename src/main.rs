@@ -1,4 +1,5 @@
 mod api;
+mod audio;
 mod camera;
 mod config;
 mod effects;
