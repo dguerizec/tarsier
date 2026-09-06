@@ -885,6 +885,12 @@ keeping the reservation requires an active capture stream, whose samples are not
 routed to the virtual output or shown in meters while Off. A released input stays
 released even after reconnecting, until **Unlocked** is clicked or the daemon restarts.
 
+Released inputs automatically switch from **Unlocked** to **Shared** while another
+application is connected, and back when the last external capture disconnects.
+Tarsier's own capture processes are excluded. A `pw-link --monitor` listener
+coalesces connection changes over 200 ms, with a five-second fallback scan; only
+changed occupancy is broadcast to viewers. This does not re-enable exclusivity.
+
 A reservation is marked **Locked** only after the exclusive stream
 receives samples. Busy or unavailable inputs show **Shared** and retry;
 Tarsier does not interrupt existing applications to acquire a reservation.
@@ -909,7 +915,7 @@ remain independent. These settings are shared across browser clients but reset t
 off on daemon restart, while input reservations are automatically reacquired.
 Recordings remain video-only; agent audio is future work.
 
-Dependencies: `pactl` and `parec` (PulseAudio utilities), `pw-cli` and
+Dependencies: `pactl` and `parec` (PulseAudio utilities), `pw-cli`, `pw-link`, `pw-dump`, and
 `libpipewire-module-pipe-tunnel` (PipeWire), a working user PipeWire/PulseAudio
 session, and `XDG_RUNTIME_DIR`. The virtual source uses PipeWire's
 [Unix pipe tunnel](https://docs.pipewire.org/page_module_pipe_tunnel.html), hosted

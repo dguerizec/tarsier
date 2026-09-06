@@ -4,6 +4,7 @@ const status = document.querySelector('#audio-status');
 let enabledSources = null;
 let reservations = {};
 let releasedSources = new Set();
+let busySources = new Set();
 
 const applicationsDialog = document.querySelector('#audio-applications-dialog');
 const applicationsStatus = document.querySelector('#audio-applications-status');
@@ -124,7 +125,7 @@ function renderReservation(track) {
   const transitioning = track.reservationPending
     || (released && reservation?.status === 'held')
     || (!released && reservation?.status === 'released');
-  const state = transitioning ? 'pending' : released ? 'unlocked'
+  const state = transitioning ? 'pending' : released ? (busySources.has(track.id) ? 'shared' : 'unlocked')
     : reservation?.status === 'held' ? 'locked'
     : reservation?.status === 'unavailable' ? 'shared'
     : reservation?.status === 'disconnected' ? 'disconnected' : 'pending';
@@ -228,9 +229,10 @@ document.querySelectorAll('[data-audio-mute]').forEach((button) => {
   button.onclick = () => void updateOutput({ muted: button.dataset.audioMute === 'true' });
 });
 
-export function syncAudioCapture(sources, output, currentReservations, released) {
+export function syncAudioCapture(sources, output, currentReservations, released, busy) {
   reservations = currentReservations || {};
   releasedSources = new Set(released || []);
+  busySources = new Set(busy || []);
   if (output) virtualState = output;
   enabledSources = new Set(sources);
   for (const track of tracks.values()) syncTrack(track);

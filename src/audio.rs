@@ -345,6 +345,7 @@ impl AudioHub {
             HashMap::new();
         let (inventory_tx, inventory) = watch::channel(None);
         let discovery = tokio::spawn(discover(inventory_tx, shutdown.clone()));
+        let connections = tokio::spawn(monitor_connections(runtime.clone(), shutdown.clone()));
         let mut last_inventory = Vec::new();
         let mut output: Option<(oneshot::Sender<()>, JoinHandle<()>)> = None;
         let mut tick = interval(Duration::from_millis(100));
@@ -442,6 +443,7 @@ impl AudioHub {
             let _ = task.await;
         }
         let _ = discovery.await;
+        let _ = connections.await;
     }
 
     async fn virtual_output(self, runtime: Runtime, mut stop: oneshot::Receiver<()>) {
@@ -762,6 +764,110 @@ async fn reconcile_reservations(runtime: &Runtime, sources: &[Source]) {
         .await;
 }
 
+fn is_own_capture(app: &Application) -> bool {
+    let Some(pid) = app.pid.as_ref().and_then(|pid| pid.parse::<u32>().ok()) else {
+        return false;
+    };
+    if pid == std::process::id() {
+        return true;
+    }
+    std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .ok()
+        .and_then(|stat| {
+            stat.rsplit_once(") ")?
+                .1
+                .split_whitespace()
+                .nth(1)?
+                .parse::<u32>()
+                .ok()
+        })
+        == Some(std::process::id())
+}
+
+fn busy_sources(graph: &[serde_json::Value]) -> Vec<String> {
+    let mut busy: Vec<_> = graph
+        .iter()
+        .filter_map(|node| {
+            let props = &node["info"]["props"];
+            let name = props["node.name"].as_str()?;
+            if node["type"] != "PipeWire:Interface:Node"
+                || props["media.class"] != "Audio/Source"
+                || name == VIRTUAL_SOURCE
+            {
+                return None;
+            }
+            connected_applications(graph, name)
+                .applications
+                .iter()
+                .any(|app| !is_own_capture(app))
+                .then(|| name.to_owned())
+        })
+        .collect();
+    busy.sort();
+    busy.dedup();
+    busy
+}
+
+async fn refresh_connections(runtime: &Runtime) -> Result<()> {
+    let output = timeout(
+        Duration::from_secs(3),
+        Command::new("pw-dump").kill_on_drop(true).output(),
+    )
+    .await??;
+    if !output.status.success() {
+        bail!("Could not inspect audio connections");
+    }
+    let graph: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout)?;
+    let busy = busy_sources(&graph);
+    if runtime.state().await.audio_busy_sources != busy {
+        runtime
+            .update(|state| state.audio_busy_sources = busy)
+            .await;
+    }
+    Ok(())
+}
+
+async fn monitor_connections(runtime: Runtime, mut shutdown: watch::Receiver<bool>) {
+    loop {
+        if *shutdown.borrow() {
+            return;
+        }
+        let child = Command::new("pw-link")
+            .args(["--monitor", "--links", "--id"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn();
+        if let Ok(mut child) = child {
+            let mut lines =
+                BufReader::new(child.stdout.take().expect("piped link monitor")).lines();
+            let mut tick = interval(Duration::from_millis(200));
+            tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            let mut poll = interval(Duration::from_secs(5));
+            poll.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            let mut dirty = true;
+            loop {
+                tokio::select! {
+                    _ = shutdown.changed() => return,
+                    line = lines.next_line() => match line {
+                        Ok(Some(_)) => { dirty = true; continue; },
+                        _ => break,
+                    },
+                    _ = poll.tick() => dirty = true,
+                    _ = tick.tick() => {},
+                }
+                if dirty {
+                    dirty = false;
+                    let _ = refresh_connections(&runtime).await;
+                }
+            }
+        }
+        // Keep the fallback scan working even when the monitor cannot start.
+        let _ = refresh_connections(&runtime).await;
+        tokio::select! { _ = shutdown.changed() => return, _ = sleep(Duration::from_secs(5)) => {} }
+    }
+}
+
 async fn discover(
     inventory: watch::Sender<Option<Vec<Source>>>,
     mut shutdown: watch::Receiver<bool>,
@@ -839,6 +945,22 @@ fn measure(bytes: &[u8]) -> Level {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn busy_sources_excludes_own_capture_and_tracks_external_links() {
+        use serde_json::json;
+        let mut graph = vec![
+            json!({"id":1,"type":"PipeWire:Interface:Node","info":{"props":{"node.name":"mic","media.class":"Audio/Source"}}}),
+            json!({"id":2,"type":"PipeWire:Interface:Node","info":{"props":{"application.process.id":std::process::id()}}}),
+            json!({"id":3,"type":"PipeWire:Interface:Node","info":{"props":{"application.name":"External recorder"}}}),
+            json!({"id":4,"type":"PipeWire:Interface:Link","info":{"output-node-id":1,"input-node-id":2}}),
+        ];
+        assert!(busy_sources(&graph).is_empty());
+        graph.push(json!({"id":5,"type":"PipeWire:Interface:Link","info":{"output-node-id":1,"input-node-id":3}}));
+        assert_eq!(busy_sources(&graph), vec!["mic"]);
+        graph.pop();
+        assert!(busy_sources(&graph).is_empty());
+    }
 
     #[test]
     fn signaling_rejects_stale_identity_and_terminates_owned_process() {
