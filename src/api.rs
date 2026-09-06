@@ -205,6 +205,10 @@ pub fn router_with_controls(
         .route("/api/v1/camera/snapshot", get(snapshot))
         .route("/api/v1/camera/photos", post(take_photo))
         .route("/api/v1/camera/photos/{filename}", get(saved_photo))
+        .route(
+            "/api/v1/camera/photos/{filename}/open",
+            post(open_saved_photo),
+        )
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
@@ -1379,6 +1383,59 @@ async fn saved_photo(axum::extract::Path(filename): axum::extract::Path<String>)
         )
             .into_response(),
         _ => (StatusCode::NOT_FOUND, "Photo not found").into_response(),
+    }
+}
+
+async fn open_saved_photo(
+    axum::extract::Path(filename): axum::extract::Path<String>,
+    Json(_request): Json<serde_json::Value>,
+) -> Response {
+    let checked = tokio::task::spawn_blocking(move || -> anyhow::Result<std::path::PathBuf> {
+        let directory = photos_directory()?;
+        read_saved_photo(&directory, &filename)?;
+        Ok(directory.join(filename))
+    })
+    .await;
+    let Ok(Ok(path)) = checked else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "Photo not found"})),
+        )
+            .into_response();
+    };
+    let mut command = tokio::process::Command::new("xdg-open");
+    command
+        .arg(path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("Could not launch the photo viewer: {error}")})),
+            )
+                .into_response();
+        }
+    };
+    match tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await {
+        Ok(Ok(status)) if status.success() => StatusCode::ACCEPTED.into_response(),
+        Ok(result) => {
+            tracing::warn!(?result, "photo viewer launch failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Could not open the photo with the default application"})),
+            )
+                .into_response()
+        }
+        Err(_) => {
+            // Some desktop openers remain alive for the lifetime of the viewer.
+            tokio::spawn(async move {
+                let _ = child.wait().await;
+            });
+            StatusCode::ACCEPTED.into_response()
+        }
     }
 }
 

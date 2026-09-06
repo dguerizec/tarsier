@@ -190,4 +190,4 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 #resolution-status:not(:empty) { margin-top: .6rem; color: var(--amber); }
 
 .photo-status a { color: var(--green); text-underline-offset: .2rem; }
-.photo-status .photo-file-link { display: inline-block; padding: .15rem .25rem; text-decoration: none; }
+.photo-status .photo-file-link { display: inline-block; padding: .15rem .25rem; background: transparent; color: inherit; font: inherit; }

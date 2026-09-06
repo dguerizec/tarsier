@@ -1580,13 +1580,31 @@ takePhoto.addEventListener("click", async () => {
     photoLink.textContent = payload.path;
     photoLink.target = "_blank";
     photoLink.rel = "noopener";
-    const fileLink = document.createElement("a");
-    fileLink.href = `file://${payload.path.split("/").map(encodeURIComponent).join("/")}`;
+    const fileLink = document.createElement("button");
+    fileLink.type = "button";
     fileLink.className = "photo-file-link";
     fileLink.textContent = "📂";
-    fileLink.title = "Open local photo (file://)";
-    fileLink.setAttribute("aria-label", "Open local photo file");
-    photoStatus.replaceChildren("Saved: ", photoLink, " ", fileLink);
+    fileLink.title = "Open photo with the default application";
+    fileLink.setAttribute("aria-label", "Open photo with the default application");
+    const openStatus = document.createElement("span");
+    fileLink.addEventListener("click", async () => {
+      fileLink.disabled = true;
+      openStatus.textContent = " Opening…";
+      try {
+        const response = await fetch(`${payload.url}/open`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        });
+        if (!response.ok) throw new Error((await response.json()).error || "Could not open photo");
+        openStatus.textContent = "";
+      } catch (error) {
+        openStatus.textContent = ` ${error.message}`;
+      } finally {
+        fileLink.disabled = false;
+      }
+    });
+    photoStatus.replaceChildren("Saved: ", photoLink, " ", fileLink, openStatus);
   } catch (error) {
     photoStatus.classList.add("error");
     photoStatus.textContent = error instanceof Error ? error.message : String(error);
