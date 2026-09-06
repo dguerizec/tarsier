@@ -134,7 +134,14 @@ impl Recorder {
         metadata["output"]["recording_fps"] = serde_json::json!(config.fps);
         metadata["output"]["recording_audio"] = serde_json::json!(audio);
         if audio {
-            metadata["output"]["recording_audio_gain_db"] = serde_json::json!(18);
+            metadata["output"]["recording_audio_gain_db"] = serde_json::json!(
+                settings
+                    .audio_virtual
+                    .source
+                    .as_ref()
+                    .and_then(|id| settings.audio_calibrations.get(id))
+                    .map_or(0, |calibration| calibration.gain_db)
+            );
         }
         let mut command = Command::new("ffmpeg");
         command
@@ -183,7 +190,7 @@ impl Recorder {
                 "-b:a",
                 "192k",
                 "-af",
-                "aresample=async=1,volume=18dB,alimiter=limit=0.891251:level=false:latency=true",
+                "aresample=async=1,alimiter=limit=0.891251:level=false:latency=true",
             ]);
         } else {
             command.args(["-map", "0:v:0", "-an"]);

@@ -302,3 +302,12 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 #audio-tracks .audio-track-overlay { left: .5rem; }
 
 .tracking-mode-controls button { display: grid; place-items: center; width: 1.875rem; height: 1.875rem; padding: 0; border-radius: .45rem; }
+
+.audio-meter-wrap { position: relative; display: inline-flex; }
+.audio-max-marker { position: absolute; top: 2px; bottom: 2px; width: 2px; background: var(--green); transform: translateX(-2px); pointer-events: none; }
+.audio-meters .audio-max { display: block; padding: 0; margin: .2rem 0 0 auto; background: none; color: var(--muted); font-size: .65rem; font-weight: normal; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.audio-meters .audio-max:hover { color: var(--green); }
+.audio-calibration { display: flex; align-items: center; flex-wrap: wrap; gap: .4rem; margin-top: .3rem; font-size: .7rem; color: var(--muted); }
+.audio-calibration button { font-size: .65rem; padding: .2rem .4rem; }
+
+.audio-meters .audio-max.clipping { color: #f37878; }

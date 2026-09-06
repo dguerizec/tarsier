@@ -41,6 +41,7 @@ pub struct AudioSettings {
     pub output_source: Option<String>,
     pub output_enabled: bool,
     pub output_muted: bool,
+    pub calibrations: std::collections::BTreeMap<String, crate::audio::Calibration>,
 }
 
 impl AudioSettings {
@@ -50,6 +51,7 @@ impl AudioSettings {
             output_source: state.audio_virtual.source.clone(),
             output_enabled: state.audio_virtual.enabled,
             output_muted: state.audio_virtual.muted,
+            calibrations: state.audio_calibrations.clone(),
         }
     }
 
@@ -58,6 +60,7 @@ impl AudioSettings {
         state.audio_virtual.source = self.output_source.clone();
         state.audio_virtual.enabled = self.output_enabled;
         state.audio_virtual.muted = self.output_muted;
+        state.audio_calibrations = self.calibrations.clone();
     }
 }
 
@@ -394,6 +397,26 @@ mod tests {
             output_source: Some("disabled-mic".into()),
             output_enabled: true,
             output_muted: true,
+            calibrations: std::collections::BTreeMap::from([
+                (
+                    "disconnected-mic".into(),
+                    crate::audio::Calibration {
+                        gain_db: 12,
+                        peak_db: -18,
+                        noise_db: -60,
+                        calibrated_at_ms: 42,
+                    },
+                ),
+                (
+                    "other-mic".into(),
+                    crate::audio::Calibration {
+                        gain_db: -3,
+                        peak_db: -3,
+                        noise_db: -50,
+                        calibrated_at_ms: 43,
+                    },
+                ),
+            ]),
         };
         store.set_audio(audio.clone()).await.unwrap();
         store.set_network_lan_access(true).await.unwrap();

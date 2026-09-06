@@ -797,9 +797,8 @@ output at the selected resolution, including current effects and output
 transforms. Frames are shared directly by the daemon, so recording also works
 while a browser or call application uses the virtual camera. When audio output is enabled, the MP4 includes **Tarsier Microphone** as a 48 kHz
 stereo AAC track, respecting the selected input and output mute (including system
-mixer settings). Recording applies an 18 dB gain followed by a limiter at −1 dBFS
-to make quiet microphones audible while containing peaks. Limiter latency is
-compensated; the virtual microphone and its meters retain their original level.
+mixer settings). Recording uses the calibrated virtual output level and a latency-compensated
+limiter at −1 dBFS. No fixed recording boost is applied.
 With audio output off at start, the recording is video-only.
 An enabled but unavailable output reports an error instead of silently omitting
 audio. Input changes and mute remain live during recording; stop recording before
@@ -929,7 +928,21 @@ input. Then turn the output **On** to publish
 **Tarsier Microphone** as an audio input in KDE, browsers, and call applications.
 Enabling the virtual microphone or switching its input enables capture of that
 selected source. The audio is passed through as 48 kHz, 16-bit stereo PCM, without
-denoising or gain processing. Mono sources are converted to stereo. **Mute output**
+denoising. Mono sources are converted to stereo. Each input starts at 0 dB gain.
+Use **Calibrate** on an enabled input: stay quiet for 2 seconds, then speak normally
+for 6 seconds at your usual distance. Calibration compares speech levels with the
+ambient noise floor and targets peaks near −6 dBFS, with gain bounded to ±24 dB.
+Silence, insufficient contrast, clipping, and interrupted capture are rejected
+without replacing a previous calibration. This is a level-based measurement, not
+a speech recognition model. Gain is saved per microphone and applied to the virtual
+output (including calls and recordings); input meters show the original signal,
+and output meters show the calibrated result. Stereo blocks are limited together
+at −1 dBFS to contain unexpected peaks. **Reset gain** restores 0 dB. Recalibrate
+after changing microphone position or hardware/system gain.
+
+Each meter includes a per-channel maximum marker and a **Max** value, held since
+the page opened or the last reset. Click **Max** to reset both channels; these
+maxima are local to the page and are not used as calibration measurements. **Mute output**
 sends silence while preserving input capture. An unavailable, disabled, or stale
 input also produces silence; no other microphone is selected as a fallback.
 Reconnecting the same source lets capture retry automatically.
@@ -962,6 +975,8 @@ regardless of the number of viewers. The UI receives only amplitude summaries;
 raw audio stays on the daemon host and is not played on speakers. Video recording
 saves the enabled virtual output in the MP4.
 
+- `POST /api/v1/audio/calibration`: `{ "source": "<id>" }` measures and saves calibration;
+  add `"reset": true` to remove that microphone's calibration.
 - `GET /api/v1/audio/sources`: source IDs, names, mute state, and capture enablement.
 - `POST /api/v1/audio/capture`: `{ "source": "<id>", "enabled": true }`.
 - `POST /api/v1/audio/exclusive`: `{ "source": "<id>", "exclusive": false }` to

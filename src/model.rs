@@ -17,6 +17,8 @@ pub struct RuntimeState {
     #[serde(default)]
     pub audio_virtual: crate::audio::VirtualMicrophone,
     #[serde(default)]
+    pub audio_calibrations: std::collections::BTreeMap<String, crate::audio::Calibration>,
+    #[serde(default)]
     pub audio_released_sources: Vec<String>,
     #[serde(default)]
     pub audio_busy_sources: Vec<String>,
@@ -40,6 +42,7 @@ impl Default for RuntimeState {
             last_scenario: None,
             audio_capture_sources: Vec::new(),
             audio_virtual: Default::default(),
+            audio_calibrations: Default::default(),
             audio_released_sources: Vec::new(),
             audio_busy_sources: Vec::new(),
             audio_output_applications: 0,

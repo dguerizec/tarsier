@@ -26,6 +26,8 @@ let enabledSources = null;
 let reservations = {};
 let releasedSources = new Set();
 let busySources = new Set();
+let calibrations = {};
+let calibrating = null;
 
 const applicationsDialog = document.querySelector('#audio-applications-dialog');
 const applicationsStatus = document.querySelector('#audio-applications-status');
@@ -249,8 +251,9 @@ async function updateOutput(patch) {
 document.querySelector('#audio-output-applications').onclick = () => showApplications(tracks.get(virtualId));
 document.querySelector('#preview-audio-mute').onclick = () => void updateOutput({ muted: !virtualState.muted });
 
-export function syncAudioCapture(sources, output, currentReservations, released, busy, outputApplications = 0) {
+export function syncAudioCapture(sources, output, currentReservations, released, busy, outputApplications = 0, currentCalibrations = {}) {
   document.querySelector('#audio-output-applications').textContent = `${outputApplications} ${outputApplications === 1 ? 'app' : 'apps'}`;
+  calibrations = currentCalibrations;
   reservations = currentReservations || {};
   releasedSources = new Set(released || []);
   busySources = new Set(busy || []);
@@ -262,6 +265,13 @@ export function syncAudioCapture(sources, output, currentReservations, released,
 
 function syncTrack(track) {
   renderReservation(track);
+  if (track.calibrateButton) {
+    const calibration = calibrations[track.id];
+    track.calibrateButton.disabled = !!calibrating || !enabledSources?.has(track.id) || track.unavailable;
+    track.resetGain.disabled = !!calibrating || !calibration;
+    track.gain.textContent = calibration ? `Gain ${calibration.gain_db >= 0 ? '+' : ''}${calibration.gain_db} dB` : 'Not calibrated · 0 dB';
+    track.gain.title = calibration ? `Measured peak ${calibration.peak_db} dBFS · Noise ${calibration.noise_db} dBFS. Recalibrate after changing microphone gain or position.` : 'Calibrate at your usual speaking distance.';
+  }
   if (track.sourceButton) {
     track.sourceButton.setAttribute('aria-pressed', String(virtualState.source === track.id));
     track.sourceButton.disabled = virtualPending || track.unavailable;
@@ -328,6 +338,7 @@ function start(track) {
     if (level.error) { stop(track, level.error); return; }
     const now = performance.now();
     track.level = { ...level, time: now };
+    track.maxPeak = track.maxPeak.map((peak, i) => Math.max(peak, level.peak[i]));
     const mutedOutput = track.id === virtualId && virtualState.muted;
     const input = mutedOutput ? tracks.get(virtualState.source) : null;
     const reference = input?.enabled && input.level && now - input.level.time < 500
@@ -352,17 +363,17 @@ function create(source) {
     <div class="audio-waveform"><canvas role="img"></canvas>
       <div class="audio-track-overlay"><strong></strong><span class="audio-track-state"></span></div>
     </div><div class="audio-meters">
-    <div><span>L</span><meter min="-60" max="0" low="-18" high="-6" optimum="-24" value="-60"></meter></div>
-    <div><span>R</span><meter min="-60" max="0" low="-18" high="-6" optimum="-24" value="-60"></meter></div>
-    <span class="audio-peak">−∞ dBFS</span></div>
+    <div><span>L</span><span class="audio-meter-wrap"><meter min="-60" max="0" low="-18" high="-6" optimum="-24" value="-60"></meter><i class="audio-max-marker" hidden></i></span></div>
+    <div><span>R</span><span class="audio-meter-wrap"><meter min="-60" max="0" low="-18" high="-6" optimum="-24" value="-60"></meter><i class="audio-max-marker" hidden></i></span></div>
+    <span class="audio-peak">−∞ dBFS</span><button type="button" class="audio-max" title="Maximum since reset · Click to reset both channels">Max −∞ dBFS</button></div>
     <div class="audio-track-controls segmented-control" role="group"><button type="button" class="secondary compact" aria-pressed="false">On</button></div></div>`;
   row.querySelector('strong').textContent = source.name;
   row.querySelector('strong').title = source.name;
   const track = {
-    id: source.id, name: source.name, row, history: [], level: null, socket: null, clipUntil: 0,
+    id: source.id, name: source.name, row, history: [], level: null, socket: null, clipUntil: 0, maxPeak: [0, 0],
     enabled: source.enabled === true, pending: false, unavailable: false, retryAt: 0,
     label: row.querySelector('.audio-track-state'), canvas: row.querySelector('canvas'),
-    buttons: [...row.querySelectorAll('button')], meters: [...row.querySelectorAll('meter')],
+    buttons: [...row.querySelectorAll('[role=group] > button')], meters: [...row.querySelectorAll('meter')],
     peak: row.querySelector('.audio-peak'),
   };
   row.querySelector('[role="group"]').setAttribute('aria-label', `${source.name} capture`);
@@ -413,8 +424,57 @@ function create(source) {
   } else {
     container.append(row);
   }
+  track.maxLabel = row.querySelector('.audio-max');
+  track.maxMarkers = [...row.querySelectorAll('.audio-max-marker')];
+  track.maxLabel.onclick = () => { track.maxPeak = [0, 0]; };
+  if (source.id !== virtualId) {
+    const calibration = document.createElement('div');
+    calibration.className = 'audio-calibration';
+    calibration.innerHTML = '<span class="audio-gain"></span><button type="button" class="secondary compact">Calibrate</button><button type="button" class="secondary compact">Reset gain</button><span role="status">2 s quiet · 6 s speaking</span>';
+    track.gain = calibration.querySelector('.audio-gain');
+    [track.calibrateButton, track.resetGain] = calibration.querySelectorAll('button');
+    track.calibrationStatus = calibration.querySelector('[role=status]');
+    track.calibrateButton.title = 'Stay quiet for 2 seconds, then speak normally for 6 seconds. Applies to Tarsier output and recordings.';
+    track.calibrateButton.onclick = () => void calibrate(track);
+    track.resetGain.onclick = () => void calibrate(track, true);
+    row.append(calibration);
+  }
   tracks.set(source.id, track);
   return track;
+}
+
+async function calibrate(track, reset = false) {
+  if (calibrating) return;
+  calibrating = track.id;
+  for (const item of tracks.values()) syncTrack(item);
+  const started = performance.now();
+  track.calibrationStatus.classList.remove('error');
+  const render = () => {
+    const elapsed = (performance.now() - started) / 1000;
+    track.calibrationStatus.textContent = reset ? 'Resetting…' : elapsed < 2
+      ? `Stay quiet · ${Math.ceil(2 - elapsed)} s`
+      : elapsed < 8 ? `Speak normally · ${Math.ceil(8 - elapsed)} s` : 'Saving calibration…';
+  };
+  render();
+  const timer = setInterval(render, 100);
+  try {
+    const response = await fetch('/api/v1/audio/calibration', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source: track.id, reset }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Calibration failed');
+    if (data.calibration) calibrations[track.id] = data.calibration;
+    else delete calibrations[track.id];
+    track.calibrationStatus.textContent = reset ? 'Gain reset to 0 dB' : 'Calibration saved';
+  } catch (error) {
+    track.calibrationStatus.classList.add('error');
+    track.calibrationStatus.textContent = error.message;
+  } finally {
+    clearInterval(timer);
+    calibrating = null;
+    for (const item of tracks.values()) syncTrack(item);
+  }
 }
 
 async function refresh() {
@@ -487,6 +547,13 @@ function draw(now) {
     const peak = live ? Math.max(...live.peak) : 0;
     track.peak.textContent = track.clipUntil > now ? 'CLIP' : peak > 0 ? `${(20 * Math.log10(peak)).toFixed(1)} dBFS` : '−∞ dBFS';
     track.peak.classList.toggle('clipping', track.clipUntil > now);
+    const maximum = Math.max(...track.maxPeak);
+    track.maxLabel.textContent = maximum > 0 ? `Max ${(20 * Math.log10(maximum)).toFixed(1)} dBFS` : 'Max −∞ dBFS';
+    track.maxLabel.classList.toggle('clipping', maximum >= 32767 / 32768);
+    track.maxMarkers.forEach((marker, i) => {
+      marker.hidden = track.maxPeak[i] === 0;
+      marker.style.left = `${(amplitudeDb(track.maxPeak[i]) + 60) / 60 * 100}%`;
+    });
     if (track.socket && track.level && !live) track.label.textContent = 'Waiting for audio…';
   }
   requestAnimationFrame(draw);
