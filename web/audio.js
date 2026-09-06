@@ -326,7 +326,11 @@ function start(track) {
     if (level.error) { stop(track, level.error); return; }
     const now = performance.now();
     track.level = { ...level, time: now };
-    track.history.push(track.level);
+    const mutedOutput = track.id === virtualId && virtualState.muted;
+    const input = mutedOutput ? tracks.get(virtualState.source) : null;
+    const reference = input?.enabled && input.level && now - input.level.time < 500
+      ? input.level : track.level;
+    track.history.push(mutedOutput ? { ...reference, time: now, muted: true } : track.level);
     if (track.history.length > 500) track.history.splice(0, track.history.length - 500);
     if (level.clipped) track.clipUntil = now + 1500;
     track.label.textContent = track.muted ? 'Source muted' : 'Capturing';
@@ -394,6 +398,7 @@ function create(source) {
   if (source.id === virtualId) {
     const controls = row.querySelector('[role="group"]');
     controls.setAttribute('aria-label', 'Virtual microphone output');
+    track.canvas.title += ' · Gray: selected input before Tarsier mute; meters show actual output';
     track.buttons[0].setAttribute('data-audio-output', '');
     track.buttons[0].setAttribute('aria-label', 'Virtual microphone');
     track.buttons[0].onclick = () => void updateOutput({ enabled: !virtualState.enabled });
@@ -470,7 +475,7 @@ function draw(now) {
     context.stroke();
     for (const level of track.history) {
       const x = width * (1 - (now - level.time) / 10000);
-      context.fillStyle = level.clipped ? '#f37878' : '#94dba7';
+      context.fillStyle = level.muted ? '#7c8580' : level.clipped ? '#f37878' : '#94dba7';
       const top = waveformAmplitude(level.max);
       const bottom = waveformAmplitude(level.min);
       context.fillRect(x, height / 2 - top * height * 0.46,

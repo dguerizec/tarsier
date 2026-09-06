@@ -870,7 +870,9 @@ are excluded, so applications can share **Tarsier Microphone**.
 
 Audio waveform envelopes use a signed logarithmic display from -60 to 0 dBFS,
 matching the peak meter range. The waveform shows ten seconds of history; meters
-show the latest block. This display mapping does not alter captured audio.
+show the latest block. While output is muted, its waveform shows the selected
+input before mute in gray; output meters still show the actual published signal.
+This display mapping does not alter captured audio.
 
 The input list can be collapsed while keeping the output visible; this preference
 is saved in the browser. Capture, virtual output, and mute each use one toggle
