@@ -121,22 +121,27 @@ function renderReservation(track) {
   if (track.id === virtualId) return;
   const released = releasedSources.has(track.id);
   const reservation = reservations[track.id];
-  track.reserveButton.textContent = released ? 'Reserve' : 'Release';
-  track.reserveButton.disabled = track.reservationPending;
-  track.reserveButton.setAttribute('aria-label', `${released ? 'Reserve' : 'Release'} ${track.name}`);
-  const labels = {
-    held: 'Reserved by Tarsier', released: 'Shared input',
-    pending: 'Reserving…', unavailable: 'Not reserved · Input busy or unavailable',
-    disconnected: 'Disconnected',
-  };
-  track.reserveStatus.textContent = track.reservationError || (!released && reservation?.status === 'released'
-    ? 'Reserving…' : released && reservation?.status === 'held' ? 'Releasing…'
-    : labels[reservation?.status] || 'Discovering…');
-  const inspectable = released || reservation?.status === 'unavailable';
-  track.reserveStatus.disabled = !inspectable;
-  track.reserveStatus.setAttribute('aria-haspopup', 'dialog');
-  track.reserveStatus.title = inspectable ? 'Show applications connected to this microphone' : reservation?.error || '';
-  track.reserveStatus.classList.toggle('reservation-warning', reservation?.status === 'unavailable');
+  const transitioning = track.reservationPending
+    || (released && reservation?.status === 'held')
+    || (!released && reservation?.status === 'released');
+  const state = transitioning ? 'pending' : released ? 'unlocked'
+    : reservation?.status === 'held' ? 'locked'
+    : reservation?.status === 'unavailable' ? 'shared'
+    : reservation?.status === 'disconnected' ? 'disconnected' : 'pending';
+  const labels = { locked: 'Locked', unlocked: 'Unlocked', shared: 'Shared',
+    pending: released ? 'Unlocking…' : 'Locking…', disconnected: 'Disconnected' };
+  const actions = { locked: 'Unlock this microphone', unlocked: 'Lock this microphone',
+    shared: 'Show applications and Kill controls. The input is busy or unavailable.' };
+  const button = track.reserveButton;
+  button.textContent = labels[state];
+  button.dataset.state = state;
+  button.disabled = state === 'pending' || state === 'disconnected';
+  button.title = actions[state] || labels[state];
+  button.setAttribute('aria-label', `${labels[state]} · ${track.name}. ${actions[state] || ''}`);
+  if (state === 'shared') button.setAttribute('aria-haspopup', 'dialog');
+  else button.removeAttribute('aria-haspopup');
+  track.reservationMessage.textContent = track.reservationError || '';
+  track.reservationMessage.hidden = !track.reservationError;
 }
 
 async function setExclusive(track) {
@@ -330,11 +335,13 @@ function create(source) {
   if (source.id !== virtualId) {
     const reservation = document.createElement('div');
     reservation.className = 'audio-reservation';
-    reservation.innerHTML = '<button type="button" class="audio-reservation-status link-button"></button><button type="button" class="secondary compact">Release</button>';
-    track.reserveStatus = reservation.querySelector('.audio-reservation-status');
-    track.reserveStatus.onclick = () => showApplications(track);
-    track.reserveButton = reservation.querySelector('.secondary');
-    track.reserveButton.onclick = () => void setExclusive(track);
+    reservation.innerHTML = '<button type="button" class="audio-reservation-status secondary compact"></button><span class="error" role="status" hidden></span>';
+    track.reserveButton = reservation.querySelector('button');
+    track.reservationMessage = reservation.querySelector('[role="status"]');
+    track.reserveButton.onclick = () => {
+      if (track.reserveButton.dataset.state === 'shared') showApplications(track);
+      else void setExclusive(track);
+    };
     row.append(reservation);
     renderReservation(track);
   }

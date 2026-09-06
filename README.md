@@ -868,8 +868,8 @@ listener triggers discovery on source arrival/removal; a five-second scan also
 recovers missed events. Tarsier's own virtual output and speaker monitor sources
 are excluded, so applications can share **Tarsier Microphone**.
 
-Each input shows its actual reservation status and a **Release** / **Reserve**
-button. Click **Not reserved** (or **Shared input**) to open an overlay listing
+Each input has one reservation button: green **Locked** releases the microphone,
+blue **Unlocked** requests exclusive capture, and red **Shared** opens an overlay listing
 applications currently connected to that input, with executable and PID when
 available. Each application with a verifiable local process has a **Kill -15**
 button. The first click sends SIGTERM; a subsequent **Kill -9** click sends
@@ -879,14 +879,14 @@ microphone connection are checked before signaling. After clicking Kill, the lis
 refreshes every two seconds until the overlay closes. Manual refresh is also
 available. The list includes native PipeWire clients;
 browser metadata may identify the browser without naming the tab or website.
-**Release** closes its exclusive stream; if that input is enabled, capture
+**Locked** closes its exclusive stream when clicked; if that input is enabled, capture
 continues in shared mode. Turning an input **Off** alone does not release it:
 keeping the reservation requires an active capture stream, whose samples are not
 routed to the virtual output or shown in meters while Off. A released input stays
-released even after reconnecting, until **Reserve** or a daemon restart.
+released even after reconnecting, until **Unlocked** is clicked or the daemon restarts.
 
-A reservation is marked **Reserved by Tarsier** only after the exclusive stream
-receives samples. Busy or unavailable inputs show **Not reserved** and retry;
+A reservation is marked **Locked** only after the exclusive stream
+receives samples. Busy or unavailable inputs show **Shared** and retry;
 Tarsier does not interrupt existing applications to acquire a reservation.
 WirePlumber's exclusive linking policy prevents ordinary new captures after
 reservation, but cannot guarantee priority over an application that connects first
