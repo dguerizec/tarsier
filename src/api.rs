@@ -2997,7 +2997,7 @@ async fn activate_scenario(state: &ApiState, scenario: &ScenarioConfig, trigger_
 }
 
 async fn audio_sources(State(state): State<ApiState>) -> Response {
-    match crate::audio::sources().await {
+    match crate::audio::sources(&state.config.audio).await {
         Ok(sources) => {
             let enabled = state.runtime.state().await.audio_capture_sources;
             Json(
@@ -3079,7 +3079,7 @@ async fn set_audio_exclusive(
     State(state): State<ApiState>,
     Json(request): Json<AudioExclusiveRequest>,
 ) -> Response {
-    if request.source == crate::audio::VIRTUAL_SOURCE {
+    if !state.config.audio.reserve_inputs || request.source == state.config.audio.virtual_source {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({"error": "Tarsier Microphone must stay shared"})),
@@ -3093,7 +3093,7 @@ async fn set_audio_exclusive(
         .audio_reservations
         .contains_key(&request.source)
     {
-        match crate::audio::sources().await {
+        match crate::audio::sources(&state.config.audio).await {
             Ok(sources) if sources.iter().any(|s| s.id == request.source) => {}
             Ok(_) => return StatusCode::NOT_FOUND.into_response(),
             Err(e) => return command_error(e),
@@ -3123,7 +3123,7 @@ async fn set_audio_capture(
 ) -> Response {
     let _guard = state.audio_settings_control.lock().await;
     if request.enabled {
-        match crate::audio::sources().await {
+        match crate::audio::sources(&state.config.audio).await {
             Ok(sources) if sources.iter().any(|source| source.id == request.source) => {}
             Ok(_) => return StatusCode::NOT_FOUND.into_response(),
             Err(error) => return command_error(error),
@@ -3162,7 +3162,7 @@ async fn audio_meter(
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
     let states = state.runtime.subscribe_state();
-    let enabled = if source == crate::audio::VIRTUAL_SOURCE {
+    let enabled = if source == &state.config.audio.virtual_source {
         states.borrow().audio_virtual.enabled
     } else {
         states.borrow().audio_capture_sources.contains(source)
@@ -3200,6 +3200,13 @@ async fn set_virtual_audio(
 // Callers must hold video_output_control before changing virtual audio.
 async fn set_virtual_audio_locked(state: ApiState, request: VirtualAudioRequest) -> Response {
     let _guard = state.audio_settings_control.lock().await;
+    if request.enabled == Some(true) && !state.config.audio.virtual_output_enabled {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "Virtual output is disabled by daemon configuration"})),
+        )
+            .into_response();
+    }
     let recording = state.recorder.status().await;
     if request.enabled == Some(false) && recording.active && recording.audio {
         return (
@@ -3208,7 +3215,7 @@ async fn set_virtual_audio_locked(state: ApiState, request: VirtualAudioRequest)
         ).into_response();
     }
     if let Some(source) = &request.source {
-        match crate::audio::sources().await {
+        match crate::audio::sources(&state.config.audio).await {
             Ok(sources) if sources.iter().any(|s| &s.id == source) => {}
             Ok(_) => {
                 return (
@@ -3359,6 +3366,42 @@ mod tests {
 
     use super::*;
     use crate::{camera, config::CameraAdapter, settings::UserSettings};
+
+    #[tokio::test]
+    async fn isolated_profile_rejects_output_and_exclusive_capture() {
+        let mut config = Config::default();
+        config.audio.reserve_inputs = false;
+        config.audio.virtual_output_enabled = false;
+        let (_stop, shutdown) = watch::channel(false);
+        let runtime = Runtime::new();
+        let app = router(config, runtime.clone(), PreviewHub::new(), None, shutdown);
+        for (path, body) in [
+            ("/api/v1/audio/virtual", r#"{"enabled":true}"#),
+            (
+                "/api/v1/audio/exclusive",
+                r#"{"source":"tarsier_microphone","exclusive":true}"#,
+            ),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(path)
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert!(matches!(
+                response.status(),
+                StatusCode::CONFLICT | StatusCode::BAD_REQUEST
+            ));
+        }
+        assert!(!runtime.state().await.audio_virtual.enabled);
+        assert!(runtime.state().await.audio_released_sources.is_empty());
+    }
 
     #[tokio::test]
     async fn release_preserves_capture_and_virtual_output_and_never_reserves_own_output() {

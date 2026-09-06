@@ -158,6 +158,13 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
         config.avatar.enabled = false;
         config.depth.enabled = false;
     }
+    if !config.audio.virtual_output_enabled {
+        user_settings.audio.output_enabled = false;
+    }
+    user_settings
+        .audio
+        .capture_sources
+        .retain(|source| config.audio.allows(source));
     let runtime = Runtime::new();
     let preview = PreviewHub::new();
     let output_mode = user_settings.output_mode();
@@ -175,6 +182,7 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
     runtime
         .update(|state| {
             user_settings.audio.apply(state);
+            state.audio_virtual.output_id = config.audio.virtual_source.clone();
             state.video_effects.transform = user_settings.video_transform;
             state.video_effects.output_mode = output_mode;
             state.video_effects.avatar_engine = avatar_engine;
@@ -237,7 +245,8 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
         (None, None)
     };
     let recorder = recording::Recorder::default();
-    let (audio, audio_task) = audio::AudioHub::start(runtime.clone(), shutdown_rx.clone());
+    let (audio, audio_task) =
+        audio::AudioHub::start(config.audio.clone(), runtime.clone(), shutdown_rx.clone());
     let app = api::router_with_controls(
         config.clone(),
         runtime.clone(),

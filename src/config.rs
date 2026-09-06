@@ -13,6 +13,7 @@ use crate::model::{AvatarEngine, BackgroundEffect, VideoOutputMode};
 #[serde(default)]
 pub struct Config {
     pub server: ServerConfig,
+    pub audio: AudioConfig,
     pub video: VideoConfig,
     pub camera: CameraConfig,
     pub perception: PerceptionConfig,
@@ -26,6 +27,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             server: ServerConfig::default(),
+            audio: AudioConfig::default(),
             video: VideoConfig::default(),
             camera: CameraConfig::default(),
             perception: PerceptionConfig::default(),
@@ -51,6 +53,9 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<()> {
+        if !valid_identifier(&self.audio.virtual_source) {
+            bail!("audio virtual_source must be a safe identifier of at most 64 characters");
+        }
         if self.video.width == 0 || self.video.height == 0 || self.video.fps == 0 {
             bail!("video width, height, and fps must be greater than zero");
         }
@@ -149,6 +154,39 @@ fn valid_identifier(identifier: &str) -> bool {
         && identifier
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+/// Process-level audio policy; user settings cannot widen these permissions.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
+pub struct AudioConfig {
+    pub reserve_inputs: bool,
+    pub allowed_sources: Option<Vec<String>>,
+    pub virtual_source: String,
+    pub virtual_output_enabled: bool,
+    pub set_default_source: bool,
+}
+
+impl Default for AudioConfig {
+    fn default() -> Self {
+        Self {
+            reserve_inputs: true,
+            allowed_sources: None,
+            virtual_source: "tarsier_microphone".into(),
+            virtual_output_enabled: true,
+            set_default_source: true,
+        }
+    }
+}
+
+impl AudioConfig {
+    pub fn allows(&self, source: &str) -> bool {
+        source != self.virtual_source
+            && self
+                .allowed_sources
+                .as_ref()
+                .is_none_or(|ids| ids.iter().any(|id| id == source))
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -390,6 +428,33 @@ impl Default for ScenarioConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn experimental_profile_limits_audio_and_devices() {
+        let config = Config::load(Some(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("config/voice-conversion.toml"),
+        ))
+        .unwrap();
+        assert!(!config.audio.reserve_inputs);
+        assert!(!config.audio.set_default_source);
+        assert!(!config.audio.virtual_output_enabled);
+        assert!(config.audio.allows("tarsier_microphone"));
+        assert!(!config.audio.allows("physical_microphone"));
+        assert!(!config.audio.allows(&config.audio.virtual_source));
+        assert_eq!(config.video.source, VideoSource::Test);
+        assert!(!config.video.loopback_enabled);
+        assert_eq!(config.camera.adapter, CameraAdapter::Mock);
+        assert_eq!(config.server.bind.to_string(), "127.0.0.1:8743");
+    }
+
+    #[test]
+    fn rejects_unsafe_virtual_source_names() {
+        let mut config = Config::default();
+        for name in ["", "bad name", "bad}props", "bad\\name"] {
+            config.audio.virtual_source = name.into();
+            assert!(config.validate().is_err());
+        }
+    }
 
     #[test]
     fn defaults_are_valid() {

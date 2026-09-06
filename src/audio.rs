@@ -23,8 +23,6 @@ use tokio::{
     time::{MissedTickBehavior, interval, sleep, timeout},
 };
 
-pub const VIRTUAL_SOURCE: &str = "tarsier_microphone";
-
 pub(crate) fn is_camera_source(source: &str) -> bool {
     source.to_ascii_lowercase().contains("obsbot")
 }
@@ -36,9 +34,14 @@ pub fn auto_gain_default() -> bool {
     true
 }
 
+fn default_output_id() -> String {
+    "tarsier_microphone".into()
+}
+
 impl Default for VirtualMicrophone {
     fn default() -> Self {
         Self {
+            output_id: default_output_id(),
             enabled: false,
             source: None,
             muted: false,
@@ -51,6 +54,8 @@ impl Default for VirtualMicrophone {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct VirtualMicrophone {
+    #[serde(default = "default_output_id")]
+    pub output_id: String,
     #[serde(default = "auto_gain_default")]
     pub auto_gain: bool,
     pub enabled: bool,
@@ -111,11 +116,11 @@ async fn all_sources() -> Result<Vec<Source>> {
         .collect())
 }
 
-pub async fn sources() -> Result<Vec<Source>> {
+pub async fn sources(config: &crate::config::AudioConfig) -> Result<Vec<Source>> {
     Ok(all_sources()
         .await?
         .into_iter()
-        .filter(|s| s.id != VIRTUAL_SOURCE)
+        .filter(|s| config.allows(&s.id))
         .collect())
 }
 
@@ -305,6 +310,7 @@ enum Packet {
 
 #[derive(Clone, Default)]
 pub struct AudioHub {
+    config: crate::config::AudioConfig,
     channels: Arc<Mutex<HashMap<String, broadcast::Sender<Packet>>>>,
     terminated: Arc<Mutex<HashSet<ProcessIdentity>>>,
 }
@@ -329,6 +335,9 @@ impl AudioHub {
         process: ProcessIdentity,
         signal: i32,
     ) -> Result<()> {
+        if !self.config.reserve_inputs {
+            bail!("Application termination is disabled by the shared audio policy");
+        }
         if signal != 15 && signal != 9 {
             bail!("Only SIGTERM and SIGKILL are supported");
         }
@@ -359,8 +368,15 @@ impl AudioHub {
             .clone()
     }
 
-    pub fn start(runtime: Runtime, shutdown: watch::Receiver<bool>) -> (Self, JoinHandle<()>) {
-        let hub = Self::default();
+    pub fn start(
+        config: crate::config::AudioConfig,
+        runtime: Runtime,
+        shutdown: watch::Receiver<bool>,
+    ) -> (Self, JoinHandle<()>) {
+        let hub = Self {
+            config,
+            ..Self::default()
+        };
         let task = tokio::spawn(hub.clone().supervise(runtime, shutdown));
         (hub, task)
     }
@@ -369,8 +385,16 @@ impl AudioHub {
         let mut captures: HashMap<String, (bool, oneshot::Sender<()>, JoinHandle<()>)> =
             HashMap::new();
         let (inventory_tx, inventory) = watch::channel(None);
-        let discovery = tokio::spawn(discover(inventory_tx, shutdown.clone()));
-        let connections = tokio::spawn(monitor_connections(runtime.clone(), shutdown.clone()));
+        let discovery = tokio::spawn(discover(
+            self.config.clone(),
+            inventory_tx,
+            shutdown.clone(),
+        ));
+        let connections = tokio::spawn(monitor_connections(
+            self.config.clone(),
+            runtime.clone(),
+            shutdown.clone(),
+        ));
         let mut last_inventory = Vec::new();
         let mut output: Option<(oneshot::Sender<()>, JoinHandle<()>)> = None;
         let mut tick = interval(Duration::from_millis(100));
@@ -384,21 +408,22 @@ impl AudioHub {
             if let Some(sources) = discovered
                 && sources != last_inventory
             {
-                reconcile_reservations(&runtime, &sources).await;
+                reconcile_reservations(&runtime, &sources, self.config.reserve_inputs).await;
                 last_inventory = sources;
             }
             let state = runtime.state().await;
             let mut wanted: HashMap<String, bool> = last_inventory
                 .iter()
                 .filter_map(|source| {
-                    let exclusive = !state.audio_released_sources.contains(&source.id);
+                    let exclusive = self.config.reserve_inputs
+                        && !state.audio_released_sources.contains(&source.id);
                     (exclusive || state.audio_capture_sources.contains(&source.id))
                         .then(|| (source.id.clone(), exclusive))
                 })
                 .collect();
-            if state.audio_virtual.enabled {
+            if self.config.virtual_output_enabled && state.audio_virtual.enabled {
                 // Meter the published source, including system-side mute/volume.
-                wanted.insert(VIRTUAL_SOURCE.into(), false);
+                wanted.insert(self.config.virtual_source.clone(), false);
                 if output.is_none() {
                     let (stop, stopped) = oneshot::channel();
                     let hub = self.clone();
@@ -426,7 +451,7 @@ impl AudioHub {
                 let _ = self
                     .channel(&id)
                     .send(Packet::Error("Input changed".into()));
-                if id != VIRTUAL_SOURCE && state.audio_released_sources.contains(&id) {
+                if id != self.config.virtual_source && state.audio_released_sources.contains(&id) {
                     set_reservation(&runtime, &id, ReservationStatus::Released, None).await;
                 }
             }
@@ -434,7 +459,7 @@ impl AudioHub {
                 if captures.contains_key(&id) {
                     continue;
                 }
-                if id != VIRTUAL_SOURCE {
+                if id != self.config.virtual_source {
                     set_reservation(
                         &runtime,
                         &id,
@@ -497,13 +522,23 @@ impl AudioHub {
     }
 
     async fn publish(&self, runtime: &Runtime) -> Result<()> {
-        if all_sources().await?.iter().any(|s| s.id == VIRTUAL_SOURCE) {
+        if all_sources()
+            .await?
+            .iter()
+            .any(|s| s.id == self.config.virtual_source)
+        {
             bail!("A Tarsier virtual microphone already exists");
         }
         let pipe = Pipe::new()?;
         let args = format!(
-            "{{ tunnel.mode=source tunnel.may-pause=false pipe.filename={} audio.format=S16LE audio.rate=48000 audio.channels=2 audio.position=[FL FR] stream.props={{ node.name={VIRTUAL_SOURCE} node.description=\"Tarsier Microphone\" node.virtual=true priority.session=0 }} }}",
-            serde_json::to_string(&pipe.path)?
+            "{{ tunnel.mode=source tunnel.may-pause=false pipe.filename={} audio.format=S16LE audio.rate=48000 audio.channels=2 audio.position=[FL FR] stream.props={{ node.name={} node.description={} node.virtual=true priority.session=0 }} }}",
+            serde_json::to_string(&pipe.path)?,
+            self.config.virtual_source,
+            serde_json::to_string(&if self.config.virtual_source == "tarsier_microphone" {
+                "Tarsier Microphone".into()
+            } else {
+                self.config.virtual_source.replace('_', " ")
+            })?
         );
         let mut child = Command::new("pw-cli")
             .args(["-m", "load-module", "libpipewire-module-pipe-tunnel", &args])
@@ -532,7 +567,11 @@ impl AudioHub {
         // The FIFO is created before the node is registered with PulseAudio.
         timeout(Duration::from_secs(4), async {
             loop {
-                if all_sources().await?.iter().any(|s| s.id == VIRTUAL_SOURCE) {
+                if all_sources()
+                    .await?
+                    .iter()
+                    .any(|s| s.id == self.config.virtual_source)
+                {
                     return Ok::<_, anyhow::Error>(());
                 }
                 sleep(Duration::from_millis(100)).await;
@@ -540,20 +579,22 @@ impl AudioHub {
         })
         .await
         .context("Virtual microphone did not appear in the audio server")??;
-        let default_source = timeout(
-            Duration::from_secs(3),
-            Command::new("pactl")
-                .args(["set-default-source", VIRTUAL_SOURCE])
-                .kill_on_drop(true)
-                .output(),
-        )
-        .await
-        .context("Setting the default microphone timed out")??;
-        if !default_source.status.success() {
-            bail!(
-                "Could not set Tarsier Microphone as the system default: {}",
-                String::from_utf8_lossy(&default_source.stderr).trim()
-            );
+        if self.config.set_default_source {
+            let default_source = timeout(
+                Duration::from_secs(3),
+                Command::new("pactl")
+                    .args(["set-default-source", &self.config.virtual_source])
+                    .kill_on_drop(true)
+                    .output(),
+            )
+            .await
+            .context("Setting the default microphone timed out")??;
+            if !default_source.status.success() {
+                bail!(
+                    "Could not set Tarsier Microphone as the system default: {}",
+                    String::from_utf8_lossy(&default_source.stderr).trim()
+                );
+            }
         }
         runtime
             .update(|s| {
@@ -629,7 +670,7 @@ impl AudioHub {
                 changed = states.changed() => {
                     if changed.is_err() { break; }
                     let state = states.borrow_and_update();
-                    let enabled = if source == VIRTUAL_SOURCE { state.audio_virtual.enabled } else { state.audio_capture_sources.contains(&source) };
+                    let enabled = if source == self.config.virtual_source { state.audio_virtual.enabled } else { state.audio_capture_sources.contains(&source) };
                     if !enabled { break; }
                 },
                 incoming = receiver.next() => match incoming {
@@ -815,11 +856,18 @@ fn reservation_inventory(
     next
 }
 
-async fn reconcile_reservations(runtime: &Runtime, sources: &[Source]) {
+async fn reconcile_reservations(runtime: &Runtime, sources: &[Source], reserve: bool) {
     runtime
         .update(|s| {
-            s.audio_reservations =
-                reservation_inventory(&s.audio_reservations, sources, &s.audio_released_sources);
+            s.audio_reservations = reservation_inventory(
+                &s.audio_reservations,
+                sources,
+                &if reserve {
+                    s.audio_released_sources.clone()
+                } else {
+                    sources.iter().map(|s| s.id.clone()).collect()
+                },
+            );
         })
         .await;
 }
@@ -844,7 +892,7 @@ fn is_own_capture(app: &Application) -> bool {
         == Some(std::process::id())
 }
 
-fn busy_sources(graph: &[serde_json::Value]) -> Vec<String> {
+fn busy_sources(graph: &[serde_json::Value], virtual_source: &str) -> Vec<String> {
     let mut busy: Vec<_> = graph
         .iter()
         .filter_map(|node| {
@@ -852,7 +900,7 @@ fn busy_sources(graph: &[serde_json::Value]) -> Vec<String> {
             let name = props["node.name"].as_str()?;
             if node["type"] != "PipeWire:Interface:Node"
                 || props["media.class"] != "Audio/Source"
-                || name == VIRTUAL_SOURCE
+                || name == virtual_source
             {
                 return None;
             }
@@ -868,7 +916,7 @@ fn busy_sources(graph: &[serde_json::Value]) -> Vec<String> {
     busy
 }
 
-async fn refresh_connections(runtime: &Runtime) -> Result<()> {
+async fn refresh_connections(runtime: &Runtime, config: &crate::config::AudioConfig) -> Result<()> {
     let output = timeout(
         Duration::from_secs(3),
         Command::new("pw-dump").kill_on_drop(true).output(),
@@ -878,8 +926,8 @@ async fn refresh_connections(runtime: &Runtime) -> Result<()> {
         bail!("Could not inspect audio connections");
     }
     let graph: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout)?;
-    let busy = busy_sources(&graph);
-    let output_applications = connected_applications(&graph, VIRTUAL_SOURCE)
+    let busy = busy_sources(&graph, &config.virtual_source);
+    let output_applications = connected_applications(&graph, &config.virtual_source)
         .applications
         .iter()
         .filter(|app| !is_own_capture(app))
@@ -901,7 +949,11 @@ async fn refresh_connections(runtime: &Runtime) -> Result<()> {
     Ok(())
 }
 
-async fn monitor_connections(runtime: Runtime, mut shutdown: watch::Receiver<bool>) {
+async fn monitor_connections(
+    config: crate::config::AudioConfig,
+    runtime: Runtime,
+    mut shutdown: watch::Receiver<bool>,
+) {
     loop {
         if *shutdown.borrow() {
             return;
@@ -932,17 +984,18 @@ async fn monitor_connections(runtime: Runtime, mut shutdown: watch::Receiver<boo
                 }
                 if dirty {
                     dirty = false;
-                    let _ = refresh_connections(&runtime).await;
+                    let _ = refresh_connections(&runtime, &config).await;
                 }
             }
         }
         // Keep the fallback scan working even when the monitor cannot start.
-        let _ = refresh_connections(&runtime).await;
+        let _ = refresh_connections(&runtime, &config).await;
         tokio::select! { _ = shutdown.changed() => return, _ = sleep(Duration::from_secs(5)) => {} }
     }
 }
 
 async fn discover(
+    config: crate::config::AudioConfig,
     inventory: watch::Sender<Option<Vec<Source>>>,
     mut shutdown: watch::Receiver<bool>,
 ) {
@@ -972,7 +1025,7 @@ async fn discover(
                         _ => break,
                     }
                 }
-                if let Ok(sources) = sources().await {
+                if let Ok(sources) = sources(&config).await {
                     inventory.send_replace(Some(sources));
                 }
             }
@@ -1029,11 +1082,11 @@ mod tests {
             json!({"id":3,"type":"PipeWire:Interface:Node","info":{"props":{"application.name":"External recorder"}}}),
             json!({"id":4,"type":"PipeWire:Interface:Link","info":{"output-node-id":1,"input-node-id":2}}),
         ];
-        assert!(busy_sources(&graph).is_empty());
+        assert!(busy_sources(&graph, "tarsier_microphone").is_empty());
         graph.push(json!({"id":5,"type":"PipeWire:Interface:Link","info":{"output-node-id":1,"input-node-id":3}}));
-        assert_eq!(busy_sources(&graph), vec!["mic"]);
+        assert_eq!(busy_sources(&graph, "tarsier_microphone"), vec!["mic"]);
         graph.pop();
-        assert!(busy_sources(&graph).is_empty());
+        assert!(busy_sources(&graph, "tarsier_microphone").is_empty());
     }
 
     #[test]

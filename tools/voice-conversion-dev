@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Keep all development state and build outputs in this worktree.
+set -euo pipefail
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+cd "$root"
+export CARGO_TARGET_DIR="$root/target"
+export TARSIER_USER_SETTINGS_PATH="$root/.voice-conversion/user-settings.json"
+export TARSIER_AUTH_PATH="$root/.voice-conversion/auth.json"
+export TARSIER_PHOTOS_DIR="$root/.voice-conversion/photos"
+export TARSIER_VIDEOS_DIR="$root/.voice-conversion/videos"
+unset TARSIER_API_TOKEN
+case "${1:-check}" in
+  build) exec cargo build --locked -j 2 ;;
+  check) exec cargo run --locked -j 2 -- config --config config/voice-conversion.toml ;;
+  serve)
+    # Refuse a changed profile or persisted LAN binding before opening devices.
+    python3 - <<'PY'
+import json, os, pathlib, socket, tomllib
+c = tomllib.loads(pathlib.Path('config/voice-conversion.toml').read_text())
+assert c['server']['bind'] == '127.0.0.1:8743'
+assert c['audio'] == dict(reserve_inputs=False, allowed_sources=['tarsier_microphone'],
+    virtual_source='tarsier_voice_conversion', virtual_output_enabled=False, set_default_source=False)
+assert c['video']['source'] == 'test' and not c['video']['loopback_enabled']
+assert c['camera']['adapter'] == 'mock'
+assert not c['perception']['enabled'] and not c['perception']['supervise_worker']
+assert not c['avatar']['enabled'] and not c['depth']['enabled']
+p = pathlib.Path(os.environ['TARSIER_USER_SETTINGS_PATH'])
+if p.exists():
+    assert not json.loads(p.read_text()).get('network_lan_access'), 'Disable experimental LAN access before launch'
+with socket.socket() as sock:
+    sock.bind(('127.0.0.1', 8743))
+print('Isolation preflight passed: input-only, shared capture, mock video, port 8743', flush=True)
+PY
+    exec "$CARGO_TARGET_DIR/debug/tarsier" serve --config config/voice-conversion.toml ;;
+  *) echo 'Usage: tools/voice-conversion-dev {build|check|serve}' >&2; exit 2 ;;
+esac
