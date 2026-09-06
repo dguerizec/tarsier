@@ -110,6 +110,7 @@ main { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(17rem, .85
 .image-settings-groups { columns: 2 15rem; column-gap: .65rem; margin-top: .65rem; }
 .image-settings-group { display: inline-block; width: 100%; min-width: 0; margin-bottom: .65rem; break-inside: avoid; padding: .7rem; border: 1px solid var(--panel-edge); border-radius: .7rem; background: #0a0e0c; }
 .image-settings-group > summary { display: flex; align-items: center; gap: .45rem; color: #f2f5ef; cursor: pointer; list-style: none; }
+.image-settings-group > summary, #audio-fold { user-select: none; -webkit-user-select: none; }
 .image-settings-group > summary::-webkit-details-marker { display: none; }
 .image-settings-group > summary svg { flex: 0 0 auto; }
 .image-settings-group:not([open]) > summary svg { transform: rotate(-90deg); }
