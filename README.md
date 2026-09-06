@@ -827,9 +827,16 @@ Each JPEG retains the daemon settings observed when that JPEG was published,
 along with its frame ID, capture timestamp and settings observation timestamp.
 These are last-known daemon values, not guaranteed sensor measurements for the
 exact exposure: USB readback can lag, and automatic modes may change between
-polls. Individual image controls retain availability, activity, readback status
-and sample times. Unknown values stay null; raw UVC values are not converted to
-standard photographic exposure or ISO tags. Local paths, camera serials and
+polls. Individual image controls retain availability, activity and readback status;
+per-control `sample_at_ms` timestamps are omitted from both photo and video JSON.
+Unknown values stay null. Standard EXIF also includes output pixel dimensions,
+`ExposureMode`, `ExposureProgram` and automatic/manual `WhiteBalance` when
+camera readback is available and valid. `ExposureTime` is exported for manual
+exposure time (manual or shutter-priority mode), converting V4L2 units to seconds
+by dividing by 10,000. In automatic exposure modes it is omitted because the
+readback may be a cached manual setting. Brightness, gain, contrast, saturation
+and sharpness sliders remain in JSON: their raw scales do not establish a
+calibrated APEX, ISO or EXIF processing-category mapping. Local paths, camera serials and
 runtime error messages are excluded. Browser-only preview mirroring is excluded.
 
 New MP4 recordings embed the same JSON schema in the `tarsier_settings` container

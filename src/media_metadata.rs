@@ -3,7 +3,7 @@ use anyhow::{Result, bail, ensure};
 use serde_json::{Value, json};
 
 use crate::{
-    model::{RuntimeState, unix_ms},
+    model::{CameraImageControl, RuntimeState, unix_ms},
     pipeline::PerceptionFrame,
 };
 
@@ -33,12 +33,17 @@ impl CapturedImage {
             Some((self.frame.frame_id, self.frame.captured_at_ms)),
             self.dimensions,
         );
-        embed_exif(&self.frame.bytes, &metadata, self.frame.captured_at_ms)
+        embed_exif(
+            &self.frame.bytes,
+            &metadata,
+            self.frame.captured_at_ms,
+            standard_exif(&self.settings, self.dimensions),
+        )
     }
 }
 
 /// Deliberately select settings, excluding serials, local paths, identities and errors.
-/// Sample times and availability distinguish cached readback from live sensor values.
+/// Availability and readback status qualify values without per-control timing noise.
 pub(crate) fn settings_metadata(
     state: &RuntimeState,
     observed_at_ms: u64,
@@ -55,7 +60,7 @@ pub(crate) fn settings_metadata(
         .map(|c| {
             json!({
                 "control": c.control, "value": c.value, "available": c.available,
-                "active": c.active, "sample_at_ms": c.sample_at_ms,
+                "active": c.active,
                 "readback_ok": c.error.is_none(),
             })
         })
@@ -71,10 +76,10 @@ pub(crate) fn settings_metadata(
         "camera": {
             "adapter": camera.adapter, "available": camera.available,
             "powered_on": camera.powered_on,
-            "hdr": {"enabled": camera.hdr, "sample_at_ms": camera.hdr_sample_at_ms, "readback_ok": camera.hdr_error.is_none()},
-            "zoom": {"magnification": camera.zoom_magnification, "sample_at_ms": camera.zoom_sample_at_ms, "readback_ok": camera.zoom_error.is_none()},
+            "hdr": {"enabled": camera.hdr, "readback_ok": camera.hdr_error.is_none()},
+            "zoom": {"magnification": camera.zoom_magnification, "readback_ok": camera.zoom_error.is_none()},
             "attitude": {"yaw_degrees": camera.yaw_degrees, "pitch_degrees": camera.pitch_degrees,
-                "roll_degrees": camera.roll_degrees, "source": camera.attitude_source, "sample_at_ms": camera.sample_at_ms},
+                "roll_degrees": camera.roll_degrees, "source": camera.attitude_source},
             "tracking": camera.tracking,
             "face_tracking": {"enabled": camera.face_tracking.enabled, "speed_fraction": camera.face_tracking.speed_fraction},
             "auto_zoom": {"enabled": camera.face_tracking.auto_zoom.enabled,
@@ -82,7 +87,9 @@ pub(crate) fn settings_metadata(
                 "controlled_magnification": camera.face_tracking.auto_zoom.zoom_magnification,
                 "target_face_size": camera.face_tracking.auto_zoom.target_face_size},
             "hands_tracking_enabled": camera.hands_tracking.enabled,
-            "built_in_gestures": camera.built_in_gestures,
+            "built_in_gestures": {"target_selection": camera.built_in_gestures.target_selection,
+                "zoom": camera.built_in_gestures.zoom, "dynamic_zoom": camera.built_in_gestures.dynamic_zoom,
+                "readback_ok": camera.built_in_gestures.error.is_none()},
             "image_controls": controls,
         },
         "effects": {
@@ -95,8 +102,51 @@ pub(crate) fn settings_metadata(
     })
 }
 
-// Each entry is (tag, TIFF type, count, bytes). Only fixed capture tags are emitted.
+// Each entry is (tag, TIFF type, count, bytes).
 type Entry = (u16, u16, u32, Vec<u8>);
+
+fn short(tag: u16, value: u16) -> Entry {
+    (tag, 3, 1, value.to_le_bytes().to_vec())
+}
+
+/// Export only direct semantic mappings. UVC brightness/gain and processing
+/// sliders have no calibrated mapping to EXIF APEX/ISO or categorical levels.
+fn standard_exif(state: &RuntimeState, dimensions: (u32, u32)) -> Vec<Entry> {
+    let mut entries = vec![
+        (0xa002, 4, 1, dimensions.0.to_le_bytes().to_vec()),
+        (0xa003, 4, 1, dimensions.1.to_le_bytes().to_vec()),
+    ];
+    let camera = &state.camera;
+    if state.pipeline.source != "camera" || !camera.available || camera.error.is_some() {
+        return entries;
+    }
+    let value = |control| {
+        camera
+            .image_settings
+            .controls
+            .iter()
+            .find(|c| c.control == control && c.available && c.active && c.error.is_none())
+            .and_then(|c| c.value)
+    };
+    if let Some(mode @ 0..=3) = value(CameraImageControl::AutoExposure) {
+        // V4L2: auto, manual, shutter priority, aperture priority.
+        let program = [2, 1, 4, 3][mode as usize];
+        entries.push(short(0x8822, program));
+        entries.push(short(0xa402, u16::from(mode == 1)));
+        // Auto exposure readback can be a cached manual setting, not exposure telemetry.
+        if matches!(mode, 1 | 2)
+            && let Some(time) = value(CameraImageControl::ExposureTimeAbsolute).filter(|v| *v > 0)
+        {
+            let mut rational = (time as u32).to_le_bytes().to_vec();
+            rational.extend_from_slice(&10_000u32.to_le_bytes());
+            entries.push((0x829a, 5, 1, rational));
+        }
+    }
+    if let Some(automatic @ 0..=1) = value(CameraImageControl::WhiteBalanceAutomatic) {
+        entries.push(short(0xa403, u16::from(automatic == 0)));
+    }
+    entries
+}
 
 fn ascii(tag: u16, text: &str) -> Entry {
     let mut bytes = text.as_bytes().to_vec();
@@ -129,7 +179,12 @@ fn write_ifd(tiff: &mut Vec<u8>, entries: &[Entry]) -> usize {
 
 /// Insert APP1 without touching the JPEG's compressed pixels or other metadata.
 /// The input is an internally encoded JPEG; existing EXIF is rejected to avoid ambiguity.
-fn embed_exif(jpeg: &[u8], metadata: &Value, captured_at_ms: u64) -> Result<Vec<u8>> {
+fn embed_exif(
+    jpeg: &[u8],
+    metadata: &Value,
+    captured_at_ms: u64,
+    mut camera_entries: Vec<Entry>,
+) -> Result<Vec<u8>> {
     ensure!(jpeg.starts_with(&[0xff, 0xd8]), "Invalid JPEG header");
     let mut offset = 2;
     let mut insert_at = 2;
@@ -198,16 +253,15 @@ fn embed_exif(jpeg: &[u8], metadata: &Value, captured_at_ms: u64) -> Result<Vec<
     }
     let exif_offset = tiff.len() as u32;
     tiff[root + 2 + 2 * 12 + 8..root + 2 + 2 * 12 + 12].copy_from_slice(&exif_offset.to_le_bytes());
-    write_ifd(
-        &mut tiff,
-        &[
-            (0x9000, 7, 4, b"0231".to_vec()),
-            ascii(0x9003, &at.format("%Y:%m:%d %H:%M:%S").to_string()),
-            ascii(0x9011, "+00:00"),
-            (0x9286, 7, comment.len() as u32, comment),
-            ascii(0x9291, &format!("{:03}", captured_at_ms % 1000)),
-        ],
-    );
+    camera_entries.extend([
+        (0x9000, 7, 4, b"0231".to_vec()),
+        ascii(0x9003, &at.format("%Y:%m:%d %H:%M:%S").to_string()),
+        ascii(0x9011, "+00:00"),
+        (0x9286, 7, comment.len() as u32, comment),
+        ascii(0x9291, &format!("{:03}", captured_at_ms % 1000)),
+    ]);
+    camera_entries.sort_by_key(|entry| entry.0);
+    write_ifd(&mut tiff, &camera_entries);
     let length = u16::try_from(tiff.len() + 8)?;
     let mut result = Vec::with_capacity(jpeg.len() + tiff.len() + 10);
     result.extend_from_slice(&jpeg[..insert_at]);
@@ -245,7 +299,7 @@ mod tests {
     fn exif_round_trips_unicode_and_preserves_compressed_bytes() {
         let metadata =
             json!({"schema": "tarsier.capture-settings/v1", "text": "é 🐒", "zoom": 1.5});
-        let bytes = embed_exif(JPEG, &metadata, 1_788_696_123_456).unwrap();
+        let bytes = embed_exif(JPEG, &metadata, 1_788_696_123_456, vec![]).unwrap();
         assert_eq!(read_comment(&bytes), metadata);
         assert_eq!(&bytes[..11], &JPEG[..11]);
         let segment_length = u16::from_be_bytes([bytes[13], bytes[14]]) as usize;
@@ -304,9 +358,156 @@ mod tests {
         assert_eq!(metadata["output"]["width"], 1920);
         assert_eq!(metadata["scope"], "jpeg-publication");
         assert!(!metadata.to_string().contains("private"));
+        assert!(!metadata.to_string().contains("sample_at_ms"));
         let video = settings_metadata(&settings, 987654, "recording-start", None, (1280, 720));
         assert!(video["frame"].is_null());
+        assert!(!video.to_string().contains("sample_at_ms"));
         assert_eq!(video["camera"]["hdr"]["enabled"], false);
+    }
+
+    fn camera_settings(mode: i32) -> RuntimeState {
+        use crate::model::{CameraImageControlKind, CameraImageControlState};
+        let mut state = RuntimeState::default();
+        state.pipeline.source = "camera".into();
+        state.camera.available = true;
+        for (control, value) in [
+            (CameraImageControl::AutoExposure, mode),
+            (CameraImageControl::ExposureTimeAbsolute, 19),
+            (CameraImageControl::WhiteBalanceAutomatic, 0),
+        ] {
+            state.camera.image_settings.upsert(CameraImageControlState {
+                control,
+                kind: CameraImageControlKind::Integer,
+                available: true,
+                active: true,
+                read_only: false,
+                value: Some(value),
+                minimum: None,
+                maximum: None,
+                step: None,
+                default_value: None,
+                options: vec![],
+                sample_at_ms: Some(123),
+                error: None,
+            });
+        }
+        state
+    }
+
+    fn parse_camera(state: &RuntimeState) -> exif::Exif {
+        let bytes = embed_exif(JPEG, &json!({}), 0, standard_exif(state, (3840, 2160))).unwrap();
+        Reader::new()
+            .read_from_container(&mut std::io::Cursor::new(bytes))
+            .unwrap()
+    }
+
+    #[test]
+    fn standard_exif_maps_exposure_modes_units_white_balance_and_dimensions() {
+        for (mode, program) in [(0, 2), (1, 1), (2, 4), (3, 3)] {
+            let state = camera_settings(mode);
+            let parsed = parse_camera(&state);
+            for (tag, expected) in [
+                (Tag::ExposureProgram, program),
+                (Tag::ExposureMode, u32::from(mode == 1)),
+                (Tag::WhiteBalance, 1),
+                (Tag::PixelXDimension, 3840),
+                (Tag::PixelYDimension, 2160),
+            ] {
+                assert_eq!(
+                    parsed
+                        .get_field(tag, In::PRIMARY)
+                        .unwrap()
+                        .value
+                        .get_uint(0),
+                    Some(expected)
+                );
+            }
+            let exposure = parsed.get_field(Tag::ExposureTime, In::PRIMARY);
+            if matches!(mode, 1 | 2) {
+                let exif::Value::Rational(values) = &exposure.unwrap().value else {
+                    panic!("Exposure must be rational")
+                };
+                assert_eq!((values[0].num, values[0].denom), (19, 10_000));
+            } else {
+                assert!(
+                    exposure.is_none(),
+                    "Auto mode must not export cached manual exposure"
+                );
+            }
+            for tag in [
+                Tag::BrightnessValue,
+                Tag::PhotographicSensitivity,
+                Tag::Contrast,
+                Tag::Saturation,
+                Tag::Sharpness,
+            ] {
+                assert!(parsed.get_field(tag, In::PRIMARY).is_none());
+            }
+        }
+        let mut state = camera_settings(1);
+        state.camera.image_settings.controls[2].value = Some(1);
+        assert_eq!(
+            parse_camera(&state)
+                .get_field(Tag::WhiteBalance, In::PRIMARY)
+                .unwrap()
+                .value
+                .get_uint(0),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn standard_exif_omits_unavailable_failed_invalid_and_synthetic_camera_values() {
+        for variant in 0..7 {
+            let mut state = camera_settings(1);
+            match variant {
+                0 => state.camera.available = false,
+                1 => state.pipeline.source = "test".into(),
+                2 => state.camera.error = Some("Disconnected".into()),
+                3 => state
+                    .camera
+                    .image_settings
+                    .controls
+                    .iter_mut()
+                    .for_each(|c| c.active = false),
+                4 => state
+                    .camera
+                    .image_settings
+                    .controls
+                    .iter_mut()
+                    .for_each(|c| c.available = false),
+                5 => state
+                    .camera
+                    .image_settings
+                    .controls
+                    .iter_mut()
+                    .for_each(|c| c.error = Some("Read failed".into())),
+                _ => state
+                    .camera
+                    .image_settings
+                    .controls
+                    .iter_mut()
+                    .for_each(|c| c.value = Some(-1)),
+            }
+            let parsed = parse_camera(&state);
+            for tag in [
+                Tag::ExposureTime,
+                Tag::ExposureMode,
+                Tag::ExposureProgram,
+                Tag::WhiteBalance,
+            ] {
+                assert!(parsed.get_field(tag, In::PRIMARY).is_none());
+            }
+        }
+        for value in [None, Some(0), Some(-1)] {
+            let mut state = camera_settings(1);
+            state.camera.image_settings.controls[1].value = value;
+            assert!(
+                parse_camera(&state)
+                    .get_field(Tag::ExposureTime, In::PRIMARY)
+                    .is_none()
+            );
+        }
     }
 
     #[test]
@@ -316,10 +517,10 @@ mod tests {
             b"\xff\xd8\xff",
             b"\xff\xd8\xff\xe0\xff\xff",
         ] {
-            assert!(embed_exif(invalid, &json!({}), 0).is_err());
+            assert!(embed_exif(invalid, &json!({}), 0, vec![]).is_err());
         }
-        let tagged = embed_exif(JPEG, &json!({}), 0).unwrap();
-        assert!(embed_exif(&tagged, &json!({}), 0).is_err());
-        assert!(embed_exif(JPEG, &json!({"text": "x".repeat(65_536)}), 0).is_err());
+        let tagged = embed_exif(JPEG, &json!({}), 0, vec![]).unwrap();
+        assert!(embed_exif(&tagged, &json!({}), 0, vec![]).is_err());
+        assert!(embed_exif(JPEG, &json!({"text": "x".repeat(65_536)}), 0, vec![]).is_err());
     }
 }
