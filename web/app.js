@@ -7,6 +7,8 @@ const daemonRestartConfirm = $("#daemon-restart-confirm");
 const daemonRestartError = $("#daemon-restart-error");
 const events = $("#events");
 let photoPending = false;
+let resolutionPending = false;
+const cameraOnly4k = () => (state?.pipeline?.width || 0) >= 3840;
 const takePhoto = $("#take-photo");
 const photoStatus = $("#photo-status");
 const preview = $("#preview");
@@ -709,7 +711,7 @@ function renderOutputMode(videoEffects) {
     && Date.now() - videoEffects.depth_captured_at_ms <= 500;
   const depthFresh = videoEffects.depth_available && depthPublishedFresh && depthCapturedFresh;
   for (const input of outputModeInputs) {
-    input.disabled = outputModePending;
+    input.disabled = outputModePending || (cameraOnly4k() && input.value !== "camera");
     input.checked = input.value === identity;
   }
   skeletonToggle.disabled = identity !== "camera";
@@ -733,10 +735,10 @@ function renderBackground(videoEffects) {
     && Date.now() - videoEffects.mask_captured_at_ms <= 200;
   const maskFresh = publishedFresh && capturedFresh;
   const alternateOutputActive = videoEffects.output_mode !== "camera";
-  backgroundToggle.disabled = backgroundPending || alternateOutputActive;
+  backgroundToggle.disabled = backgroundPending || alternateOutputActive || cameraOnly4k();
   backgroundToggle.checked = current.enabled;
   for (const input of backgroundEffectInputs) {
-    input.disabled = backgroundPending || alternateOutputActive;
+    input.disabled = backgroundPending || alternateOutputActive || cameraOnly4k();
     input.checked = input.value === current.effect;
   }
 
@@ -797,9 +799,14 @@ function render(next) {
   renderOutputMode(next.video_effects);
   renderBackground(next.video_effects);
   $("#pipeline-summary").textContent = pipeline.running
-    ? `${pipeline.width}×${pipeline.height} · ${pipeline.fps.toFixed(1)} fps · ${pipeline.frame_count} frames`
+    ? ` · ${pipeline.fps.toFixed(1)} fps · ${pipeline.frame_count} frames`
     : camera.powered_on === false ? "Camera off"
     : pipeline.error || "Pipeline stopped";
+  $("#video-resolution").textContent = pipeline.width ? `${pipeline.width}×${pipeline.height}` : "Resolution";
+  for (const button of document.querySelectorAll("[data-resolution]")) {
+    button.disabled = resolutionPending || !socketConnected || !daemonRestartAvailable;
+    button.setAttribute("aria-pressed", String(button.dataset.resolution === `${pipeline.width}x${pipeline.height}`));
+  }
   syncPreview(pipeline);
   takePhoto.disabled = photoPending || !socketConnected || !pipeline.running;
   $("#worker").textContent = perception.worker_connected ? `Frame ${perception.frame_id}` : "Worker offline";
@@ -1510,10 +1517,10 @@ function renderVideoTransform() {
   const transform = videoTransform();
   for (const button of document.querySelectorAll("[data-video-rotation]")) {
     button.setAttribute("aria-pressed", String(Number(button.dataset.videoRotation) === transform.rotation));
-    button.disabled = !socketConnected || videoTransformPending;
+    button.disabled = !socketConnected || videoTransformPending || cameraOnly4k();
   }
   $("#video-mirror").checked = transform.mirror;
-  $("#video-mirror").disabled = !socketConnected || videoTransformPending;
+  $("#video-mirror").disabled = !socketConnected || videoTransformPending || cameraOnly4k();
 }
 
 async function setVideoTransform(transform) {
@@ -1587,3 +1594,36 @@ document.addEventListener("keydown", (event) => {
   event.preventDefault();
   if (!event.repeat && !takePhoto.disabled) takePhoto.click();
 });
+
+const resolutionPicker = $("#resolution-picker");
+$("#video-resolution").addEventListener("click", (event) => {
+  event.preventDefault();
+  resolutionPicker.togglePopover();
+});
+resolutionPicker.addEventListener("toggle", () => {
+  $("#video-resolution").setAttribute("aria-expanded", String(resolutionPicker.matches(":popover-open")));
+});
+for (const button of document.querySelectorAll("[data-resolution]")) {
+  button.addEventListener("click", async () => {
+    if (resolutionPending) return;
+    const [width, height] = button.dataset.resolution.split("x").map(Number);
+    if (state?.pipeline.width === width && state?.pipeline.height === height) {
+      resolutionPicker.hidePopover();
+      return;
+    }
+    resolutionPending = true;
+    for (const option of document.querySelectorAll("[data-resolution]")) option.disabled = true;
+    $("#resolution-status").textContent = "Switching resolution… Video will reconnect automatically.";
+    try {
+      const response = await fetch("/api/v1/video/resolution", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ width, height }),
+      });
+      if (!response.ok) throw new Error((await response.json()).error || "Could not change resolution");
+    } catch (error) {
+      resolutionPending = false;
+      $("#resolution-status").textContent = error.message;
+    }
+  });
+}

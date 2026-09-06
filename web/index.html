@@ -34,7 +34,17 @@
         <div class="panel-title">
           <h2>Preview</h2>
           <div class="preview-tools">
-            <span id="pipeline-summary">Pipeline stopped</span>
+            <span><a id="video-resolution" href="#resolution-picker" aria-controls="resolution-picker" aria-expanded="false">Resolution</a><span id="pipeline-summary"> · Pipeline stopped</span></span>
+            <div id="resolution-picker" popover aria-label="Video resolution">
+              <strong>Video resolution</strong>
+              <div class="resolution-options">
+                <button type="button" class="secondary" data-resolution="1280x720">1280×720 · HD</button>
+                <button type="button" class="secondary" data-resolution="1920x1080">1920×1080 · Full HD</button>
+                <button type="button" class="secondary" data-resolution="3840x2160">3840×2160 · 4K</button>
+              </div>
+              <p>4K uses the camera without effects. Switching briefly restarts video.</p>
+              <p id="resolution-status" role="status"></p>
+            </div>
             <button id="take-photo" class="secondary compact" type="button" title="Save the final image at full output resolution · Space" aria-keyshortcuts="Space" disabled>Take photo</button>
             <button id="preview-mirror" class="secondary compact" type="button" aria-pressed="false" title="Mirror only this preview; output and photos are unchanged">Mirror preview</button>
             <button id="skeleton-toggle" class="secondary compact" type="button" aria-pressed="false">Skeletons</button>

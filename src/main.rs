@@ -78,14 +78,25 @@ async fn main() -> Result<()> {
 }
 
 async fn serve(path: Option<PathBuf>) -> Result<()> {
-    let config = Config::load(path.as_deref())?;
+    let mut config = Config::load(path.as_deref())?;
     config.validate()?;
     let settings_path = settings::default_path()?;
-    let (settings_store, user_settings) = settings::UserSettingsStore::load(
+    let (settings_store, mut user_settings) = settings::UserSettingsStore::load(
         settings_path,
         settings::UserSettings::from_config(&config),
     )
     .await?;
+    if let Some(resolution) = user_settings.video_resolution {
+        config.video.width = resolution.width;
+        config.video.height = resolution.height;
+    }
+    if config.video.width >= 3840 {
+        user_settings.video_identity = crate::model::VideoIdentity::Camera;
+        user_settings.background_enabled = false;
+        user_settings.video_transform = Default::default();
+        config.avatar.enabled = false;
+        config.depth.enabled = false;
+    }
     let runtime = Runtime::new();
     let preview = PreviewHub::new();
     let output_mode = user_settings.output_mode();

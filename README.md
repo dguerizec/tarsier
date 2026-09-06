@@ -219,6 +219,14 @@ supervisor, the **Live** status is also a button: it opens a confirmation dialog
 before requesting a graceful daemon restart. Manual foreground runs keep the
 indicator read-only so a restart request cannot become an accidental stop.
 
+Click the resolution link beside **Preview** to select 1280×720, 1920×1080,
+or 3840×2160 (4K). The choice is persisted and applied through a supervised
+daemon restart; the page reconnects automatically. In 4K, output uses the real
+camera with background effects, avatar/depth output, rotation, and output
+mirroring disabled. Select a lower resolution to enable those controls again.
+The browser preview remains downscaled; the virtual camera output and photos
+use the selected full resolution.
+
 Tarsier atomically persists the selected video identity, background switch and
 effect, exclusive Face or Hands tracking preference, and dependent Auto zoom preference in
 `$XDG_STATE_HOME/tarsier/user-settings.json`, or
@@ -396,6 +404,7 @@ The default server binds only to `127.0.0.1:8742`.
 | `POST` | `/api/v1/camera/photos` | Save the final full-resolution JPEG locally; returns its path |
 | `GET` | `/api/v1/health` | Health, version, daemon start time, uptime, and restart availability |
 | `POST` | `/api/v1/daemon/restart` | Gracefully exit for restart by the active service supervisor |
+| `POST` | `/api/v1/video/resolution` | Persist `{ "width": 3840, "height": 2160 }` (also 720p/1080p) and restart under supervision; 4K disables effects |
 | `GET` | `/api/v1/state` | Complete runtime state |
 | `GET` | `/api/v1/config` | Effective configuration |
 | `GET` | `/api/v1/camera/state` | Camera availability, attitude, and typed image-setting readback |

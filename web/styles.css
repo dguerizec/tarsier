@@ -179,3 +179,13 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 }
 
 .photo-status { margin: 0; padding: 0.65rem 1rem; font-size: 0.8rem; overflow-wrap: anywhere; }
+
+#video-resolution { color: var(--muted); text-decoration: underline dotted; text-underline-offset: .2rem; }
+#video-resolution:hover, #video-resolution:focus-visible { color: var(--green); }
+#resolution-picker { width: min(19rem, calc(100vw - 2rem)); padding: 1rem; border: 1px solid var(--panel-edge); border-radius: .7rem; background: var(--panel); color: #f2f5ef; box-shadow: 0 .7rem 2rem #0009; }
+#resolution-picker::backdrop { background: #0004; }
+.resolution-options { display: grid; gap: .4rem; margin: .8rem 0; }
+.resolution-options button { text-align: left; }
+.resolution-options button[aria-pressed="true"] { border-color: var(--green); color: var(--green); }
+#resolution-picker p { color: var(--muted); font-size: .75rem; line-height: 1.4; }
+#resolution-status:not(:empty) { margin-top: .6rem; color: var(--amber); }

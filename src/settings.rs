@@ -20,7 +20,24 @@ const MAX_SETTINGS_BYTES: usize = 16 * 1024;
 const SETTINGS_PATH_ENVIRONMENT: &str = "TARSIER_USER_SETTINGS_PATH";
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct VideoResolution {
+    pub width: u32,
+    pub height: u32,
+}
+
+impl VideoResolution {
+    pub fn valid(self) -> bool {
+        matches!(
+            (self.width, self.height),
+            (1280, 720) | (1920, 1080) | (3840, 2160)
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct UserSettings {
+    #[serde(default)]
+    pub video_resolution: Option<VideoResolution>,
     #[serde(default)]
     pub video_transform: crate::video_transform::VideoTransform,
     version: u32,
@@ -38,6 +55,7 @@ impl UserSettings {
     pub fn from_config(config: &Config) -> Self {
         Self {
             version: SETTINGS_VERSION,
+            video_resolution: None,
             video_transform: Default::default(),
             video_identity: identity_from_mode(config.video.output_mode, config.avatar.engine),
             background_enabled: config.video.background_enabled,
@@ -65,6 +83,12 @@ impl UserSettings {
     }
 
     fn validate(self) -> Result<Self> {
+        if self
+            .video_resolution
+            .is_some_and(|resolution| !resolution.valid())
+        {
+            bail!("unsupported video resolution");
+        }
         if !self.video_transform.valid() {
             bail!("video rotation must be 0, 90, 180, or 270 degrees");
         }
@@ -147,6 +171,21 @@ impl UserSettingsStore {
         self.replace(|settings| {
             settings.background_enabled = enabled;
             settings.background_effect = effect;
+        })
+        .await
+    }
+
+    pub async fn set_video_resolution(&self, resolution: VideoResolution) -> Result<()> {
+        if !resolution.valid() {
+            bail!("unsupported video resolution");
+        }
+        self.replace(|settings| {
+            settings.video_resolution = Some(resolution);
+            if resolution.width >= 3840 {
+                settings.video_identity = VideoIdentity::Camera;
+                settings.background_enabled = false;
+                settings.video_transform = Default::default();
+            }
         })
         .await
     }
@@ -286,6 +325,53 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    #[tokio::test]
+    async fn resolution_persists_and_4k_resets_effects() {
+        let path = test_path("resolution");
+        let fallback = UserSettings::from_config(&Config::default());
+        let (store, _) = UserSettingsStore::load(path.clone(), fallback)
+            .await
+            .unwrap();
+        store
+            .set_video_identity(VideoIdentity::Liveportrait)
+            .await
+            .unwrap();
+        store
+            .set_background(true, BackgroundEffect::Blur)
+            .await
+            .unwrap();
+        store
+            .set_video_resolution(VideoResolution {
+                width: 3840,
+                height: 2160,
+            })
+            .await
+            .unwrap();
+        let (_, restored) = UserSettingsStore::load(path.clone(), fallback)
+            .await
+            .unwrap();
+        assert_eq!(
+            restored.video_resolution,
+            Some(VideoResolution {
+                width: 3840,
+                height: 2160
+            })
+        );
+        assert_eq!(restored.video_identity, VideoIdentity::Camera);
+        assert!(!restored.background_enabled);
+        assert_eq!(restored.video_transform, Default::default());
+        assert!(
+            store
+                .set_video_resolution(VideoResolution {
+                    width: 9999,
+                    height: 2160
+                })
+                .await
+                .is_err()
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[tokio::test]

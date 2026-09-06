@@ -189,6 +189,7 @@ pub fn router_with_controls(
             "/api/v1/perception/input.mjpeg",
             get(perception_input_mjpeg),
         )
+        .route("/api/v1/video/resolution", post(set_resolution))
         .route("/api/v1/video/background", post(set_background))
         .route(
             "/api/v1/video/transform",
@@ -1532,6 +1533,34 @@ async fn set_background(
     StatusCode::ACCEPTED.into_response()
 }
 
+fn effects_unavailable_in_4k() -> Response {
+    (StatusCode::CONFLICT, Json(json!({"error": "Effects are unavailable in 4K camera mode. Select a lower resolution first."}))).into_response()
+}
+
+async fn set_resolution(
+    State(state): State<ApiState>,
+    Json(resolution): Json<crate::settings::VideoResolution>,
+) -> Response {
+    if !resolution.valid() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "Unsupported resolution"})),
+        )
+            .into_response();
+    }
+    let _guard = state.video_output_control.lock().await;
+    let (Some(restart), Some(settings)) = (&state.daemon_restart, &state.user_settings) else {
+        return (StatusCode::CONFLICT, Json(json!({"error": "Resolution changes require a supervised daemon and persistent settings"}))).into_response();
+    };
+    if let Err(error) = settings.set_video_resolution(resolution).await {
+        return user_settings_error(error);
+    }
+    if let Err(error) = restart.request().await {
+        return (StatusCode::CONFLICT, Json(json!({"error": error}))).into_response();
+    }
+    (StatusCode::ACCEPTED, Json(json!({"restarting": true}))).into_response()
+}
+
 async fn current_transform(
     State(state): State<ApiState>,
 ) -> Json<crate::video_transform::VideoTransform> {
@@ -1542,6 +1571,9 @@ async fn set_transform(
     State(state): State<ApiState>,
     Json(transform): Json<crate::video_transform::VideoTransform>,
 ) -> Response {
+    if state.config.video.width >= 3840 && transform != Default::default() {
+        return effects_unavailable_in_4k();
+    }
     if !transform.valid() {
         return (
             StatusCode::BAD_REQUEST,
@@ -1669,6 +1701,9 @@ async fn set_output_mode(
 }
 
 async fn persist_video_identity(state: &ApiState, identity: VideoIdentity) -> Option<Response> {
+    if state.config.video.width >= 3840 && identity != VideoIdentity::Camera {
+        return Some(effects_unavailable_in_4k());
+    }
     let Some(settings) = &state.user_settings else {
         return None;
     };
@@ -1684,6 +1719,9 @@ async fn persist_background(
     enabled: bool,
     effect: BackgroundEffect,
 ) -> Option<Response> {
+    if state.config.video.width >= 3840 && enabled {
+        return Some(effects_unavailable_in_4k());
+    }
     let Some(settings) = &state.user_settings else {
         return None;
     };
@@ -2943,6 +2981,61 @@ mod tests {
         assert!(header.contains("X-Tarsier-Frame-Id: 152\r\n"));
         assert!(header.contains("X-Tarsier-Inference-Rotation: 180\r\n"));
         assert!(header.contains("X-Tarsier-Captured-At-Ms: 1725000000033\r\n"));
+    }
+
+    #[tokio::test]
+    async fn resolution_validation_and_4k_effect_guards() {
+        let mut config = Config::default();
+        config.video.width = 3840;
+        config.video.height = 2160;
+        config.perception.enabled = false;
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = router(config, Runtime::new(), PreviewHub::new(), None, shutdown_rx);
+        for (path, body, expected) in [
+            (
+                "resolution",
+                r#"{"width":9999,"height":2160}"#,
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                "resolution",
+                r#"{"width":3840,"height":2160}"#,
+                StatusCode::CONFLICT,
+            ),
+            (
+                "background",
+                r#"{"enabled":true,"effect":"blur"}"#,
+                StatusCode::CONFLICT,
+            ),
+            ("green-screen", r#"{"enabled":true}"#, StatusCode::CONFLICT),
+            (
+                "output-mode",
+                r#"{"mode":"comic-avatar"}"#,
+                StatusCode::CONFLICT,
+            ),
+            (
+                "transform",
+                r#"{"rotation":90,"mirror":false}"#,
+                StatusCode::CONFLICT,
+            ),
+            (
+                "background",
+                r#"{"enabled":false,"effect":"blur"}"#,
+                StatusCode::ACCEPTED,
+            ),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post(format!("/api/v1/video/{path}"))
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected, "{path}");
+        }
     }
 
     #[tokio::test]
