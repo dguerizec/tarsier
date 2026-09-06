@@ -1580,7 +1580,13 @@ takePhoto.addEventListener("click", async () => {
     photoLink.textContent = payload.path;
     photoLink.target = "_blank";
     photoLink.rel = "noopener";
-    photoStatus.replaceChildren("Saved: ", photoLink);
+    const fileLink = document.createElement("a");
+    fileLink.href = `file://${payload.path.split("/").map(encodeURIComponent).join("/")}`;
+    fileLink.className = "photo-file-link";
+    fileLink.textContent = "📂";
+    fileLink.title = "Open local photo (file://)";
+    fileLink.setAttribute("aria-label", "Open local photo file");
+    photoStatus.replaceChildren("Saved: ", photoLink, " ", fileLink);
   } catch (error) {
     photoStatus.classList.add("error");
     photoStatus.textContent = error instanceof Error ? error.message : String(error);
