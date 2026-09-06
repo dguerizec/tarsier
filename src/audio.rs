@@ -173,6 +173,7 @@ pub async fn applications(source: &str) -> Result<SourceApplications> {
     }
     let graph: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout)?;
     let mut result = connected_applications(&graph, source);
+    result.applications.retain(|app| !is_own_capture(app));
     for app in &mut result.applications {
         app.process = app
             .pid

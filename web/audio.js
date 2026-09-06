@@ -103,7 +103,7 @@ async function refreshApplications() {
     applicationsStatus.classList.remove('error');
     applicationsStatus.textContent = !data.available ? 'This microphone is no longer available.'
       : data.applications.length ? (applicationsAutoRefresh ? 'Connected applications · Updates every 2 seconds' : 'Connected applications')
-      : 'No applications are connected. The input may be unavailable for another reason.';
+      : 'No external applications are connected. Tarsier capture is excluded.';
   } catch (error) {
     if (request.signal.aborted) return;
     applicationsList.replaceChildren();
