@@ -1,6 +1,6 @@
 import { installPreviewDrag, sourcePanTiltDirection } from "/assets/preview-drag.js";
 import { syncAudioCapture } from "/assets/audio.js";
-import { createElement, FolderOpen, FlipHorizontal2, Bone } from "/assets/lucide.js";
+import { createElement, FolderOpen, FlipHorizontal2, Bone, Power } from "/assets/lucide.js";
 
 const $ = (selector) => document.querySelector(selector);
 const connection = $("#connection");
@@ -692,15 +692,20 @@ function renderPanTilt(camera) {
 
 function renderCameraPower(camera) {
   const poweredOn = cameraPowerDraft ?? camera.powered_on === true;
-  cameraPowerToggle.checked = poweredOn;
+  cameraPowerToggle.setAttribute("aria-pressed", String(poweredOn));
+  cameraPowerToggle.classList.toggle("status-on", poweredOn);
+  cameraPowerToggle.classList.toggle("status-off", !poweredOn);
   cameraPowerToggle.disabled = !camera.available || cameraPowerPending;
-  $("#camera-power-status").textContent = cameraPowerError
+  const powerStatus = cameraPowerError
     ? "Power · failed"
     : cameraPowerPending ? (poweredOn ? "Power · waking…" : "Power · sleeping…")
     : !camera.available ? "Power · unavailable"
     : camera.powered_on == null ? "Power · unknown"
     : poweredOn ? "Power · on" : "Power · off";
-  cameraPowerToggle.title = poweredOn ? "Put the physical camera to sleep" : "Wake the physical camera";
+  const powerAction = poweredOn ? "Put the physical camera to sleep" : "Wake the physical camera";
+  cameraPowerToggle.title = `${powerStatus} · ${powerAction}`;
+  cameraPowerToggle.setAttribute("aria-label", cameraPowerToggle.title);
+  cameraPowerToggle.setAttribute("aria-busy", String(cameraPowerPending));
 }
 
 function backgroundState(videoEffects) {
@@ -1091,8 +1096,8 @@ async function setCameraPower(enabled) {
   }
 }
 
-cameraPowerToggle.addEventListener("change", () => {
-  void setCameraPower(cameraPowerToggle.checked);
+cameraPowerToggle.addEventListener("click", () => {
+  if (state) void setCameraPower(state.camera.powered_on !== true);
 });
 
 for (const input of backgroundEffectInputs) {
@@ -1591,6 +1596,8 @@ for (const button of document.querySelectorAll("[data-video-rotation]")) {
   button.addEventListener("click", () => void setVideoTransform({ ...videoTransform(), rotation: Number(button.dataset.videoRotation) }));
 }
 $("#video-mirror").addEventListener("change", (event) => void setVideoTransform({ ...videoTransform(), mirror: event.target.checked }));
+
+cameraPowerToggle.append(createElement(Power, { width: 18, height: 18, "aria-hidden": "true", focusable: "false" }));
 
 for (const [button, icon] of [[$("#preview-mirror"), FlipHorizontal2], [skeletonToggle, Bone]]) {
   button.append(createElement(icon, { width: 15, height: 15, "aria-hidden": "true", focusable: "false" }));

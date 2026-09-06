@@ -16,6 +16,7 @@
       <nav class="header-actions" aria-label="Main navigation">
         <a href="/settings" class="settings-link">Settings</a>
         <button id="connection" class="status status-off" type="button" aria-haspopup="dialog" disabled>Connecting</button>
+        <button id="camera-power-toggle" class="status status-off" type="button" aria-pressed="false" aria-label="Camera power loading" title="Camera power loading" disabled></button>
       </nav>
     </header>
 
@@ -192,11 +193,6 @@
           <h2>Camera</h2>
           <div class="camera-heading-actions">
             <span id="camera-age">No sample</span>
-            <label class="toggle-switch camera-power-switch" for="camera-power-toggle">
-              <span id="camera-power-status" aria-live="polite">Loading power</span>
-              <input id="camera-power-toggle" type="checkbox" role="switch" disabled>
-              <span class="switch-track" aria-hidden="true"></span>
-            </label>
           </div>
         </div>
         <div class="metrics">

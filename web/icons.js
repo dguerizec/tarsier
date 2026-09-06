@@ -1,1 +1,1 @@
-export { createElement, FolderOpen, FlipHorizontal2, Bone } from "lucide";
+export { createElement, FolderOpen, FlipHorizontal2, Bone, Power } from "lucide";
