@@ -94,6 +94,115 @@ pub async fn sources() -> Result<Vec<Source>> {
         .collect())
 }
 
+#[derive(Debug, Serialize)]
+pub struct Application {
+    pub name: String,
+    pub binary: Option<String>,
+    pub pid: Option<String>,
+    pub streams: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SourceApplications {
+    pub available: bool,
+    pub applications: Vec<Application>,
+}
+
+pub async fn applications(source: &str) -> Result<SourceApplications> {
+    let output = timeout(
+        Duration::from_secs(3),
+        Command::new("pw-dump").kill_on_drop(true).output(),
+    )
+    .await
+    .context("Audio application lookup timed out")??;
+    if !output.status.success() {
+        bail!("Could not inspect audio connections");
+    }
+    let graph: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout)?;
+    Ok(connected_applications(&graph, source))
+}
+
+fn connected_applications(graph: &[serde_json::Value], source: &str) -> SourceApplications {
+    let nodes: HashMap<u64, &serde_json::Value> = graph
+        .iter()
+        .filter_map(|object| Some((object["id"].as_u64()?, object)))
+        .collect();
+    let Some(source_id) = graph
+        .iter()
+        .find(|object| {
+            object["type"] == "PipeWire:Interface:Node"
+                && object["info"]["props"]["node.name"] == source
+        })
+        .and_then(|object| object["id"].as_u64())
+    else {
+        return SourceApplications {
+            available: false,
+            applications: Vec::new(),
+        };
+    };
+    // Stereo links share a node. Count each capture stream once, then group
+    // streams belonging to the same client process without reading command lines.
+    let connected: HashSet<u64> = graph
+        .iter()
+        .filter(|object| {
+            object["type"] == "PipeWire:Interface:Link"
+                && object["info"]["output-node-id"].as_u64() == Some(source_id)
+        })
+        .filter_map(|object| object["info"]["input-node-id"].as_u64())
+        .collect();
+    let mut applications = BTreeMap::<_, Application>::new();
+    for id in connected {
+        let Some(node) = nodes.get(&id) else {
+            continue;
+        };
+        let props = &node["info"]["props"];
+        let client_id = props["client.id"].as_u64();
+        let client = client_id.and_then(|id| nodes.get(&id));
+        let value = |key: &str| -> Option<String> {
+            let field = if props[key].is_null() {
+                client.map(|c| &c["info"]["props"][key])
+            } else {
+                Some(&props[key])
+            }?;
+            match field {
+                serde_json::Value::String(s) => Some(s.clone()),
+                serde_json::Value::Number(n) => Some(n.to_string()),
+                _ => None,
+            }
+        };
+        let binary = value("application.process.binary");
+        let pid = value("application.process.id");
+        let name = value("application.name")
+            .or_else(|| binary.clone())
+            .or_else(|| value("node.description"))
+            .or_else(|| value("node.name"))
+            .unwrap_or_else(|| "Unknown application".into());
+        let key = (
+            name.clone(),
+            pid.clone(),
+            binary.clone(),
+            if pid.is_none() {
+                Some(client_id.unwrap_or(id))
+            } else {
+                None
+            },
+        );
+        applications
+            .entry(key)
+            .or_insert(Application {
+                name,
+                binary,
+                pid,
+                streams: 0,
+            })
+            .streams += 1;
+    }
+    SourceApplications {
+        available: true,
+        applications: applications.into_values().collect(),
+    }
+}
+
 #[derive(Clone)]
 struct Frame {
     captured: Instant,
@@ -626,6 +735,35 @@ fn measure(bytes: &[u8]) -> Level {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn application_lookup_follows_links_and_deduplicates_channels_and_processes() {
+        use serde_json::json;
+        let graph = vec![
+            json!({"id":1,"type":"PipeWire:Interface:Node","info":{"props":{"node.name":"mic"}}}),
+            json!({"id":9,"type":"PipeWire:Interface:Client","info":{"props":{"application.name":"Native recorder","application.process.id":123,"application.process.binary":"recorder"}}}),
+            json!({"id":2,"type":"PipeWire:Interface:Node","info":{"props":{"client.id":9}}}),
+            json!({"id":3,"type":"PipeWire:Interface:Node","info":{"props":{"client.id":9}}}),
+            json!({"id":4,"type":"PipeWire:Interface:Node","info":{"props":{"application.name":"Unconnected app"}}}),
+            json!({"id":10,"type":"PipeWire:Interface:Link","info":{"output-node-id":1,"input-node-id":2}}),
+            json!({"id":11,"type":"PipeWire:Interface:Link","info":{"output-node-id":1,"input-node-id":2}}),
+            json!({"id":12,"type":"PipeWire:Interface:Link","info":{"output-node-id":1,"input-node-id":3}}),
+        ];
+        let result = connected_applications(&graph, "mic");
+        assert!(result.available);
+        assert_eq!(result.applications.len(), 1);
+        let app = &result.applications[0];
+        assert_eq!(app.name, "Native recorder");
+        assert_eq!(app.pid.as_deref(), Some("123"));
+        assert_eq!(app.binary.as_deref(), Some("recorder"));
+        assert_eq!(app.streams, 2);
+        let missing = connected_applications(&graph, "missing");
+        assert!(!missing.available);
+        assert!(missing.applications.is_empty());
+        let idle = connected_applications(&graph[..5], "mic");
+        assert!(idle.available);
+        assert!(idle.applications.is_empty());
+    }
 
     #[test]
     fn new_inputs_are_reserved_and_release_survives_reconnection() {

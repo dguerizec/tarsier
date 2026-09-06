@@ -163,6 +163,7 @@ pub fn router_with_controls(
         .route("/api/v1/audio/meter", get(audio_meter))
         .route("/api/v1/audio/capture", post(set_audio_capture))
         .route("/api/v1/audio/exclusive", post(set_audio_exclusive))
+        .route("/api/v1/audio/applications", get(audio_applications))
         .route(
             "/api/v1/audio/virtual",
             get(virtual_audio).post(set_virtual_audio),
@@ -2900,6 +2901,22 @@ async fn audio_sources(State(state): State<ApiState>) -> Response {
             )
             .into_response()
         }
+        Err(error) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+async fn audio_applications(
+    axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let Some(source) = query.get("source").filter(|source| !source.is_empty()) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    match crate::audio::applications(source).await {
+        Ok(applications) => Json(applications).into_response(),
         Err(error) => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({"error": error.to_string()})),

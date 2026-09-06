@@ -869,7 +869,11 @@ recovers missed events. Tarsier's own virtual output and speaker monitor sources
 are excluded, so applications can share **Tarsier Microphone**.
 
 Each input shows its actual reservation status and a **Release** / **Reserve**
-button. **Release** closes its exclusive stream; if that input is enabled, capture
+button. Click **Not reserved** (or **Shared input**) to open an overlay listing
+applications currently connected to that input, with executable and PID when
+available. The list refreshes while open and includes native PipeWire clients;
+browser metadata may identify the browser without naming the tab or website.
+**Release** closes its exclusive stream; if that input is enabled, capture
 continues in shared mode. Turning an input **Off** alone does not release it:
 keeping the reservation requires an active capture stream, whose samples are not
 routed to the virtual output or shown in meters while Off. A released input stays
@@ -913,6 +917,8 @@ raw audio stays on the daemon host and is neither saved nor played on speakers.
 - `POST /api/v1/audio/capture`: `{ "source": "<id>", "enabled": true }`.
 - `POST /api/v1/audio/exclusive`: `{ "source": "<id>", "exclusive": false }` to
   release, or `true` to reserve; shared runtime state exposes reservation results.
+- `GET /api/v1/audio/applications?source=<encoded-id>`: connected applications
+  grouped by process, with source availability and capture stream counts.
 - `GET /api/v1/audio/virtual`: desired settings and actual running/error status.
 - `POST /api/v1/audio/virtual`: partial update of `source`, `enabled`, or `muted`.
 - `WS /api/v1/audio/meter?source=<encoded-id>`: shared 20 ms summaries (`min`,

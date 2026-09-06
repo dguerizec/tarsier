@@ -33,6 +33,20 @@
       </form>
     </dialog>
 
+    <dialog id="audio-applications-dialog" aria-labelledby="audio-applications-title">
+      <form method="dialog">
+        <h2 id="audio-applications-title">Applications using this microphone</h2>
+        <p id="audio-applications-source"></p>
+        <p id="audio-applications-status" role="status">Loading…</p>
+        <ul id="audio-applications-list"></ul>
+        <p class="hint">Browsers may identify themselves without naming the tab or website.</p>
+        <div class="dialog-actions">
+          <button id="audio-applications-refresh" type="button" class="secondary">Refresh</button>
+          <button type="submit">Close</button>
+        </div>
+      </form>
+    </dialog>
+
     <main>
       <section class="preview-panel">
         <div class="panel-title">

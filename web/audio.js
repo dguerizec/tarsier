@@ -5,6 +5,72 @@ let enabledSources = null;
 let reservations = {};
 let releasedSources = new Set();
 
+const applicationsDialog = document.querySelector('#audio-applications-dialog');
+const applicationsStatus = document.querySelector('#audio-applications-status');
+const applicationsList = document.querySelector('#audio-applications-list');
+let inspectedSource = null;
+let applicationsRequest = null;
+let applicationsTimer = null;
+
+async function refreshApplications() {
+  if (!applicationsDialog.open || !inspectedSource) return;
+  clearTimeout(applicationsTimer);
+  applicationsRequest?.abort();
+  const request = new AbortController();
+  applicationsRequest = request;
+  try {
+    const url = new URL('/api/v1/audio/applications', location.href);
+    url.searchParams.set('source', inspectedSource);
+    const response = await fetch(url, { signal: request.signal, cache: 'no-store' });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Could not list connected applications');
+    if (applicationsRequest !== request || !applicationsDialog.open) return;
+    applicationsList.replaceChildren();
+    for (const app of data.applications) {
+      const row = document.createElement('li');
+      const name = document.createElement('strong');
+      name.textContent = app.name;
+      const detail = document.createElement('span');
+      detail.textContent = [app.binary, app.pid ? `PID ${app.pid}` : null,
+        app.streams > 1 ? `${app.streams} capture streams` : null].filter(Boolean).join(' · ');
+      row.append(name, detail);
+      applicationsList.append(row);
+    }
+    applicationsStatus.classList.remove('error');
+    applicationsStatus.textContent = !data.available ? 'This microphone is no longer available.'
+      : data.applications.length ? 'Connected applications · Updates automatically'
+      : 'No applications are connected. The input may be unavailable for another reason.';
+  } catch (error) {
+    if (request.signal.aborted) return;
+    applicationsList.replaceChildren();
+    applicationsStatus.classList.add('error');
+    applicationsStatus.textContent = error.message;
+  } finally {
+    if (applicationsRequest === request && applicationsDialog.open) {
+      applicationsTimer = setTimeout(refreshApplications, 2000);
+    }
+  }
+}
+
+function showApplications(track) {
+  inspectedSource = track.id;
+  document.querySelector('#audio-applications-source').textContent = track.name;
+  applicationsList.replaceChildren();
+  applicationsStatus.textContent = 'Loading…';
+  applicationsStatus.classList.remove('error');
+  applicationsDialog.showModal();
+  void refreshApplications();
+}
+document.querySelector('#audio-applications-refresh').onclick = () => void refreshApplications();
+applicationsDialog.addEventListener('close', () => {
+  clearTimeout(applicationsTimer);
+  applicationsRequest?.abort();
+  inspectedSource = null;
+});
+applicationsDialog.addEventListener('click', (event) => {
+  if (event.target === applicationsDialog) applicationsDialog.close();
+});
+
 function renderReservation(track) {
   if (track.id === virtualId) return;
   const released = releasedSources.has(track.id);
@@ -20,7 +86,10 @@ function renderReservation(track) {
   track.reserveStatus.textContent = track.reservationError || (!released && reservation?.status === 'released'
     ? 'Reserving…' : released && reservation?.status === 'held' ? 'Releasing…'
     : labels[reservation?.status] || 'Discovering…');
-  track.reserveStatus.title = reservation?.error || '';
+  const inspectable = released || reservation?.status === 'unavailable';
+  track.reserveStatus.disabled = !inspectable;
+  track.reserveStatus.setAttribute('aria-haspopup', 'dialog');
+  track.reserveStatus.title = inspectable ? 'Show applications connected to this microphone' : reservation?.error || '';
   track.reserveStatus.classList.toggle('reservation-warning', reservation?.status === 'unavailable');
 }
 
@@ -215,9 +284,10 @@ function create(source) {
   if (source.id !== virtualId) {
     const reservation = document.createElement('div');
     reservation.className = 'audio-reservation';
-    reservation.innerHTML = '<span role="status"></span><button type="button" class="secondary compact">Release</button>';
-    track.reserveStatus = reservation.querySelector('span');
-    track.reserveButton = reservation.querySelector('button');
+    reservation.innerHTML = '<button type="button" class="audio-reservation-status link-button"></button><button type="button" class="secondary compact">Release</button>';
+    track.reserveStatus = reservation.querySelector('.audio-reservation-status');
+    track.reserveStatus.onclick = () => showApplications(track);
+    track.reserveButton = reservation.querySelector('.secondary');
     track.reserveButton.onclick = () => void setExclusive(track);
     row.append(reservation);
     renderReservation(track);
