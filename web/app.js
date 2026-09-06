@@ -1596,13 +1596,34 @@ document.addEventListener("keydown", (event) => {
 });
 
 const resolutionPicker = $("#resolution-picker");
+function positionResolutionPicker() {
+  if (!resolutionPicker.matches(":popover-open")) return;
+  const link = $("#video-resolution").getBoundingClientRect();
+  const popup = resolutionPicker.getBoundingClientRect();
+  const margin = 8;
+  const gap = 4;
+  const viewportWidth = document.documentElement.clientWidth;
+  const viewportHeight = document.documentElement.clientHeight;
+  const left = Math.max(margin, Math.min(link.left, viewportWidth - popup.width - margin));
+  const below = link.bottom + gap;
+  const top = below + popup.height <= viewportHeight - margin
+    ? below
+    : Math.max(margin, link.top - gap - popup.height);
+  resolutionPicker.style.left = `${left}px`;
+  resolutionPicker.style.top = `${top}px`;
+}
 $("#video-resolution").addEventListener("click", (event) => {
   event.preventDefault();
   resolutionPicker.togglePopover();
+  positionResolutionPicker();
 });
 resolutionPicker.addEventListener("toggle", () => {
   $("#video-resolution").setAttribute("aria-expanded", String(resolutionPicker.matches(":popover-open")));
+  positionResolutionPicker();
 });
+window.addEventListener("resize", positionResolutionPicker);
+document.addEventListener("scroll", positionResolutionPicker, true);
+new ResizeObserver(positionResolutionPicker).observe(resolutionPicker);
 for (const button of document.querySelectorAll("[data-resolution]")) {
   button.addEventListener("click", async () => {
     if (resolutionPending) return;
