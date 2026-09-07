@@ -1149,12 +1149,13 @@ stop fallback. The overlay buttons do not start a drag.
 Run the pointer lifecycle and direction-mapping tests with `npm test --prefix web`.
 The nudge endpoint also accepts `up-left`, `up-right`, `down-left`, and `down-right`.
 
-### Microphone reservation preference
+### Microphone reservation preferences
 
-In Settings → Camera and microphones, **Reserve microphone inputs for Tarsier**
-controls automatic exclusive reservation, including inputs whose capture is Off.
-Save and restart applies and remembers the choice. Existing clients are not
-terminated automatically. Individual lock buttons can still release an input.
-When reservation is disabled, the shared icon opens a read-only application list.
-The user preference overrides the `audio.reserve_inputs` startup default; source
-allowlists and virtual-output restrictions remain in effect.
+Settings → Camera and microphones lists **Automatically reserve microphones**,
+with a persistent choice per input. Checked inputs are reserved at startup and
+reconnection even when capture is Off; new inputs are checked by default.
+Individual lock buttons change the current reservation until restart or
+reconnection without changing this preference. An unchecked input remains shared
+after other applications disconnect. Capture toggles and output selection belong
+to the main Audio panel and are preserved when these settings are saved.
+Source allowlists and virtual-output restrictions remain in effect.
