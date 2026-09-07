@@ -359,7 +359,7 @@ pub fn router_with_controls(
             "/api/v1/camera/photos/{filename}/open",
             post(open_saved_photo),
         )
-        // Only the thirteen gateway operations are exposed on the MCP destination.
+        // Only the fourteen gateway operations are exposed on the MCP destination.
         .route("/mcp/api/v1/state", get(current_state))
         .route("/mcp/api/v1/config", get(effective_config))
         .route("/mcp/api/v1/events/recent", get(recent_events))
@@ -370,6 +370,7 @@ pub fn router_with_controls(
         .route("/mcp/api/v1/camera/tracking", post(set_tracking))
         .route("/mcp/api/v1/camera/face-tracking", post(set_face_tracking))
         .route("/mcp/api/v1/camera/auto-zoom", post(set_auto_zoom))
+        .route("/mcp/api/v1/camera/zoom", post(set_zoom))
         .route("/mcp/api/v1/camera/actions/recenter", post(mcp_recenter))
         .route("/mcp/api/v1/camera/presets/{id}/recall", post(recall_camera_preset))
         .route("/mcp/api/v1/scenarios/{id}/trigger", post(trigger_scenario))
@@ -3935,6 +3936,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mcp_manual_zoom_preserves_tracking_and_rejects_out_of_range_values() {
+        let mut config = Config::default();
+        config.camera.adapter = CameraAdapter::Mock;
+        config.video.loopback_enabled = false;
+        let runtime = Runtime::new();
+        let camera = camera::start(config.camera.clone(), runtime.clone())
+            .await
+            .unwrap();
+        let (_stop, shutdown) = watch::channel(false);
+        let app = router(config, runtime.clone(), PreviewHub::new(), camera, shutdown);
+        let mut last_zoom = 1.0;
+        for zoom in [1.0, 2.5, 4.0, 0.9, 4.1] {
+            let valid = (1.0..=4.0).contains(&zoom);
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post("/mcp/api/v1/camera/zoom")
+                        .header("content-type", "application/json")
+                        .body(Body::from(json!({"magnification": zoom}).to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                if valid {
+                    StatusCode::ACCEPTED
+                } else {
+                    StatusCode::UNPROCESSABLE_ENTITY
+                }
+            );
+            if valid {
+                last_zoom = zoom;
+            }
+            let state = runtime.state().await;
+            assert_eq!(state.camera.zoom_magnification, Some(last_zoom));
+            assert!(!state.camera.face_tracking.enabled);
+            assert!(!state.camera.face_tracking.auto_zoom.enabled);
+        }
+    }
+
+    #[tokio::test]
     async fn mcp_mutations_require_inspection_but_reads_and_ui_do_not() {
         let mut config = Config::default();
         config.video.loopback_enabled = true;
@@ -3948,6 +3991,7 @@ mod tests {
             "/api/v1/camera/tracking",
             "/api/v1/camera/face-tracking",
             "/api/v1/camera/auto-zoom",
+            "/api/v1/camera/zoom",
             "/api/v1/camera/presets/test/recall",
             "/api/v1/scenarios/test/trigger",
         ] {

@@ -43,6 +43,15 @@ struct MoveCameraParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct ZoomParams {
+    #[schemars(
+        description = "Absolute zoom magnification from 1.0 (widest) to 4.0",
+        range(min = 1.0, max = 4.0)
+    )]
+    magnification: f32,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct TrackingParams {
     #[schemars(description = "Whether this tracking or auto-zoom mode should be enabled")]
     enabled: bool,
@@ -222,6 +231,24 @@ impl TarsierGateway {
             Method::POST,
             "/api/v1/camera/auto-zoom",
             Some(json!({"enabled": params.enabled})),
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Set absolute camera zoom from 1x to 4x. Does not enable tracking or auto zoom. If auto zoom is already enabled, it recalibrates to the new framing.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn set_zoom(&self, Parameters(params): Parameters<ZoomParams>) -> CallToolResult {
+        self.request(
+            Method::POST,
+            "/api/v1/camera/zoom",
+            Some(json!({"magnification": params.magnification})),
         )
         .await
     }
@@ -412,8 +439,13 @@ mod tests {
 
         let client = ().serve(client_transport).await.unwrap();
         let tools = client.list_all_tools().await.unwrap();
-        assert_eq!(tools.len(), 13);
-        for name in ["set_camera_tracking", "set_face_tracking", "set_auto_zoom"] {
+        assert_eq!(tools.len(), 14);
+        for name in [
+            "set_camera_tracking",
+            "set_face_tracking",
+            "set_auto_zoom",
+            "set_zoom",
+        ] {
             assert!(tools.iter().any(|tool| tool.name == name));
         }
         assert!(!tools.iter().any(|tool| tool.name == "set_tracking"));
@@ -466,6 +498,7 @@ mod tests {
         let client = ().serve(client_transport).await.unwrap();
         for (name, arguments) in [
             ("move_camera", json!({"yaw": 0, "pitch": 0})),
+            ("set_zoom", json!({"magnification": 2.0})),
             ("recenter_camera", json!({})),
             ("recall_camera_preset", json!({"id": "test"})),
             ("set_camera_tracking", json!({"enabled": true})),
@@ -490,7 +523,7 @@ mod tests {
                     .contains("409 Conflict")
             );
         }
-        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 10);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 11);
         client.cancel().await.unwrap();
         server.await.unwrap();
         daemon.abort();
