@@ -616,6 +616,17 @@ The gateway exposes eleven typed tools:
   `recall_camera_preset`, and `trigger_scenario`.
 
 MCP transports commands, state, events, and snapshots, not continuous video.
+The gateway identifies its requests with `X-Tarsier-Client: mcp`. The daemon
+rejects MCP mutations with HTTP 409 while another local application holds the
+virtual video device open. This covers movement, recentering, preset recall,
+tracking changes, and scenario triggers. Read-only tools remain available;
+manual UI controls and existing automatic tracking are unaffected. Each command
+uses a fresh process scan instead of the UI's two-second cache. Inspection errors
+block mutations with HTTP 503. Detection covers inspectable processes owned by
+the daemon's user and excludes the daemon and its descendants. Partial scans
+still block known clients but cannot detect inaccessible processes; this is
+a command-time guard, not a stop for motion already in progress. The header is
+a gateway marker, not an authorization boundary for arbitrary HTTP clients.
 Movement limits and event recording remain enforced by the daemon regardless
 of the MCP client.
 

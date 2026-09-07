@@ -108,6 +108,46 @@ async fn video_applications(State(state): State<ApiState>) -> Response {
     }
 }
 
+async fn guard_mcp_commands(
+    State(state): State<ApiState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if request.method() == axum::http::Method::POST
+        && request
+            .headers()
+            .get("x-tarsier-client")
+            .is_some_and(|v| v == "mcp")
+        && state.config.video.loopback_enabled
+    {
+        let snapshot = state
+            .video_applications
+            .fresh_applications(state.config.video.output_device.clone())
+            .await;
+        if let Some(response) = mcp_usage_rejection(snapshot) {
+            return response;
+        }
+    }
+    next.run(request).await
+}
+
+pub(crate) fn mcp_usage_rejection(
+    snapshot: anyhow::Result<crate::video_clients::Snapshot>,
+) -> Option<Response> {
+    let (status, message) = match snapshot {
+        Ok(snapshot) if !snapshot.applications.is_empty() => (
+            StatusCode::CONFLICT,
+            "MCP commands are blocked while an application is using the virtual camera. Close the virtual camera in that application before trying again.",
+        ),
+        Err(_) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "MCP commands are blocked because virtual camera usage could not be inspected.",
+        ),
+        Ok(_) => return None,
+    };
+    Some((status, Json(json!({"error": message}))).into_response())
+}
+
 #[cfg(test)]
 pub fn router(
     config: Config,
@@ -314,6 +354,10 @@ pub fn router_with_controls(
             "/api/v1/camera/photos/{filename}/open",
             post(open_saved_photo),
         )
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            guard_mcp_commands,
+        ))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
     if let Some(auth) = auth {
@@ -3752,6 +3796,97 @@ mod tests {
 
     use super::*;
     use crate::{camera, config::CameraAdapter, settings::UserSettings};
+
+    #[test]
+    fn mcp_usage_guard_allows_partial_scans_but_blocks_inspection_errors() {
+        for partial in [false, true] {
+            let result = mcp_usage_rejection(Ok(crate::video_clients::Snapshot {
+                available: true,
+                partial,
+                applications: vec![],
+            }));
+            assert!(result.is_none());
+        }
+        assert_eq!(
+            mcp_usage_rejection(Err(anyhow::anyhow!("scan failed")))
+                .unwrap()
+                .status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_commands_work_without_a_virtual_camera_reader() {
+        for enabled in [true, false] {
+            let mut config = Config::default();
+            config.video.loopback_enabled = enabled;
+            config.video.output_device = String::new();
+            let (_stop, shutdown) = watch::channel(false);
+            let app = router(config, Runtime::new(), PreviewHub::new(), None, shutdown);
+            let response = app
+                .oneshot(
+                    Request::post("/api/v1/scenarios/open-palm-demo/trigger")
+                        .header("x-tarsier-client", "mcp")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::ACCEPTED);
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_mutations_require_inspection_but_reads_and_ui_do_not() {
+        let mut config = Config::default();
+        config.video.loopback_enabled = true;
+        // ENOTDIR makes inspection fail deterministically without touching hardware.
+        config.video.output_device = "/dev/null/not-a-device".into();
+        let (_stop, shutdown) = watch::channel(false);
+        let app = router(config, Runtime::new(), PreviewHub::new(), None, shutdown);
+        for path in [
+            "/api/v1/camera/move",
+            "/api/v1/camera/actions/recenter",
+            "/api/v1/camera/tracking",
+            "/api/v1/camera/presets/test/recall",
+            "/api/v1/scenarios/test/trigger",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post(path)
+                        .header("x-tarsier-client", "mcp")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{path}");
+            let body = to_bytes(response.into_body(), 4096).await.unwrap();
+            assert!(String::from_utf8_lossy(&body).contains("MCP commands are blocked"));
+        }
+        let read = app
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/state")
+                    .header("x-tarsier-client", "mcp")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(read.status(), StatusCode::OK);
+        // A regular HTTP/UI request reaches the scenario handler (unknown ID).
+        let manual = app
+            .oneshot(
+                Request::post("/api/v1/scenarios/missing/trigger")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(manual.status(), StatusCode::NOT_FOUND);
+    }
 
     #[tokio::test]
     async fn voice_model_import_and_selection_preserve_output_settings() {

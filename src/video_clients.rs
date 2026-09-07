@@ -30,8 +30,18 @@ pub struct Monitor(Arc<Mutex<Option<(Instant, String, Snapshot)>>>);
 
 impl Monitor {
     pub async fn applications(&self, device: String) -> Result<Snapshot> {
+        self.inspect(device, false).await
+    }
+
+    /// Bypass the display cache before accepting a camera command.
+    pub async fn fresh_applications(&self, device: String) -> Result<Snapshot> {
+        self.inspect(device, true).await
+    }
+
+    async fn inspect(&self, device: String, fresh: bool) -> Result<Snapshot> {
         let mut cache = self.0.lock().await;
         if let Some((at, cached_device, snapshot)) = &*cache
+            && !fresh
             && cached_device == &device
             && at.elapsed() < Duration::from_secs(2)
         {
@@ -142,6 +152,49 @@ fn scan(proc: &Path, device: &Path, daemon: u32, uid: u32) -> Result<Snapshot> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn command_scan_bypasses_recent_display_cache() {
+        let monitor = Monitor::default();
+        let device = String::new();
+        *monitor.0.lock().await = Some((
+            Instant::now(),
+            device.clone(),
+            Snapshot {
+                available: true,
+                partial: false,
+                applications: vec![],
+            },
+        ));
+        assert!(
+            monitor
+                .applications(device.clone())
+                .await
+                .unwrap()
+                .available
+        );
+        assert!(!monitor.fresh_applications(device).await.unwrap().available);
+    }
+
+    #[test]
+    fn occupied_device_blocks_mcp_commands() {
+        // The API uses this scan result before executing a gateway mutation.
+        let snapshot = Snapshot {
+            available: true,
+            partial: false,
+            applications: vec![Application {
+                pid: 20,
+                name: "Conference".into(),
+                binary: None,
+            }],
+        };
+        assert_eq!(
+            crate::api::mcp_usage_rejection(Ok(snapshot))
+                .unwrap()
+                .status(),
+            axum::http::StatusCode::CONFLICT,
+        );
+    }
     #[test]
     fn device_scan_deduplicates_handles_and_excludes_daemon_descendants() {
         let root =
