@@ -68,6 +68,11 @@ impl TarsierGateway {
             anyhow::bail!("daemon URL must use HTTP or HTTPS");
         }
         let mut headers = reqwest::header::HeaderMap::new();
+        // The daemon protects MCP commands while another app uses the virtual camera.
+        headers.insert(
+            "x-tarsier-client",
+            reqwest::header::HeaderValue::from_static("mcp"),
+        );
         if let Ok(token) = std::env::var("TARSIER_API_TOKEN") {
             let mut value = reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))?;
             value.set_sensitive(true);
@@ -279,7 +284,7 @@ impl TarsierGateway {
 #[tool_handler(
     name = "tarsier",
     version = "0.1.0",
-    instructions = "Inspect and safely control the local Tarsier camera daemon. Camera movement is bounded by daemon configuration, and every mutation is recorded as an event."
+    instructions = "Inspect and safely control the local Tarsier camera daemon. Camera movement is bounded by daemon configuration, and every mutation is recorded as an event. Mutations are blocked while another application uses the virtual camera; read-only tools remain available."
 )]
 impl ServerHandler for TarsierGateway {}
 
@@ -380,5 +385,64 @@ mod tests {
         client.cancel().await.unwrap();
         server_task.await.unwrap().unwrap();
         daemon_task.abort();
+    }
+
+    #[tokio::test]
+    async fn all_mutating_tools_identify_mcp_and_propagate_usage_rejection() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = calls.clone();
+        let app = Router::new().fallback(move |request: axum::extract::Request| {
+            let seen = seen.clone();
+            async move {
+                assert_eq!(request.method(), axum::http::Method::POST);
+                assert_eq!(request.headers()["x-tarsier-client"], "mcp");
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                (
+                    axum::http::StatusCode::CONFLICT,
+                    Json(json!({"error": "Virtual camera in use"})),
+                )
+            }
+        });
+        let daemon = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let gateway = TarsierGateway::new(format!("http://{address}")).unwrap();
+        let (server_transport, client_transport) = tokio::io::duplex(16 * 1024);
+        let server = tokio::spawn(async move {
+            gateway
+                .serve(server_transport)
+                .await
+                .unwrap()
+                .waiting()
+                .await
+                .unwrap();
+        });
+        let client = ().serve(client_transport).await.unwrap();
+        for (name, arguments) in [
+            ("move_camera", json!({"yaw": 0, "pitch": 0})),
+            ("recenter_camera", json!({})),
+            ("recall_camera_preset", json!({"id": "test"})),
+            ("set_tracking", json!({"enabled": true})),
+            ("set_tracking", json!({"enabled": false})),
+            ("trigger_scenario", json!({"id": "test"})),
+        ] {
+            let result = client
+                .call_tool(
+                    CallToolRequestParams::new(name)
+                        .with_arguments(arguments.as_object().unwrap().clone()),
+                )
+                .await
+                .unwrap();
+            assert_eq!(result.is_error, Some(true), "{name}");
+            assert!(
+                serde_json::to_string(&result)
+                    .unwrap()
+                    .contains("409 Conflict")
+            );
+        }
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 6);
+        client.cancel().await.unwrap();
+        server.await.unwrap();
+        daemon.abort();
     }
 }
