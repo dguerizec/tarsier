@@ -675,18 +675,10 @@ impl AudioHub {
                     voice_settings.generation,
                 ));
                 voice_key = None;
-            } else if !voice_settings.enabled && voice.take().is_some() {
-                runtime
-                    .update(|s| {
-                        s.audio_voice.ready = false;
-                        s.audio_voice.error = None;
-                        s.audio_voice.inference_ms = None;
-                        s.audio_voice.pipeline_ms = None;
-                    })
-                    .await;
             }
             let converted = if let Some(bridge) = voice.as_mut() {
                 let key = (
+                    voice_settings.enabled,
                     settings.source.clone(),
                     settings.auto_gain,
                     settings.muted,
@@ -697,11 +689,16 @@ impl AudioHub {
                     bridge.reset();
                     voice_key = Some(key);
                 }
-                bridge.process(
-                    &processed,
-                    frame.as_ref().map_or_else(Instant::now, |f| f.captured),
-                    voice_settings.pitch,
-                )
+                if voice_settings.enabled {
+                    bridge.process(
+                        &processed,
+                        frame.as_ref().map_or_else(Instant::now, |f| f.captured),
+                        voice_settings.pitch,
+                    )
+                } else {
+                    // Keep the loaded process idle; resuming resets its audio history.
+                    None
+                }
             } else {
                 None
             };

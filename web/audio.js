@@ -608,7 +608,7 @@ function renderVoice() {
   } else { credit.textContent = voiceState.model || ''; }
   if (document.activeElement !== voicePitch) voicePitch.value = voiceState.pitch || 0;
   document.querySelector('#voice-pitch-value').textContent = `${voicePitch.value} st`;
-  voiceStatus.textContent = voiceState.error || (!voiceState.enabled ? 'Off' : !virtualState.enabled
+  voiceStatus.textContent = voiceState.error || (!voiceState.enabled ? (voiceState.ready ? 'Off · Model loaded' : 'Off') : !virtualState.enabled
     ? 'Turn on audio output to start conversion.' : !voiceState.ready ? 'Loading voice model…'
     : `Ready${virtualState.muted ? ' · Output muted' : ''} · Inference ${Math.round(voiceState.inference_ms || 0)} ms · Pipeline delay ${voiceState.pipeline_ms ?? '–'} ms · Dropped chunks ${voiceState.dropped_chunks || 0}`);
   voiceStatus.title = 'Pipeline delay measures daemon queue and processing time. It excludes filter alignment, hardware and application buffering.';
