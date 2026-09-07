@@ -62,7 +62,11 @@ input fallback while conversion is enabled. Request and response queues each
 hold one chunk. Playback is bounded and rejects samples older than 650 ms.
 Source, pitch, gain-mode, and mute changes invalidate pending results and reset
 conversion history. Final mute gates the PCM after inference, immediately before
-writing to the virtual microphone. Turning conversion off frees its GPU model.
+writing to the virtual microphone. Turning conversion off keeps the model loaded
+and stops submitting inference requests. The same worker resumes when conversion is enabled again; buffered
+audio, denoiser history and pitch context are reset so old speech cannot replay.
+The model is released when selecting a different model, stopping audio output,
+or shutting down the daemon.
 
 Controls appear under Audio → Output: Voice conversion On/Off and Pitch (-12 to
 +12 semitones). Enabling conversion does not unmute output. Output itself must
@@ -152,3 +156,10 @@ recovery to French Woman. The virtual-source ID and output mute were preserved
 through these switches; temporary validation models were removed. The user also
 confirmed that the preceding speech-filter change removed parasitic voices in
 their setup.
+
+
+Warm-bypass validation: a live On → Off → On check retained the same Python PID
+and virtual source. The idle worker accumulated zero CPU ticks over two seconds.
+Fresh pipeline status returned 286 ms after re-enabling conversion; this includes
+chunk accumulation and status publication and is not acoustic latency. Original
+conversion and mute settings were restored after the check.
