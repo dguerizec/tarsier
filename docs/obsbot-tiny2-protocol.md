@@ -157,10 +157,42 @@ zero restarts, and no pipeline error. This establishes live video with the LED
 off, not frame-by-frame continuity during the brief process suspensions.
 The original level (`3`) and camera orientation were restored afterward.
 
-Color selection, hardware blinking, and persistence across power cycles were
-not tested. A future integration should execute these operations inside the
-existing camera-owner thread rather than use the experimental suspension
-method.
+Persistence across power cycles was not tested. A future integration should
+execute these operations inside the existing camera-owner thread rather than
+use the experimental suspension method.
+
+### Native blinking and color investigation
+
+A follow-up experiment on the same date confirmed the SDK's Tiny 2
+`Device::cameraSetLedCtrlU(bool)` special pattern:
+
+- Start: unit `2`, selector `6`, `SET_CUR`, 60 bytes beginning
+  `[0x18, 0x01, 0x01]`, followed by zeros.
+- Stop: the same transaction beginning `[0x18, 0x01, 0x00]`.
+
+With tracking disabled and brightness level three, the start command produced
+autonomous green blinking. Eight seconds of snapshots sampled at 10 Hz showed
+approximately one cycle per second, with roughly 0.7 seconds lit and 0.3 seconds
+dark. These timings are approximate because of snapshot sampling and preview
+latency. Only one start command was sent; host-side brightness toggling was not
+needed. The stop command restored steady green illumination. A second start/stop
+sequence reproduced the effect. No selector-6 status bytes changed immediately
+after either command, so a successful write is not a measured blink-state
+readback. Video remained active at about 30 FPS with no pipeline restart.
+
+No independent RGB/color-selection control was found in the inspected SDK
+header and libdev symbols. This is a search limitation, not proof that the
+firmware has no such command. The [official manual](https://resource-cdn.obsbothk.com/download/obsbot-tiny-2/manual/OBSBOT%20Tiny%202%20User%20Manual_EN.pdf)
+assigns colors to operating states: green for no selected target, blue for human
+tracking, yellow for a lost target, purple for hand tracking, and red for faults.
+A brief human-tracking request while looking at the mirror did not produce a
+confirmed tracking lock; sampled state returned false and the LED stayed green.
+This experiment therefore confirmed no additional colors and no independent
+color override. It did not test configurable blink frequency or duty cycle.
+
+The special pattern was disabled, brightness restored to three, tracking left
+disabled as initially observed, and the original measured camera orientation
+restored. Final daemon health was checked after restoration.
 
 ## Available image and perception surfaces
 
