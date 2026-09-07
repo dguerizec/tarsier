@@ -80,3 +80,32 @@ def test_motion_transfer_anchors_scale_and_translation_to_the_source() -> None:
     )
 
     assert torch.all(driven == 0.5)
+
+
+def test_source_preparation_does_not_replace_active_source_or_driving_state(tmp_path):
+    from threading import Lock
+
+    import cv2
+    import numpy as np
+
+    from tarsier_perception.liveportrait.engine import ComicAvatarEngine
+
+    engine = ComicAvatarEngine.__new__(ComicAvatarEngine)
+    engine._device = torch.device("cpu")
+    engine._inference_lock = Lock()
+    engine.source = object()
+    original = engine.source
+    engine._driving_initial_info = object()
+    driving = engine._driving_initial_info
+    info = motion(0.0)
+    info["kp"] = torch.zeros((1, 21, 3))
+    info["scale"] = torch.ones((1, 1))
+    engine._keypoint_info = lambda _: info
+    engine._appearance = lambda tensor: tensor.mean()
+    portrait = tmp_path / "new.png"
+    cv2.imwrite(str(portrait), np.full((256, 256, 3), 128, dtype=np.uint8))
+    prepared = engine.prepare_source(portrait)
+    assert prepared.features.item() == pytest.approx(128 / 255)
+    assert prepared.keypoints.shape == (1, 21, 3)
+    assert engine.source is original
+    assert engine._driving_initial_info is driving

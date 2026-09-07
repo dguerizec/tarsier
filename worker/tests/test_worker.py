@@ -430,3 +430,43 @@ def test_stylized_3d_renderer_produces_an_opaque_bgrx_frame() -> None:
     assert np.all(neutral[:, :, 3] == 255)
     assert np.unique(neutral[:, :, :3].reshape(-1, 3), axis=0).shape[0] > 20
     assert not np.array_equal(neutral, expressive)
+
+
+def test_identity_tracks_portrait_revision_and_keeps_last_state_on_poll_failure(monkeypatch):
+    import urllib.error
+
+    responses = iter((
+        HttpResponse(b'{"identity":"liveportrait","liveportrait":{"revision":2,"active_revision":1,"source":"/tmp/source.png"}}'),
+        urllib.error.URLError("temporary failure"),
+    ))
+
+    def respond(*_, **__):
+        result = next(responses)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr("urllib.request.urlopen", respond)
+    identity = VideoIdentityClient("http://127.0.0.1:8742")
+    assert identity.selected_avatar_engine() == "liveportrait"
+    assert identity.portrait_source == (2, Path("/tmp/source.png"))
+    assert identity.portrait_active_revision == 1
+    identity.invalidate()
+    assert identity.selected_avatar_engine() == "liveportrait"
+    assert identity.portrait_source == (2, Path("/tmp/source.png"))
+
+
+def test_avatar_publisher_tags_the_source_revision(monkeypatch):
+    import numpy as np
+
+    requests = []
+
+    def respond(request, **_):
+        requests.append(request)
+        return HttpResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", respond)
+    AvatarPublisher("http://127.0.0.1:8742").publish(
+        "liveportrait", 42, 1234, np.zeros((1, 2, 4), dtype=np.uint8), source_revision=7,
+    )
+    assert requests[0].get_header("X-tarsier-avatar-source-revision") == "7"

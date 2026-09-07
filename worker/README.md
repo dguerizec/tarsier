@@ -72,6 +72,16 @@ uv run --project worker --extra liveportrait --locked \
   tarsier-perception models --download --avatar
 ```
 
+The worker polls the selected portrait path and revision with the video identity.
+While LivePortrait is active, a bounded background task prepares only the new
+source image, keypoints, and appearance features with the existing weights. The
+render thread continues animating the previous source. A candidate is committed
+only after its first complete frame is accepted by the daemon, and every frame
+carries its source revision so late or superseded frames cannot undo a switch.
+Preparation or first-render failures retain the previous source. This does not
+restart the worker, video pipeline, recorder, or audio processing. Source changes
+can still take preparation time and share GPU capacity with regular inference.
+
 The fallback's vendored LivePortrait neural-network modules and five downloaded
 core weights are MIT-licensed; provenance is recorded beside the integration. The
 upstream InsightFace detection assets are not included. They may be evaluated

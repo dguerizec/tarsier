@@ -206,7 +206,7 @@
               <p>Choose an avatar from <code>assets/avatars/</code>.</p>
               <div id="liveportrait-gallery" class="portrait-gallery" role="radiogroup" aria-label="Available avatars"></div>
               <p id="liveportrait-gallery-status" role="status"></p>
-              <small>Tarsier restarts briefly to apply your choice.</small>
+              <small>The current avatar stays visible while the next one is prepared.</small>
               <p id="liveportrait-error" class="error" role="alert" hidden></p>
               <div class="dialog-actions">
                 <button id="liveportrait-cancel" type="button">Cancel</button>
@@ -214,6 +214,7 @@
               </div>
             </form>
           </dialog>
+          <p id="liveportrait-switch-status" role="status" hidden></p>
           <p id="output-error" class="error" role="alert" hidden></p>
         </div>
         <div class="background-control">

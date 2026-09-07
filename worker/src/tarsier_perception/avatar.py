@@ -229,6 +229,7 @@ class AvatarPublisher:
         frame_id: int,
         captured_at_ms: int,
         frame_bgrx: np.ndarray,
+        source_revision: int = 0,
     ) -> None:
         if frame_bgrx.ndim != 3 or frame_bgrx.shape[2] != 4 or frame_bgrx.dtype != np.uint8:
             raise ValueError("avatar frame must be a BGRx uint8 image")
@@ -241,6 +242,7 @@ class AvatarPublisher:
                 "X-Tarsier-Frame-Id": str(frame_id),
                 "X-Tarsier-Captured-At-Ms": str(captured_at_ms),
                 "X-Tarsier-Avatar-Engine": engine,
+                "X-Tarsier-Avatar-Source-Revision": str(source_revision),
                 "X-Tarsier-Avatar-Pixel-Format": "bgra" if engine == "portrait3d" else "bgrx",
                 "X-Tarsier-Avatar-Width": str(width),
                 "X-Tarsier-Avatar-Height": str(height),
@@ -270,6 +272,8 @@ class VideoIdentityClient:
         self._identity = "camera"
         self._background_enabled = False
         self._next_refresh = 0.0
+        self.portrait_source: tuple[int, Path] | None = None
+        self.portrait_active_revision = 0
 
     def selected_identity(self) -> str:
         now = time.monotonic()
@@ -280,6 +284,19 @@ class VideoIdentityClient:
     def selected_avatar_engine(self) -> str | None:
         identity = self.selected_identity()
         return identity if identity in {"stylized-3d", "portrait3d", "liveportrait"} else None
+
+    def report_portrait_error(self, revision: int, error: str) -> None:
+        request = urllib.request.Request(
+            self._url.replace("/video/identity", "/video/liveportrait/status"),
+            data=json.dumps({"revision": revision, "error": error[:500]}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(authorize(request), timeout=self._timeout_seconds):
+                pass
+        except (OSError, urllib.error.URLError):
+            LOGGER.warning("failed to report portrait preparation error")
 
     def depth_usage(self) -> str | None:
         identity = self.selected_identity()
@@ -303,11 +320,19 @@ class VideoIdentityClient:
             identity = payload.get("identity")
             if identity not in {"camera", "stylized-3d", "portrait3d", "liveportrait", "depth-map"}:
                 raise ValueError(f"invalid video identity: {identity!r}")
+            portrait = payload.get("liveportrait")
+            if isinstance(portrait, dict):
+                revision, source = portrait.get("revision"), portrait.get("source")
+                if isinstance(revision, int) and revision >= 0 and isinstance(source, str):
+                    self.portrait_source = (revision, Path(source))
+                    active_revision = portrait.get("active_revision")
+                    if isinstance(active_revision, int) and active_revision >= 0:
+                        self.portrait_active_revision = active_revision
             self._identity = identity
             self._background_enabled = payload.get("background_enabled") is True
         except (OSError, ValueError, urllib.error.URLError) as error:
-            self._identity = "camera"
-            self._background_enabled = False
+            # Keep rendering the last accepted identity during a transient poll failure.
+            # The daemon still rejects frames for identities it no longer wants.
             self._next_refresh = now + max(1.0, self._refresh_seconds)
             LOGGER.warning("failed to read selected video identity: %s", error)
 
@@ -343,6 +368,10 @@ class AvatarProcessor:
         self._width = width
         self._height = height
         self._compile_models = compile_models
+        self._portrait_request: tuple[int, Path] | None = None
+        self._portrait_switcher = None
+        self._portrait_identity: VideoIdentityClient | None = None
+        self._rendered_source_revision = 0
         self._frames: queue.Queue[AvatarInputFrame | None] = queue.Queue(maxsize=1)
         self._lock = threading.Lock()
         self._published_count = 0
@@ -394,6 +423,7 @@ class AvatarProcessor:
     def _run_switchable(self) -> None:
         publisher = AvatarPublisher(self._daemon_url)
         identity = VideoIdentityClient(self._daemon_url)
+        self._portrait_identity = identity
         active_engine: str | None = None
         resources = ExitStack()
         render: Callable[[AvatarInputFrame], np.ndarray | None] | None = None
@@ -402,8 +432,10 @@ class AvatarProcessor:
         try:
             while (frame := self._frames.get()) is not None:
                 selected_engine = identity.selected_avatar_engine()
+                self._portrait_request = identity.portrait_source
                 if selected_engine != active_engine:
                     resources.close()
+                    self._portrait_switcher = None
                     resources = ExitStack()
                     active_engine = None
                     render = None
@@ -425,9 +457,18 @@ class AvatarProcessor:
                         retry_at = time.monotonic() + 5.0
                         LOGGER.exception("failed to initialize avatar engine: %s", selected_engine)
                         continue
+                if selected_engine == "liveportrait" and self._portrait_switcher is not None:
+                    self._portrait_switcher.accept(identity.portrait_active_revision)
+                    if self._portrait_request is not None:
+                        self._portrait_switcher.request(*self._portrait_request)
                 output = render(frame)
                 if output is not None:
-                    self._publish(publisher, selected_engine, frame, output)
+                    accepted = self._publish(publisher, selected_engine, frame, output)
+                    if selected_engine == "liveportrait":
+                        if accepted:
+                            self._portrait_switcher.accept(self._rendered_source_revision)
+                        else:
+                            identity.invalidate()
         finally:
             resources.close()
 
@@ -471,32 +512,32 @@ class AvatarProcessor:
 
         if engine_name != "liveportrait":
             raise RuntimeError(f"unsupported avatar engine: {engine_name}")
-        if self._source_image is None:
+        revision, source_image = self._portrait_request or (0, self._source_image)
+        if source_image is None:
             raise RuntimeError("LivePortrait avatar requires a source image")
         from .liveportrait.engine import ComicAvatarEngine
+        from .liveportrait.switching import PortraitSwitcher
 
-        source_bgr = cv2.imread(str(self._source_image), cv2.IMREAD_COLOR)
-        if source_bgr is None:
-            raise RuntimeError(f"cannot read avatar source image: {self._source_image}")
         engine = resources.enter_context(
-            ComicAvatarEngine(
-                self._source_image,
-                self._model_dir,
-                compile_models=self._compile_models,
-            )
+            ComicAvatarEngine(source_image, self._model_dir, compile_models=self._compile_models)
         )
         cropper = resources.enter_context(MediaPipeFaceCropper(self._model_dir))
+        assert self._portrait_identity is not None
+        switcher = resources.enter_context(PortraitSwitcher(
+            revision, engine.source, engine.prepare_source, engine.render,
+            self._portrait_identity.report_portrait_error,
+        ))
+        self._portrait_switcher = switcher
 
         def render_liveportrait(frame: AvatarInputFrame) -> np.ndarray | None:
+            switcher.prepare_pending()
             driving = cropper.crop(frame.frame_bgr, frame.timestamp_ms)
             if driving is None:
                 return None
-            animated = engine.render(driving)
+            animated, portrait = switcher.render(driving)
+            self._rendered_source_revision = portrait.revision
             return compose_avatar_frame(
-                source_bgr,
-                animated,
-                self._width,
-                self._height,
+                portrait.source.image_bgr, animated, self._width, self._height,
             )
 
         return render_liveportrait
@@ -507,13 +548,18 @@ class AvatarProcessor:
         engine: str,
         frame: AvatarInputFrame,
         output: np.ndarray,
-    ) -> None:
+    ) -> bool:
         try:
-            publisher.publish(engine, frame.frame_id, frame.captured_at_ms, output)
+            publisher.publish(
+                engine, frame.frame_id, frame.captured_at_ms, output,
+                self._rendered_source_revision if engine == "liveportrait" else 0,
+            )
             with self._lock:
                 self._published_count += 1
+            return True
         except RuntimeError as error:
             LOGGER.warning("%s", error)
+            return False
 
     def __enter__(self) -> AvatarProcessor:
         self._thread.start()
