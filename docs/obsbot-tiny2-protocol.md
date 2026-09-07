@@ -248,6 +248,25 @@ Brightness three and the original camera orientation were restored, with the
 native pattern disabled. Final health was OK and video returned to about
 30 frames per second.
 
+A follow-up stopped the daemon entirely and captured the physical camera
+directly with FFmpeg at 1280x720 MJPEG, 30 fps, while a separate control file
+descriptor alternated brightness at 3 Hz without process suspension. In the
+measured repeat, all 48 writes over eight seconds matched immediate readback.
+The 12-second capture delivered 361 frames; the largest host-observed interval
+between decoded frames was 42.34 ms, with no interval above 100 ms. The longest
+write-plus-readback took 14.90 ms. FFmpeg reported an initial duplicate timestamp
+warning in the first trial, which otherwise also maintained approximately
+30 fps. Frame arrival timing is a host-side continuity measurement, not proof
+of unique sensor exposures or a test of Tarsier's future scheduling integration.
+
+These results support fast brightness toggling alongside uninterrupted camera
+capture, and suggest that the earlier interruptions came from the experimental
+access method rather than an unavoidable hardware limitation. The transient
+systemd unit disappeared when stopped and was recreated to restore the daemon.
+Brightness three and native blinking disabled were restored. After the measured
+repeat, daemon health was OK, the original pose remained unchanged, and its
+video pipeline ran at approximately 30 fps with zero restarts.
+
 ### Deeper local SDK inspection: indicator-state commands
 
 A subsequent static inspection used the exact local file
