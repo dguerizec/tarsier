@@ -114,6 +114,12 @@
             <button id="audio-output-applications" type="button" class="link-button" title="Show applications connected to Tarsier Microphone" aria-haspopup="dialog">0 apps</button>
             <p id="audio-output-error" class="error" role="alert" hidden></p>
             <div id="audio-output-track"></div>
+            <div id="voice-conversion" class="voice-conversion" hidden>
+              <div><strong>Voice conversion</strong> <button id="voice-toggle" class="secondary compact" type="button" aria-pressed="false">Off</button></div>
+              <p class="hint">Demo: <a href="https://huggingface.co/yasyune/Shigure_Tokina_RVC" target="_blank" rel="noopener">Shigure Tokina (CV: Marukoro)</a> · Japanese training</p>
+              <label>Pitch <input id="voice-pitch" type="range" min="-12" max="12" step="1" value="0"> <output id="voice-pitch-value">0 st</output></label>
+              <p id="voice-status" class="hint" role="status">Off</p>
+            </div>
           </div>
         </section>
 

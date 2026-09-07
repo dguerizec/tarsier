@@ -37,6 +37,8 @@ impl VideoResolution {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct AudioSettings {
+    pub voice_enabled: bool,
+    pub voice_pitch: i32,
     pub capture_sources: Vec<String>,
     pub output_source: Option<String>,
     pub output_enabled: bool,
@@ -47,6 +49,8 @@ pub struct AudioSettings {
 impl Default for AudioSettings {
     fn default() -> Self {
         Self {
+            voice_enabled: false,
+            voice_pitch: 0,
             capture_sources: Vec::new(),
             output_source: None,
             output_enabled: false,
@@ -59,6 +63,8 @@ impl Default for AudioSettings {
 impl AudioSettings {
     pub fn from_state(state: &crate::model::RuntimeState) -> Self {
         Self {
+            voice_enabled: state.audio_voice.enabled,
+            voice_pitch: state.audio_voice.pitch,
             capture_sources: state.audio_capture_sources.clone(),
             output_source: state.audio_virtual.source.clone(),
             output_enabled: state.audio_virtual.enabled,
@@ -68,6 +74,8 @@ impl AudioSettings {
     }
 
     pub fn apply(&self, state: &mut crate::model::RuntimeState) {
+        state.audio_voice.enabled = self.voice_enabled;
+        state.audio_voice.pitch = self.voice_pitch;
         state.audio_capture_sources = self.capture_sources.clone();
         state.audio_virtual.source = self.output_source.clone();
         state.audio_virtual.enabled = self.output_enabled;
@@ -137,6 +145,9 @@ impl UserSettings {
     }
 
     fn validate(self) -> Result<Self> {
+        if !(-12..=12).contains(&self.audio.voice_pitch) {
+            bail!("voice pitch must be between -12 and 12");
+        }
         if self
             .video_resolution
             .is_some_and(|resolution| !resolution.valid())
@@ -462,6 +473,8 @@ mod tests {
             output_enabled: true,
             output_muted: true,
             output_auto_gain: false,
+            voice_enabled: true,
+            voice_pitch: 3,
         };
         store.set_audio(audio.clone()).await.unwrap();
         store.set_network_lan_access(true).await.unwrap();

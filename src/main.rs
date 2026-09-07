@@ -18,6 +18,7 @@ mod scenario;
 mod settings;
 mod video_clients;
 mod video_transform;
+mod voice;
 
 use std::path::PathBuf;
 
@@ -162,6 +163,9 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
         user_settings.video_transform = Default::default();
         config.avatar.enabled = false;
         config.depth.enabled = false;
+    }
+    if config.audio.voice_worker.is_empty() {
+        user_settings.audio.voice_enabled = false;
     }
     if !config.audio.virtual_output_enabled {
         user_settings.audio.output_enabled = false;

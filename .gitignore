@@ -15,3 +15,5 @@ __pycache__/
 !/assets/avatars/liveportrait-default.png
 
 /.voice-conversion/
+
+/voice/.venv/

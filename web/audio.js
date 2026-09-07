@@ -270,13 +270,15 @@ async function updateOutput(patch) {
 document.querySelector('#audio-output-applications').onclick = () => showApplications(tracks.get(virtualId));
 document.querySelector('#preview-audio-mute').onclick = () => void updateOutput({ muted: !virtualState.muted });
 
-export function syncAudioCapture(sources, output, currentReservations, released, busy, outputApplications = 0, currentGain = {}) {
+export function syncAudioCapture(sources, output, currentReservations, released, busy, outputApplications = 0, currentGain = {}, currentVoice = {}) {
   document.querySelector('#audio-output-applications').textContent = `${outputApplications} ${outputApplications === 1 ? 'app' : 'apps'}`;
   gainState = currentGain;
+  voiceState = currentVoice;
   reservations = currentReservations || {};
   releasedSources = new Set(released || []);
   busySources = new Set(busy || []);
   if (output) virtualState = output;
+  renderVoice();
   enabledSources = new Set(sources);
   for (const track of tracks.values()) syncTrack(track);
   renderOutput();
@@ -542,3 +544,37 @@ window.addEventListener('pagehide', () => {
   clearInterval(refreshTimer);
   for (const track of tracks.values()) stop(track);
 });
+
+
+let voiceState = {};
+let voicePending = false;
+const voiceToggle = document.querySelector('#voice-toggle');
+const voicePitch = document.querySelector('#voice-pitch');
+const voiceStatus = document.querySelector('#voice-status');
+document.querySelector('#voice-conversion').hidden = !audioConfig.audio.voice_worker?.length;
+function renderVoice() {
+  voiceToggle.textContent = voiceState.enabled ? 'On' : 'Off';
+  voiceToggle.setAttribute('aria-pressed', String(!!voiceState.enabled));
+  voiceToggle.disabled = voicePending;
+  voicePitch.disabled = voicePending;
+  if (document.activeElement !== voicePitch) voicePitch.value = voiceState.pitch || 0;
+  document.querySelector('#voice-pitch-value').textContent = `${voicePitch.value} st`;
+  voiceStatus.textContent = voiceState.error || (!voiceState.enabled ? 'Off' : !virtualState.enabled
+    ? 'Turn on audio output to start conversion.' : !voiceState.ready ? 'Loading voice model…'
+    : `Ready${virtualState.muted ? ' · Output muted' : ''} · Inference ${Math.round(voiceState.inference_ms || 0)} ms · Pipeline delay ${voiceState.pipeline_ms ?? '–'} ms · Dropped chunks ${voiceState.dropped_chunks || 0}`);
+  voiceStatus.title = 'Pipeline delay is measured from daemon capture to output. It excludes hardware and application buffering.';
+}
+async function updateVoice(enabled, pitch) {
+  if (voicePending) return;
+  voicePending = true; renderVoice();
+  try {
+    const response = await fetch('/api/v1/audio/voice', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({enabled, pitch})});
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || 'Could not change voice conversion');
+    voiceState = body;
+  } catch (error) { voiceState.error = error.message; }
+  finally { voicePending = false; renderVoice(); }
+}
+voiceToggle.onclick = () => updateVoice(!voiceState.enabled, Number(voicePitch.value));
+voicePitch.oninput = () => { document.querySelector('#voice-pitch-value').textContent = `${voicePitch.value} st`; };
+voicePitch.onchange = () => updateVoice(!!voiceState.enabled, Number(voicePitch.value));

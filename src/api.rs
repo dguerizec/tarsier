@@ -195,6 +195,10 @@ pub fn router_with_controls(
             "/api/v1/settings/devices",
             get(device_settings).post(set_device_settings),
         )
+        .route(
+            "/api/v1/audio/voice",
+            get(voice_settings).post(set_voice_settings),
+        )
         .route("/api/v1/audio/sources", get(audio_sources))
         .route("/api/v1/audio/meter", get(audio_meter))
         .route("/api/v1/audio/capture", post(set_audio_capture))
@@ -3103,6 +3107,45 @@ async fn activate_scenario(state: &ApiState, scenario: &ScenarioConfig, trigger_
         .await;
 }
 
+async fn voice_settings(State(state): State<ApiState>) -> Json<Value> {
+    Json(
+        json!({"available": !state.config.audio.voice_worker.is_empty(), "state": state.runtime.state().await.audio_voice}),
+    )
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VoiceRequest {
+    enabled: bool,
+    pitch: i32,
+}
+
+async fn set_voice_settings(
+    State(state): State<ApiState>,
+    Json(request): Json<VoiceRequest>,
+) -> Response {
+    if !(-12..=12).contains(&request.pitch)
+        || (request.enabled && state.config.audio.voice_worker.is_empty())
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "Voice conversion is unavailable or pitch is outside -12 to 12"})),
+        )
+            .into_response();
+    }
+    let _guard = state.audio_settings_control.lock().await;
+    let mut audio = crate::settings::AudioSettings::from_state(&state.runtime.state().await);
+    audio.voice_enabled = request.enabled;
+    audio.voice_pitch = request.pitch;
+    if let Some(settings) = &state.user_settings {
+        if let Err(error) = settings.set_audio(audio.clone()).await {
+            return user_settings_error(error);
+        }
+    }
+    state.runtime.update(|s| audio.apply(s)).await;
+    Json(state.runtime.state().await.audio_voice).into_response()
+}
+
 async fn audio_sources(State(state): State<ApiState>) -> Response {
     match crate::audio::sources(&state.config.audio).await {
         Ok(sources) => {
@@ -3473,6 +3516,41 @@ mod tests {
 
     use super::*;
     use crate::{camera, config::CameraAdapter, settings::UserSettings};
+
+    #[tokio::test]
+    async fn voice_controls_validate_pitch_and_preserve_mute() {
+        let runtime = Runtime::new();
+        runtime.update(|s| s.audio_virtual.muted = true).await;
+        let (_stop, shutdown) = watch::channel(false);
+        let app = router(
+            Config::default(),
+            runtime.clone(),
+            PreviewHub::new(),
+            None,
+            shutdown,
+        );
+        for (body, expected) in [
+            (r#"{"enabled":true,"pitch":0}"#, StatusCode::BAD_REQUEST),
+            (r#"{"enabled":false,"pitch":13}"#, StatusCode::BAD_REQUEST),
+            (r#"{"enabled":false,"pitch":3}"#, StatusCode::OK),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post("/api/v1/audio/voice")
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+        }
+        let state = runtime.state().await;
+        assert!(state.audio_virtual.muted);
+        assert_eq!(state.audio_voice.pitch, 3);
+        assert!(!state.audio_voice.enabled);
+    }
 
     #[tokio::test]
     async fn isolated_profile_rejects_output_and_exclusive_capture() {

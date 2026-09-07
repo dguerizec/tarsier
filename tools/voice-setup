@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Install only the experimental voice environment and its pinned local assets.
+set -euo pipefail
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+cd "$root"
+upstream="$root/.voice-conversion/rvc-upstream"
+revision=81eed5e8f68b6bed1789f682fe78cdd324495afc
+if [ ! -d "$upstream" ]; then
+  git clone --no-checkout https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI.git "$upstream"
+  git -C "$upstream" checkout --detach "$revision"
+fi
+[ "$(git -C "$upstream" rev-parse HEAD)" = "$revision" ] || { echo 'Unexpected upstream RVC revision' >&2; exit 1; }
+uv sync --project voice --locked --link-mode hardlink
+python3 - <<'PY'
+import hashlib, json, pathlib, urllib.request
+for asset in json.loads(pathlib.Path('voice/assets.json').read_text()):
+    path = pathlib.Path(asset['path'])
+    if path.is_file() and hashlib.sha256(path.read_bytes()).hexdigest() == asset['sha256']:
+        continue
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix('.download')
+    try:
+        urllib.request.urlretrieve(asset['url'], temporary)
+        if hashlib.sha256(temporary.read_bytes()).hexdigest() != asset['sha256']:
+            raise RuntimeError(f'Checksum mismatch for {path.name}')
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+print('Voice environment and model assets verified')
+PY
