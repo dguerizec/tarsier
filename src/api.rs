@@ -117,6 +117,11 @@ async fn guard_mcp_commands(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
+    if request.uri().path().starts_with("/mcp/") {
+        if let Some(camera) = state.camera.read().await.as_ref() {
+            camera.notify_mcp_activity();
+        }
+    }
     if request.method() == axum::http::Method::POST
         && request.uri().path().starts_with("/mcp/")
         && state.config.video.loopback_enabled

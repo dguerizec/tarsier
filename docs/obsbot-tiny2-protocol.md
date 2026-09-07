@@ -493,9 +493,18 @@ The executable protocol logic and packet fixtures live in
 The camera-owner thread now owns LED writes alongside other camera I/O.
 Its internal desired modes are off, steady at brightness three, and host-timed
 blinking at three cycles per second. No HTTP endpoint, MCP tool, configuration
-field, or user setting exposes these modes. Usage mapping is deliberately
-unassigned: the daemon currently requests only off, regardless of recording
-or virtual-camera consumers.
+field, or user setting exposes these modes. The baseline remains off,
+regardless of recording or virtual-camera consumers. Each authenticated MCP
+route request (reads and mutations, including usage-guard rejections) triggers
+one second of temporary feedback: three cycles at 3 Hz, starting opposite to
+the last applied brightness. A lit baseline therefore blinks dark first.
+Ordinary API requests and authentication failures do not trigger feedback.
+A new MCP request during feedback resets only the one-second expiry timer,
+preserving the current phase and original baseline; no sequences are queued.
+When feedback expires, the current baseline mode resumes. Sleep cancels the
+feedback and MCP requests never wake the camera just to signal activity.
+Notification is best effort and nonblocking; a full or closed command queue
+can drop the signal without failing the MCP operation.
 
 On startup and after waking, the owner disables the native special pattern
 and applies the desired brightness. Stable brightness is not repeatedly
@@ -512,3 +521,12 @@ shutdown extinction, and transport-failure backoff. After loading the build,
 selector-6 status byte 33 read zero. Daemon health was OK, with approximately
 30 fps and no pipeline restarts. The readback briefly paused the owner to
 serialize this external diagnostic; no production LED path pauses the daemon.
+
+MCP feedback validation: 223 backend tests passed (one ignored), including
+three-cycle inversion for both off and steady baselines and timeout extension
+without phase reset. A live mirror trial sent two MCP state reads 651 ms apart.
+All 40 preview snapshots succeeded; repeated lit/dark phases continued beyond
+the first call's one-second window and ended after the extended window. The
+original pose was restored, health remained OK, and the video pipeline stayed
+near 30 fps with zero restarts. Inversion from a steady baseline was covered by
+unit tests; this live trial used the current off baseline.
