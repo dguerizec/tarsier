@@ -239,6 +239,33 @@ selection. Tiny 2 support, valid IDs, actual visual effects, and restoration
 semantics remain unverified. No camera settings were changed for this static
 inspection.
 
+### Search for known indicator-state values
+
+A follow-up source search found no documented numeric `state_id` suitable for
+a bounded color test. The local SDK and application contain declarations but
+no example calls to the set/clear pair; no direct call site was found in the
+inspected library disassembly either.
+
+The public SDK copy under
+[`malko/obsbot-js-sdk/libdev_v2.1.0_7`](https://github.com/malko/obsbot-js-sdk/tree/main/libdev_v2.1.0_7)
+has the same unexplained declarations, as does `libdev_v2.1.0_8` in
+`batatrax/obsbot-linux`; both retain the Tail Air/Tail 2 categorization.
+The `libdev_v2.1.0_7` `OBSBOT_Sample/main.cpp` uses
+`cameraSetLedCtrlU(true)` and `cameraSetLedCtrlU(false)` around zone-tracking
+configuration, corroborating the already tested special-pattern switch rather
+than providing an indicator-state ID. Searches of public source files in
+`batatrax/obsbot-linux`, `Domatix/obsbot-control`, `ananthb/libobsbot`, and
+`OpenFoxes/Tiny4Linux` found no matching indicator-state or LED-color example.
+These negative searches do not establish firmware limitations.
+
+The [official SDK page](https://www.obsbot.jp/jp/sdk) distributes SDK packages
+through a signed-in request followed by email delivery, rather than a public
+download link on that page. No request was submitted. No arbitrary state IDs
+were sent to the camera. The remaining prerequisite is a documented state-ID
+mapping applicable to Tiny 2, or a known application call/USB trace with its
+corresponding clear operation. Merely finding both exported functions is not
+sufficient to establish safe restoration for an unknown ID.
+
 ## Available image and perception surfaces
 
 The tested Tiny 2 advertises standard V4L2 controls for automatic/manual
