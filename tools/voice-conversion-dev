@@ -21,7 +21,7 @@ case "${1:-check}" in
 import json, os, pathlib, socket, subprocess, tomllib
 c = tomllib.loads(pathlib.Path('config/voice-conversion.toml').read_text())
 assert c['server']['bind'] == '127.0.0.1:8743'
-assert c['audio'] == dict(reserve_inputs=False,
+assert c['audio'] == dict(reserve_inputs=False, voice_worker=['tools/voice-rvc'],
     virtual_source='tarsier_voice_conversion', virtual_output_enabled=True, set_default_source=False)
 main_state = subprocess.check_output(['systemctl', '--user', 'show', 'tarsier.service', '-p', 'ActiveState', '--value'], text=True).strip()
 assert main_state in ('inactive', 'failed'), 'Stop main before starting the physical-device experiment'

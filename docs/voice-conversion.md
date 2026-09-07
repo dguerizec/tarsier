@@ -61,42 +61,24 @@ main, this profile was extended to physical inputs. V4L2 loopback output remains
 depth, and all three avatar engines are enabled. The current main binary attempts to
 reserve newly created sources; keep main stopped while this experiment runs.
 
-## RVC feasibility boundary
+## RVC prototype
 
-No target model or RVC runtime is installed by this baseline. It does not perform
-voice conversion and provides no conversion latency result. A pretrained voice
-model can be used; training a voice is not required for the first experiment.
-The RVC inference model (`.pth`, optional retrieval `.index`) is distinct from the
-shared content encoder and pitch model weights.
+RVC is now integrated between automatic gain and final output mute. Install it
+with `tools/voice-setup`, then use the Voice conversion control in Audio → Output.
+The demo voice is Shigure Tokina, trained on Japanese speech; French accent and
+speech quality still need listening tests. See [the voice bridge documentation](../voice/README.md)
+for attribution, pinned assets, protocol, measured inference time, and limits.
 
-Primary sources inspected on 2026-09-07:
+The voice worker has a separate environment from perception. It opens no audio
+device and receives only the selected input's PCM from the daemon. Conversion
+failure produces silence while the virtual microphone remains published. Final
+mute is enforced after conversion. A worker timeout never falls back to the raw
+voice when conversion is enabled.
 
-- https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI
-- https://github.com/w-okada/voice-changer
-
-RVC exposes a real-time GUI, but its advertised latency is hardware-dependent.
-Do not reuse upstream headline latency as a measurement of Tarsier. Pin an
-upstream revision and dependencies in a separate environment after selecting a
-compatible pretrained model. Keep that environment separate from `worker/.venv`.
-
-An earlier GPU snapshot while main was running showed an RTX 3070 with
-7596/8192 MiB allocated. Re-measure GPU use now that main has stopped before
-sizing the RVC experiment.
-
-## Next bounded prototype
-
-Use a separate worker with bounded PCM queues after input gain processing and
-before final mute/output. Existing blocks are 20 ms, stereo S16LE at 48 kHz.
-RVC needs explicit resampling/channel conversion and overlapping inference
-windows. Review the existing 120 ms freshness cutoff against measured conversion
-latency; do not silently replay stale output.
-
-Mute must gate the final output after inference. Flush pending results on source,
-model, or mode changes. Worker failure or overload must produce silence without
-recreating the published virtual microphone. Track capture-to-output latency,
-inference p50/p95, queue age, dropped blocks, CPU, and peak GPU memory. Measure
-with a known signal and compare a bypass run, then repeat while video/avatars
-are active. Audiovisual synchronization is outside this first trial.
+UI timing is daemon capture-to-publication delay, excluding audio hardware and
+application buffering. Total microphone-to-ear latency and audiovisual
+synchronization remain unmeasured. Video loopback is still disabled in this
+profile; the visual processing worker and preview can run during voice trials.
 
 ## Device selection validation
 
@@ -132,5 +114,4 @@ After enabling the worker, live checks confirmed fresh depth frames and avatar
 frames for Stylized 3D, Personal 3D, and LivePortrait. LivePortrait continued
 publishing with a latest-frame age of 69 ms at the final check; this is frame
 freshness, not an end-to-end latency benchmark. The preview was restored to
-Camera after validation. Main remained inactive. RVC voice conversion remains
-separate, unfinished work.
+Camera after validation. Main remained inactive. RVC voice conversion is enabled separately with its audio control.

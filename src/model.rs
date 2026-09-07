@@ -17,6 +17,8 @@ pub struct RuntimeState {
     #[serde(default)]
     pub audio_virtual: crate::audio::VirtualMicrophone,
     #[serde(default)]
+    pub audio_voice: crate::voice::VoiceState,
+    #[serde(default)]
     pub audio_gain: crate::audio_gain::GainStatus,
     #[serde(default)]
     pub audio_released_sources: Vec<String>,
@@ -42,6 +44,7 @@ impl Default for RuntimeState {
             last_scenario: None,
             audio_capture_sources: Vec::new(),
             audio_virtual: Default::default(),
+            audio_voice: Default::default(),
             audio_gain: Default::default(),
             audio_released_sources: Vec::new(),
             audio_busy_sources: Vec::new(),

@@ -1,0 +1,27 @@
+[
+  {
+    "url": "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/e6d0c1a17da07c33557852f9dfa2bd44cc75737d/hubert_base/config.json",
+    "path": ".voice-conversion/rvc-upstream/assets/hubert_base/config.json",
+    "sha256": "0346950779dfb7f9316fa74ed846e2b8a22a08eedfdc5387b73f327cb1a4a7cf"
+  },
+  {
+    "url": "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/e6d0c1a17da07c33557852f9dfa2bd44cc75737d/hubert_base/preprocessor_config.json",
+    "path": ".voice-conversion/rvc-upstream/assets/hubert_base/preprocessor_config.json",
+    "sha256": "7c1976a680fb7acc757cd36fb08eef878fa36c70b4c9d2d595df9c608bbbbf0e"
+  },
+  {
+    "url": "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/e6d0c1a17da07c33557852f9dfa2bd44cc75737d/hubert_base/pytorch_model.bin",
+    "path": ".voice-conversion/rvc-upstream/assets/hubert_base/pytorch_model.bin",
+    "sha256": "cc8c20f4b90a520757260197a3ff2505705a7adbd20ad9eeaa4e1a9b38442ef5"
+  },
+  {
+    "url": "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/e6d0c1a17da07c33557852f9dfa2bd44cc75737d/rmvpe.pt",
+    "path": ".voice-conversion/rvc-upstream/assets/rmvpe/rmvpe.pt",
+    "sha256": "6d62215f4306e3ca278246188607209f09af3dc77ed4232efdd069798c4ec193"
+  },
+  {
+    "url": "https://huggingface.co/yasyune/Shigure_Tokina_RVC/resolve/66bc71bea94e00f9a858dfdd07a604d17ec0dba0/Shigure_Tokina/Shigure.pth",
+    "path": ".voice-conversion/voice-model/Shigure.pth",
+    "sha256": "26cffa69599bdc403c9677b7351b5e62c673d6cca751b3d3e515a02236e19ba3"
+  }
+]

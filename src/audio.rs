@@ -511,6 +511,7 @@ impl AudioHub {
             runtime
                 .update(|s| {
                     s.audio_virtual.running = false;
+                    s.audio_voice.ready = false;
                     s.audio_gain = Default::default();
                     s.audio_virtual.error = error;
                 })
@@ -520,6 +521,7 @@ impl AudioHub {
         runtime
             .update(|s| {
                 s.audio_virtual.running = false;
+                s.audio_voice.ready = false;
                 s.audio_gain = Default::default();
                 s.audio_virtual.error = None;
             })
@@ -613,6 +615,8 @@ impl AudioHub {
         let mut automatic = true;
         let mut last_gain_update = Instant::now() - Duration::from_secs(1);
         let mut input = None;
+        let mut voice: Option<crate::voice::Bridge> = None;
+        let mut voice_key = None;
         let silence = vec![0; BLOCK_BYTES];
         let mut tick = interval(Duration::from_millis(20));
         tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -632,7 +636,6 @@ impl AudioHub {
             }
             let frame = input.as_mut().and_then(next_frame);
             let allowed = settings.enabled
-                && !settings.muted
                 && selected
                     .as_ref()
                     .is_some_and(|id| state.audio_capture_sources.contains(id));
@@ -642,15 +645,83 @@ impl AudioHub {
             } else {
                 (pcm.to_vec(), crate::audio_gain::GainStatus::default())
             };
-            let pcm = processed.as_slice();
+            let voice_settings = state.audio_voice.clone();
+            if voice_settings.enabled && voice.is_none() {
+                runtime
+                    .update(|s| {
+                        s.audio_voice.ready = false;
+                        s.audio_voice.error = None;
+                    })
+                    .await;
+                voice = Some(crate::voice::Bridge::new(
+                    self.config.voice_worker.clone(),
+                    runtime.clone(),
+                ));
+                voice_key = None;
+            } else if !voice_settings.enabled && voice.take().is_some() {
+                runtime
+                    .update(|s| {
+                        s.audio_voice.ready = false;
+                        s.audio_voice.error = None;
+                        s.audio_voice.inference_ms = None;
+                        s.audio_voice.pipeline_ms = None;
+                    })
+                    .await;
+            }
+            let converted = if let Some(bridge) = voice.as_mut() {
+                let key = (
+                    settings.source.clone(),
+                    settings.auto_gain,
+                    settings.muted,
+                    allowed,
+                    voice_settings.pitch,
+                );
+                if voice_key.as_ref() != Some(&key) {
+                    bridge.reset();
+                    voice_key = Some(key);
+                }
+                bridge.process(
+                    &processed,
+                    frame.as_ref().map_or_else(Instant::now, |f| f.captured),
+                    voice_settings.pitch,
+                )
+            } else {
+                None
+            };
+            let pcm = if voice_settings.enabled {
+                converted.as_deref().unwrap_or(&silence)
+            } else {
+                processed.as_slice()
+            };
             if last_gain_update.elapsed() >= Duration::from_millis(250) {
                 last_gain_update = Instant::now();
-                if state.audio_gain != gain_status {
-                    runtime.update(|s| s.audio_gain = gain_status).await;
-                }
+                runtime
+                    .update(|s| {
+                        s.audio_gain = gain_status;
+                        if let Some(bridge) = &voice {
+                            s.audio_voice.inference_ms = bridge.inference_ms;
+                            s.audio_voice.pipeline_ms = bridge.pipeline_ms;
+                            s.audio_voice.dropped_chunks = bridge.dropped;
+                        }
+                    })
+                    .await;
             }
             // One block fits PIPE_BUF: nonblocking writes are atomic. A full pipe
             // drops this block instead of accumulating delayed microphone audio.
+            let latest = runtime.state().await;
+            let final_allowed = allowed
+                && latest.audio_virtual.enabled
+                && !latest.audio_virtual.muted
+                && latest.audio_virtual.source == settings.source
+                && latest.audio_voice.enabled == voice_settings.enabled
+                && latest.audio_voice.pitch == voice_settings.pitch
+                && (!voice_settings.enabled || latest.audio_voice.ready)
+                && latest
+                    .audio_virtual
+                    .source
+                    .as_ref()
+                    .is_some_and(|id| latest.audio_capture_sources.contains(id));
+            let pcm = if final_allowed { pcm } else { &silence };
             match writer.write(pcm) {
                 Ok(n) if n == pcm.len() => {}
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}

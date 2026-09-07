@@ -342,3 +342,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 
 #devices-form select { display: block; width: 100%; min-width: 0; margin-top: .4rem; padding: .65rem; color: #f2f5ef; background: #151d17; border: 1px solid #536057; border-radius: .45rem; font: inherit; }
 #devices-form select:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+.voice-conversion { grid-column: 1 / -1; padding: .7rem 0; border-top: 1px solid var(--panel-edge); }
+.voice-conversion > div { display: flex; justify-content: space-between; align-items: center; }
+.voice-conversion label { display: flex; gap: .6rem; align-items: center; font-size: .8rem; }
+.voice-conversion input { flex: 1; min-width: 0; }

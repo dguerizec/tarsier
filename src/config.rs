@@ -162,6 +162,7 @@ fn valid_identifier(identifier: &str) -> bool {
 pub struct AudioConfig {
     pub reserve_inputs: bool,
     pub capture_selected_only: bool,
+    pub voice_worker: Vec<String>,
     pub allowed_sources: Option<Vec<String>>,
     pub virtual_source: String,
     pub virtual_output_enabled: bool,
@@ -173,6 +174,7 @@ impl Default for AudioConfig {
         Self {
             reserve_inputs: true,
             capture_selected_only: false,
+            voice_worker: Vec::new(),
             allowed_sources: None,
             virtual_source: "tarsier_microphone".into(),
             virtual_output_enabled: true,
