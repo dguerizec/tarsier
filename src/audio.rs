@@ -955,6 +955,20 @@ async fn reconcile_reservations(
 ) {
     runtime
         .update(|s| {
+            for source in sources {
+                let newly_connected =
+                    s.audio_reservations
+                        .get(&source.id)
+                        .is_none_or(|reservation| {
+                            reservation.status == ReservationStatus::Disconnected
+                        });
+                if newly_connected {
+                    s.audio_released_sources.retain(|id| id != &source.id);
+                    if !config.auto_reserve(&source.id) {
+                        s.audio_released_sources.push(source.id.clone());
+                    }
+                }
+            }
             s.audio_reservations = reservation_inventory(
                 &s.audio_reservations,
                 sources,
@@ -1035,7 +1049,9 @@ async fn refresh_connections(runtime: &Runtime, config: &crate::config::AudioCon
         runtime
             .update(|state| {
                 state.audio_released_sources.retain(|source| {
-                    !state.audio_busy_sources.contains(source) || busy.contains(source)
+                    !config.auto_reserve(source)
+                        || !state.audio_busy_sources.contains(source)
+                        || busy.contains(source)
                 });
                 state.audio_busy_sources = busy;
                 state.audio_output_applications = output_applications;
@@ -1191,6 +1207,48 @@ mod tests {
             runtime.state().await.audio_reservations["microphone"].status,
             ReservationStatus::Released
         );
+    }
+
+    #[tokio::test]
+    async fn per_input_preferences_reset_manual_overrides_only_on_reconnection() {
+        let runtime = Runtime::new();
+        let sources = vec![
+            Source {
+                id: "shared".into(),
+                name: "Shared mic".into(),
+                muted: false,
+            },
+            Source {
+                id: "new".into(),
+                name: "New mic".into(),
+                muted: false,
+            },
+        ];
+        let config = crate::config::AudioConfig {
+            input_reservations: BTreeMap::from([("shared".into(), false)]),
+            ..Default::default()
+        };
+        reconcile_reservations(&runtime, &sources, &config).await;
+        let state = runtime.state().await;
+        assert_eq!(
+            state.audio_reservations["shared"].status,
+            ReservationStatus::Released
+        );
+        assert_eq!(
+            state.audio_reservations["new"].status,
+            ReservationStatus::Pending
+        );
+        runtime
+            .update(|state| {
+                state.audio_released_sources.retain(|id| id != "shared");
+                state.audio_released_sources.push("new".into());
+            })
+            .await;
+        reconcile_reservations(&runtime, &sources, &config).await;
+        assert_eq!(runtime.state().await.audio_released_sources, vec!["new"]);
+        reconcile_reservations(&runtime, &[], &config).await;
+        reconcile_reservations(&runtime, &sources, &config).await;
+        assert_eq!(runtime.state().await.audio_released_sources, vec!["shared"]);
     }
 
     use super::*;

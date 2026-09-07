@@ -153,11 +153,12 @@ fn valid_identifier(identifier: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
-/// Audio policy. Only reserve_inputs can be overridden by the user preference.
+/// Audio policy with user-overridable automatic reservation preferences.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AudioConfig {
     pub reserve_inputs: bool,
+    pub input_reservations: std::collections::BTreeMap<String, bool>,
     pub capture_selected_only: bool,
     pub voice_worker: Vec<String>,
     pub voice_models_dir: Option<PathBuf>,
@@ -171,6 +172,7 @@ impl Default for AudioConfig {
     fn default() -> Self {
         Self {
             reserve_inputs: true,
+            input_reservations: Default::default(),
             capture_selected_only: false,
             voice_worker: Vec::new(),
             voice_models_dir: None,
@@ -183,6 +185,9 @@ impl Default for AudioConfig {
 }
 
 impl AudioConfig {
+    pub fn auto_reserve(&self, source: &str) -> bool {
+        self.reserve_inputs && self.input_reservations.get(source).copied().unwrap_or(true)
+    }
     pub fn allows(&self, source: &str) -> bool {
         source != self.virtual_source
             && self

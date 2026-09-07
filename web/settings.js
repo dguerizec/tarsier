@@ -182,9 +182,7 @@ loadAuth().catch(error => { authStatus.textContent = error.message; });
 
 
 const devicesForm = document.querySelector('#devices-form');
-const reserveInputs = document.querySelector('#device-reserve-inputs');
 const cameraSelect = document.querySelector('#device-camera');
-const outputSelect = document.querySelector('#device-output');
 const microphoneList = document.querySelector('#device-microphone-list');
 const devicesStatus = document.querySelector('#devices-status');
 const devicesSave = document.querySelector('#devices-save');
@@ -195,21 +193,9 @@ function deviceOption(select, value, label) {
   const option = document.createElement('option');
   option.value = value; option.textContent = label; select.append(option);
 }
-function selectedMicrophones() {
-  return [...microphoneList.querySelectorAll('input:checked')].map(input => input.value);
-}
-function renderDeviceOutput() {
-  const previous = outputSelect.value;
-  outputSelect.replaceChildren();
-  deviceOption(outputSelect, '', 'None');
-  for (const input of microphoneList.querySelectorAll('input:checked')) {
-    deviceOption(outputSelect, input.value, input.dataset.label);
-  }
-  outputSelect.value = selectedMicrophones().includes(previous) ? previous : '';
-}
 function setDevicesPending(pending) {
   devicesPending = pending;
-  reserveInputs.disabled = cameraSelect.disabled = outputSelect.disabled = devicesSave.disabled = pending || !devicesState?.can_apply;
+  cameraSelect.disabled = devicesSave.disabled = pending || !devicesState?.can_apply;
   document.querySelector('#device-microphones').disabled = pending || !devicesState?.can_apply;
   devicesRefresh.disabled = pending;
 }
@@ -217,7 +203,6 @@ async function loadDevices() {
   const response = await fetch('/api/v1/settings/devices', {cache: 'no-store'});
   if (!response.ok) throw new Error((await response.json()).error || 'Could not load devices');
   devicesState = await response.json();
-  reserveInputs.checked = devicesState.reserve_inputs;
   cameraSelect.replaceChildren();
   deviceOption(cameraSelect, '', 'Synthetic video');
   for (const camera of devicesState.cameras) deviceOption(cameraSelect, camera.id, `${camera.name} · ${camera.id.split('/').pop()}`);
@@ -227,7 +212,7 @@ async function loadDevices() {
   cameraSelect.value = devicesState.camera;
   microphoneList.replaceChildren();
   const microphones = [...devicesState.microphones];
-  for (const id of devicesState.capture_sources) {
+  for (const id of new Set([...Object.keys(devicesState.input_reservations), ...devicesState.capture_sources])) {
     if (!microphones.some(mic => mic.id === id)) microphones.push({id, name: `Disconnected · ${id}`});
   }
   for (const mic of microphones) {
@@ -235,13 +220,9 @@ async function loadDevices() {
     const row = document.createElement('p');
     const input = document.createElement('input');
     input.type = 'checkbox'; input.value = mic.id; input.dataset.label = mic.name;
-    input.checked = devicesState.capture_sources.includes(mic.id);
-    input.addEventListener('change', renderDeviceOutput);
+    input.checked = devicesState.input_reservations[mic.id] ?? devicesState.reserve_new_inputs;
     label.append(input, document.createTextNode(` ${mic.name}`)); row.append(label); microphoneList.append(row);
   }
-  outputSelect.replaceChildren();
-  renderDeviceOutput();
-  outputSelect.value = devicesState.output_source || '';
   setDevicesPending(false);
   devicesStatus.textContent = devicesState.can_apply ? '' : 'Device changes require the supervised Tarsier service.';
 }
@@ -252,7 +233,8 @@ devicesRefresh.addEventListener('click', () => {
 devicesForm.addEventListener('submit', async event => {
   event.preventDefault();
   if (devicesPending || devicesSave.disabled) return;
-  const body = {reserve_inputs: reserveInputs.checked, camera: cameraSelect.value, capture_sources: selectedMicrophones(), output_source: outputSelect.value || null};
+  const input_reservations = Object.fromEntries([...microphoneList.querySelectorAll('input')].map(input => [input.value, input.checked]));
+  const body = {camera: cameraSelect.value, input_reservations};
   const previousStart = devicesState.started_at_ms;
   setDevicesPending(true); devicesStatus.textContent = 'Saving and restarting…';
   try {

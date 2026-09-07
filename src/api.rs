@@ -556,7 +556,8 @@ async fn device_settings(State(state): State<ApiState>) -> Response {
     let runtime = state.runtime.state().await;
     Json(json!({
         "cameras": cameras, "microphones": microphones,
-        "reserve_inputs": state.config.audio.reserve_inputs,
+        "input_reservations": state.config.audio.input_reservations,
+        "reserve_new_inputs": state.config.audio.reserve_inputs,
         "camera": if state.config.video.source == crate::config::VideoSource::Camera { state.config.video.input_device.as_str() } else { "" },
         "capture_sources": runtime.audio_capture_sources,
         "output_source": runtime.audio_virtual.source,
@@ -568,10 +569,8 @@ async fn device_settings(State(state): State<ApiState>) -> Response {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DeviceSettingsRequest {
-    reserve_inputs: Option<bool>,
     camera: String,
-    capture_sources: Vec<String>,
-    output_source: Option<String>,
+    input_reservations: std::collections::BTreeMap<String, bool>,
 }
 
 async fn set_device_settings(
@@ -610,38 +609,20 @@ async fn set_device_settings(
         Err(e) => return command_error(e),
     };
     let current = state.runtime.state().await;
-    if request.capture_sources.iter().any(|id| {
+    if request.input_reservations.keys().any(|id| {
         !state.config.audio.allows(id)
-            || (!microphones.iter().any(|m| &m.id == id)
+            || (!microphones.iter().any(|mic| &mic.id == id)
+                && !state.config.audio.input_reservations.contains_key(id)
                 && !current.audio_capture_sources.contains(id))
     }) {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({"error": "Select available microphones"})),
+            Json(json!({"error": "Select known microphone inputs"})),
         )
             .into_response();
-    }
-    if request
-        .output_source
-        .as_ref()
-        .is_some_and(|id| !request.capture_sources.contains(id))
-    {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "The output microphone must be selected for capture"})),
-        )
-            .into_response();
-    }
-    let mut audio = crate::settings::AudioSettings::from_state(&current);
-    audio.capture_sources = request.capture_sources;
-    audio.capture_sources.sort();
-    audio.capture_sources.dedup();
-    audio.output_source = request.output_source;
-    if audio.output_source.is_none() {
-        audio.output_enabled = false;
     }
     if let Err(error) = settings
-        .set_devices(request.camera, audio, request.reserve_inputs)
+        .set_devices(request.camera, request.input_reservations)
         .await
     {
         return user_settings_error(error);

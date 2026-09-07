@@ -149,6 +149,10 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
     if let Some(enabled) = user_settings.audio_reserve_inputs {
         config.audio.reserve_inputs = enabled;
     }
+    config
+        .audio
+        .input_reservations
+        .extend(user_settings.audio_input_reservations.clone());
     if let Some(camera) = &user_settings.camera_device {
         devices::apply_camera(&mut config, camera);
         config.audio.capture_selected_only = true;
