@@ -108,16 +108,17 @@ async fn video_applications(State(state): State<ApiState>) -> Response {
     }
 }
 
+async fn mcp_recenter(state: State<ApiState>) -> Response {
+    camera_action(state, axum::extract::Path("recenter".to_owned())).await
+}
+
 async fn guard_mcp_commands(
     State(state): State<ApiState>,
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
     if request.method() == axum::http::Method::POST
-        && request
-            .headers()
-            .get("x-tarsier-client")
-            .is_some_and(|v| v == "mcp")
+        && request.uri().path().starts_with("/mcp/")
         && state.config.video.loopback_enabled
     {
         let snapshot = state
@@ -358,6 +359,18 @@ pub fn router_with_controls(
             "/api/v1/camera/photos/{filename}/open",
             post(open_saved_photo),
         )
+        // Only the eleven gateway operations are exposed on the MCP destination.
+        .route("/mcp/api/v1/state", get(current_state))
+        .route("/mcp/api/v1/config", get(effective_config))
+        .route("/mcp/api/v1/events/recent", get(recent_events))
+        .route("/mcp/api/v1/scenarios", get(scenarios))
+        .route("/mcp/api/v1/camera/presets", get(camera_presets))
+        .route("/mcp/api/v1/camera/snapshot", get(snapshot))
+        .route("/mcp/api/v1/camera/move", post(move_camera))
+        .route("/mcp/api/v1/camera/tracking", post(set_tracking))
+        .route("/mcp/api/v1/camera/actions/recenter", post(mcp_recenter))
+        .route("/mcp/api/v1/camera/presets/{id}/recall", post(recall_camera_preset))
+        .route("/mcp/api/v1/scenarios/{id}/trigger", post(trigger_scenario))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             guard_mcp_commands,
@@ -3843,8 +3856,7 @@ mod tests {
             let app = router(config, Runtime::new(), PreviewHub::new(), None, shutdown);
             let response = app
                 .oneshot(
-                    Request::post("/api/v1/scenarios/open-palm-demo/trigger")
-                        .header("x-tarsier-client", "mcp")
+                    Request::post("/mcp/api/v1/scenarios/open-palm-demo/trigger")
                         .body(Body::empty())
                         .unwrap(),
                 )
@@ -3872,8 +3884,7 @@ mod tests {
             let response = app
                 .clone()
                 .oneshot(
-                    Request::post(path)
-                        .header("x-tarsier-client", "mcp")
+                    Request::post(format!("/mcp{path}"))
                         .body(Body::empty())
                         .unwrap(),
                 )
@@ -3886,8 +3897,7 @@ mod tests {
         let read = app
             .clone()
             .oneshot(
-                Request::get("/api/v1/state")
-                    .header("x-tarsier-client", "mcp")
+                Request::get("/mcp/api/v1/state")
                     .body(Body::empty())
                     .unwrap(),
             )

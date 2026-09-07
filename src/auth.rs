@@ -45,8 +45,20 @@ struct Token {
     id: String,
     name: String,
     hash: String,
+    #[serde(default = "default_destinations")]
+    destinations: Vec<TokenDestination>,
     created_at_ms: u64,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum TokenDestination {
+    Api,
+    Mcp,
+}
+fn default_destinations() -> Vec<TokenDestination> {
+    vec![TokenDestination::Api]
+}
+
 #[derive(Serialize, Deserialize)]
 struct Session {
     password_hash: String,
@@ -185,7 +197,7 @@ impl Auth {
                     data.password.clone(),
                     data.tokens
                         .iter()
-                        .map(|t| t.hash.clone())
+                        .map(|t| (t.hash.clone(), t.destinations.clone()))
                         .collect::<Vec<_>>(),
                 ))
             })
@@ -210,9 +222,16 @@ impl Auth {
                             | "/api/v1/depth/frame"
                     );
             }
-            return tokens.contains(&hash);
+            let destination = if path.starts_with("/mcp/") {
+                TokenDestination::Mcp
+            } else {
+                TokenDestination::Api
+            };
+            return tokens.iter().any(|(stored, destinations)| {
+                stored == &hash && destinations.contains(&destination)
+            });
         }
-        self.master(headers, &password).await
+        !path.starts_with("/mcp/") && self.master(headers, &password).await
     }
     async fn session(&self, password_hash: String) -> Result<String> {
         self.run(move |data| {
@@ -467,6 +486,9 @@ async fn logout(State(auth): State<Auth>, headers: HeaderMap) -> Response {
         .into_response()
 }
 async fn admin(auth: &Auth, headers: &HeaderMap) -> Option<String> {
+    if bearer(headers).is_some() {
+        return None;
+    }
     match auth.run(|data| Ok(data.password.clone())).await {
         Ok(Some(hash)) if auth.master(headers, &hash).await => Some(hash),
         _ => None,
@@ -542,7 +564,7 @@ async fn tokens(State(auth): State<Auth>, headers: HeaderMap) -> Response {
             Ok(data
                 .tokens
                 .iter()
-                .map(|t| json!({"id": t.id, "name": t.name, "created_at_ms": t.created_at_ms}))
+                .map(|t| json!({"id": t.id, "name": t.name, "created_at_ms": t.created_at_ms, "destinations": t.destinations}))
                 .collect::<Vec<_>>())
         })
         .await
@@ -557,6 +579,8 @@ async fn tokens(State(auth): State<Auth>, headers: HeaderMap) -> Response {
 #[derive(Deserialize)]
 struct TokenRequest {
     name: String,
+    #[serde(default = "default_destinations")]
+    destinations: Vec<TokenDestination>,
 }
 async fn create_token(
     State(auth): State<Auth>,
@@ -569,6 +593,12 @@ async fn create_token(
     let Some(version) = admin(&auth, &headers).await else {
         return error(StatusCode::FORBIDDEN, "Master password session required");
     };
+    if input.destinations.is_empty() {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "Select at least one token destination",
+        );
+    }
     if input.name.trim().is_empty() || input.name.len() > 80 {
         return error(
             StatusCode::BAD_REQUEST,
@@ -589,9 +619,10 @@ async fn create_token(
                 id: id.clone(),
                 name: input.name.trim().into(),
                 hash: digest(&token),
+                destinations: input.destinations.clone(),
                 created_at_ms: crate::model::unix_ms(),
             });
-            Ok(json!({"id": id, "token": token}))
+            Ok(json!({"id": id, "token": token, "destinations": input.destinations}))
         })
         .await;
     match result {
@@ -633,6 +664,156 @@ mod tests {
     use super::*;
     use axum::{body::to_bytes, http::Request};
     use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn token_destinations_are_enforced_and_cannot_administer_tokens() {
+        let fixture = Fixture::new();
+        let cookie = fixture.setup().await;
+        for (destinations, api, mcp) in [
+            (json!(["api"]), true, false),
+            (json!(["mcp"]), false, true),
+            (json!(["api", "mcp"]), true, true),
+        ] {
+            let created = value(
+                fixture
+                    .request(
+                        "POST",
+                        "/api/v1/auth/tokens",
+                        Some(&cookie),
+                        None,
+                        json!({"name": "Scoped client", "destinations": destinations}),
+                    )
+                    .await,
+            )
+            .await;
+            let token = created["token"].as_str().unwrap();
+            assert_eq!(created["destinations"], destinations);
+            for (path, permitted) in [("/api/v1/state", api), ("/mcp/api/v1/state", mcp)] {
+                let response = fixture
+                    .request("GET", path, None, Some(token), json!(null))
+                    .await;
+                assert_eq!(
+                    response.status(),
+                    if permitted {
+                        StatusCode::OK
+                    } else {
+                        StatusCode::UNAUTHORIZED
+                    }
+                );
+            }
+            for session in [None, Some(cookie.as_str())] {
+                let response = fixture
+                    .request(
+                        "POST",
+                        "/api/v1/auth/tokens",
+                        session,
+                        Some(token),
+                        json!({"name": "Escalation", "destinations": ["api", "mcp"]}),
+                    )
+                    .await;
+                assert!(!response.status().is_success());
+            }
+            let update = fixture
+                .request(
+                    "POST",
+                    &format!(
+                        "/api/v1/auth/tokens/{}/destinations",
+                        created["id"].as_str().unwrap()
+                    ),
+                    Some(&cookie),
+                    None,
+                    json!({"destinations": ["api", "mcp"]}),
+                )
+                .await;
+            assert_eq!(update.status(), StatusCode::NOT_FOUND);
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                header::AUTHORIZATION,
+                format!("Bearer {token}").parse().unwrap(),
+            );
+            headers.insert("x-tarsier-client", "mcp".parse().unwrap());
+            assert_eq!(
+                fixture.auth.allowed(&headers, "/api/v1/state", "GET").await,
+                api
+            );
+            assert_eq!(
+                fixture
+                    .auth
+                    .allowed(&headers, "/mcp/api/v1/state", "GET")
+                    .await,
+                mcp
+            );
+        }
+        for destinations in [json!([]), json!(["unknown"])] {
+            let response = fixture
+                .request(
+                    "POST",
+                    "/api/v1/auth/tokens",
+                    Some(&cookie),
+                    None,
+                    json!({"name": "Invalid", "destinations": destinations}),
+                )
+                .await;
+            assert!(response.status().is_client_error());
+        }
+        let listing = value(
+            fixture
+                .request(
+                    "GET",
+                    "/api/v1/auth/tokens",
+                    Some(&cookie),
+                    None,
+                    json!(null),
+                )
+                .await,
+        )
+        .await;
+        assert_eq!(listing["tokens"].as_array().unwrap().len(), 3);
+        assert_eq!(listing["tokens"][1]["destinations"], json!(["mcp"]));
+        assert_eq!(
+            fixture
+                .request("GET", "/mcp/api/v1/state", Some(&cookie), None, json!(null))
+                .await
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_tokens_default_to_api_only() {
+        let fixture = Fixture::new();
+        fixture.setup().await;
+        let mut data: serde_json::Value =
+            serde_json::from_slice(&fs::read(&fixture.auth.path).unwrap()).unwrap();
+        data["tokens"] = json!([{"id": "legacy", "name": "Legacy", "hash": digest("legacy-token"), "created_at_ms": 0}]);
+        fs::write(&fixture.auth.path, serde_json::to_vec(&data).unwrap()).unwrap();
+        assert_eq!(
+            fixture
+                .request(
+                    "GET",
+                    "/api/v1/state",
+                    None,
+                    Some("legacy-token"),
+                    json!(null)
+                )
+                .await
+                .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            fixture
+                .request(
+                    "GET",
+                    "/mcp/api/v1/state",
+                    None,
+                    Some("legacy-token"),
+                    json!(null)
+                )
+                .await
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
 
     struct Fixture {
         auth: Auth,

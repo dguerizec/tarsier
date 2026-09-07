@@ -86,7 +86,7 @@ async function loadAuth() {
   authState = await authRequest("status");
   if (authState.enabled && !authState.admin) { location.assign("/login"); return; }
   document.querySelector("#auth-summary").textContent = authState.enabled
-    ? "Protection is enabled. Web access requires the master password; automated clients use API tokens."
+    ? "Protection is enabled. Web access requires the master password; automated clients use tokens with API and/or MCP access."
     : "Protection is disabled. Anyone who can reach Tarsier can view media and control the camera. Set the first password on this computer, or use the CLI.";
   document.querySelector("#current-password-row").hidden = !authState.enabled;
   passwordForm.elements.current_password.required = authState.enabled;
@@ -111,7 +111,9 @@ async function loadAuth() {
         try { await authRequest(`tokens/${encodeURIComponent(token.id)}/revoke`, {}); await loadAuth(); }
         catch (error) { tokenStatus.textContent = error.message; revoke.disabled = false; }
       });
-      item.append(label, revoke); list.append(item);
+      const scope = document.createElement("span");
+      scope.textContent = `${token.destinations.map(value => value.toUpperCase()).join(" + ")} · `;
+      item.append(label, scope, revoke); list.append(item);
     }
   }
 }
@@ -124,7 +126,7 @@ passwordForm.addEventListener("submit", async event => {
   try {
     await authRequest("password", {password: passwordForm.elements.password.value, current_password: passwordForm.elements.current_password.value});
     passwordForm.reset(); await loadAuth();
-    authStatus.textContent = "Master password saved. Other web sessions have been signed out. Existing API tokens are preserved.";
+    authStatus.textContent = "Master password saved. Other web sessions have been signed out. Existing client tokens are preserved.";
   } catch (error) { authStatus.textContent = error.message; }
   finally { button.disabled = false; }
 });
@@ -149,7 +151,9 @@ tokenForm.addEventListener("submit", async event => {
   event.preventDefault();
   const button = document.querySelector("#token-create"); button.disabled = true;
   try {
-    const data = await authRequest("tokens", {name: tokenForm.elements.name.value});
+    const destinations = ["api", "mcp"].filter(name => tokenForm.elements[name].checked);
+    if (!destinations.length) throw new Error("Select at least one destination.");
+    const data = await authRequest("tokens", {name: tokenForm.elements.name.value, destinations});
     document.querySelector("#token-value").value = data.token;
     document.querySelector("#new-token").hidden = false;
     tokenForm.reset(); tokenStatus.textContent = "Token created."; await loadAuth();
