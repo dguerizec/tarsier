@@ -448,7 +448,8 @@ mod tests {
         assert!(config.audio.allows("physical_microphone"));
         assert!(!config.audio.allows(&config.audio.virtual_source));
         assert_eq!(config.video.source, VideoSource::Test);
-        assert!(!config.video.loopback_enabled);
+        assert!(config.video.loopback_enabled);
+        assert_eq!(config.video.output_device, PathBuf::from("/dev/video42"));
         assert_eq!(config.camera.adapter, CameraAdapter::Mock);
         assert_eq!(config.server.bind.to_string(), "127.0.0.1:8743");
     }
