@@ -135,9 +135,13 @@ pub(crate) fn mcp_usage_rejection(
     snapshot: anyhow::Result<crate::video_clients::Snapshot>,
 ) -> Option<Response> {
     let (status, message) = match snapshot {
-        Ok(snapshot) if !snapshot.applications.is_empty() => (
+        Ok(snapshot) if snapshot.capture_active == Some(true) || !snapshot.applications.is_empty() => (
             StatusCode::CONFLICT,
             "MCP commands are blocked while an application is using the virtual camera. Close the virtual camera in that application before trying again.",
+        ),
+        Ok(snapshot) if snapshot.available && snapshot.capture_active.is_none() => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "MCP commands are blocked because the virtual camera driver could not report capture activity.",
         ),
         Err(_) => (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -3798,11 +3802,29 @@ mod tests {
     use crate::{camera, config::CameraAdapter, settings::UserSettings};
 
     #[test]
+    fn mcp_usage_guard_detects_capture_without_visible_processes() {
+        for (capture_active, expected) in [
+            (Some(true), Some(StatusCode::CONFLICT)),
+            (Some(false), None),
+            (None, Some(StatusCode::SERVICE_UNAVAILABLE)),
+        ] {
+            let result = mcp_usage_rejection(Ok(crate::video_clients::Snapshot {
+                available: true,
+                partial: true,
+                capture_active,
+                applications: vec![],
+            }));
+            assert_eq!(result.map(|r| r.status()), expected);
+        }
+    }
+
+    #[test]
     fn mcp_usage_guard_allows_partial_scans_but_blocks_inspection_errors() {
         for partial in [false, true] {
             let result = mcp_usage_rejection(Ok(crate::video_clients::Snapshot {
                 available: true,
                 partial,
+                capture_active: Some(false),
                 applications: vec![],
             }));
             assert!(result.is_none());

@@ -617,15 +617,20 @@ The gateway exposes eleven typed tools:
 
 MCP transports commands, state, events, and snapshots, not continuous video.
 The gateway identifies its requests with `X-Tarsier-Client: mcp`. The daemon
-rejects MCP mutations with HTTP 409 while another local application holds the
-virtual video device open. This covers movement, recentering, preset recall,
-tracking changes, and scenario triggers. Read-only tools remain available;
+rejects MCP mutations with HTTP 409 while the virtual camera has an active
+capture or a detected external open handle. This covers movement, recentering,
+preset recall, tracking changes, and scenario triggers. Read-only tools remain available;
 manual UI controls and existing automatic tracking are unaffected. Each command
-uses a fresh process scan instead of the UI's two-second cache. Inspection errors
-block mutations with HTTP 503. Detection covers inspectable processes owned by
-the daemon's user and excludes the daemon and its descendants. Partial scans
-still block known clients but cannot detect inaccessible processes; this is
-a command-time guard, not a stop for motion already in progress. The header is
+reads a fresh `V4L2_EVENT_PRI_CLIENT_USAGE` event from v4l2loopback, requesting
+the initial state so already-running captures are detected too. This driver
+signal detects active capture even when its process cannot be inspected, and
+reports activity rather than an exact client count. A fresh process scan also
+detects open handles before capture starts; it covers inspectable processes
+owned by the daemon's user and excludes the daemon and its descendants. Neither
+check uses the UI's two-second cache. Inspection errors or an unavailable driver
+signal on an existing device block mutations with HTTP 503. The applications
+API exposes `capture_active` as true, false, or null (unknown). This is a
+command-time guard, not a stop for motion already in progress. The header is
 a gateway marker, not an authorization boundary for arbitrary HTTP clients.
 Movement limits and event recording remain enforced by the daemon regardless
 of the MCP client.

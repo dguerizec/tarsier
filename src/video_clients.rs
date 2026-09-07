@@ -1,10 +1,13 @@
-//! Inspect local processes holding the virtual V4L2 device open.
+//! Inspect driver capture activity and local processes holding the virtual device open.
 use anyhow::{Context, Result};
 use serde::Serialize;
 use std::{
     collections::{HashMap, HashSet},
     fs,
-    os::unix::fs::{FileTypeExt, MetadataExt},
+    os::{
+        fd::AsRawFd,
+        unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt},
+    },
     path::Path,
     sync::Arc,
     time::{Duration, Instant},
@@ -22,6 +25,9 @@ pub struct Application {
 pub struct Snapshot {
     pub available: bool,
     pub partial: bool,
+    /// Driver-reported capture state, independent of process visibility.
+    /// None means unavailable or unsupported, never a confirmed idle device.
+    pub capture_active: Option<bool>,
     pub applications: Vec<Application>,
 }
 
@@ -49,17 +55,82 @@ impl Monitor {
         }
         let path = device.clone();
         let snapshot = tokio::task::spawn_blocking(move || {
-            scan(
+            let mut snapshot = scan(
                 Path::new("/proc"),
                 Path::new(&path),
                 std::process::id(),
                 fs::metadata("/proc/self")?.uid(),
-            )
+            )?;
+            if snapshot.available {
+                snapshot.capture_active = driver_capture_active(Path::new(&path)).ok();
+            }
+            anyhow::Ok(snapshot)
         })
         .await??;
         *cache = Some((Instant::now(), device, snapshot.clone()));
         Ok(snapshot)
     }
+}
+
+// Linux videodev2.h ABI and v4l2loopback's private client-usage event.
+const CLIENT_USAGE_EVENT: u32 = 0x0800_0000 + 0x08e0_0000 + 1;
+
+#[repr(C)]
+#[derive(Default)]
+struct EventSubscription {
+    kind: u32,
+    id: u32,
+    flags: u32,
+    reserved: [u32; 5],
+}
+
+#[repr(C)]
+union EventData {
+    bytes: [u8; 64],
+    // The kernel union includes a signed 64-bit control value.
+    alignment: i64,
+}
+
+#[repr(C)]
+struct VideoEvent {
+    kind: u32,
+    data: EventData,
+    pending: u32,
+    sequence: u32,
+    timestamp: nix::libc::timespec,
+    id: u32,
+    reserved: [u32; 8],
+}
+
+nix::ioctl_write_ptr!(subscribe_event, b'V', 90, EventSubscription);
+nix::ioctl_read!(dequeue_event, b'V', 89, VideoEvent);
+
+fn driver_capture_active(device: &Path) -> Result<bool> {
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::libc::O_NONBLOCK)
+        .open(device)
+        .context("Could not open the virtual camera for usage events")?;
+    let subscription = EventSubscription {
+        kind: CLIENT_USAGE_EVENT,
+        flags: 1, // V4L2_EVENT_SUB_FL_SEND_INITIAL: include readers already streaming.
+        ..EventSubscription::default()
+    };
+    // SAFETY: These repr(C) buffers match the Linux V4L2 ABI and the file remains
+    // open throughout both ioctls. All-zero bytes are valid for VideoEvent.
+    let mut event: VideoEvent = unsafe { std::mem::zeroed() };
+    unsafe { subscribe_event(file.as_raw_fd(), &subscription) }
+        .context("Virtual camera does not provide client-usage events")?;
+    unsafe { dequeue_event(file.as_raw_fd(), &mut event) }
+        .context("Virtual camera did not provide its initial capture state")?;
+    anyhow::ensure!(
+        event.kind == CLIENT_USAGE_EVENT,
+        "Unexpected virtual camera event"
+    );
+    // SAFETY: The private event payload is a native-endian u32 count in data[0..4].
+    let count = u32::from_ne_bytes(unsafe { event.data.bytes[..4].try_into().unwrap() });
+    // v4l2loopback 0.15.3 reports a boolean, not an exact process count.
+    Ok(count != 0)
 }
 
 fn belongs_to_daemon(mut pid: u32, daemon: u32, parents: &HashMap<u32, u32>) -> bool {
@@ -80,6 +151,7 @@ fn scan(proc: &Path, device: &Path, daemon: u32, uid: u32) -> Result<Snapshot> {
     let mut result = Snapshot {
         available: false,
         partial: false,
+        capture_active: None,
         applications: vec![],
     };
     let metadata = match fs::metadata(device) {
@@ -153,6 +225,11 @@ fn scan(proc: &Path, device: &Path, daemon: u32, uid: u32) -> Result<Snapshot> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn unsupported_usage_events_are_not_reported_as_idle() {
+        assert!(driver_capture_active(Path::new("/dev/null")).is_err());
+    }
+
     #[tokio::test]
     async fn command_scan_bypasses_recent_display_cache() {
         let monitor = Monitor::default();
@@ -163,6 +240,7 @@ mod tests {
             Snapshot {
                 available: true,
                 partial: false,
+                capture_active: Some(false),
                 applications: vec![],
             },
         ));
@@ -182,6 +260,7 @@ mod tests {
         let snapshot = Snapshot {
             available: true,
             partial: false,
+            capture_active: Some(false),
             applications: vec![Application {
                 pid: 20,
                 name: "Conference".into(),
