@@ -143,15 +143,12 @@ impl UserSettings {
         match self.video_identity {
             VideoIdentity::Camera => VideoOutputMode::Camera,
             VideoIdentity::DepthMap => VideoOutputMode::DepthMap,
-            VideoIdentity::Stylized3d | VideoIdentity::Portrait3d | VideoIdentity::Liveportrait => {
-                VideoOutputMode::ComicAvatar
-            }
+            VideoIdentity::Portrait3d | VideoIdentity::Liveportrait => VideoOutputMode::ComicAvatar,
         }
     }
 
     pub fn avatar_engine(&self) -> Option<AvatarEngine> {
         match self.video_identity {
-            VideoIdentity::Stylized3d => Some(AvatarEngine::Stylized3d),
             VideoIdentity::Portrait3d => Some(AvatarEngine::Portrait3d),
             VideoIdentity::Liveportrait => Some(AvatarEngine::Liveportrait),
             VideoIdentity::Camera | VideoIdentity::DepthMap => None,
@@ -195,7 +192,6 @@ fn identity_from_mode(mode: VideoOutputMode, engine: AvatarEngine) -> VideoIdent
         VideoOutputMode::Camera => VideoIdentity::Camera,
         VideoOutputMode::DepthMap => VideoIdentity::DepthMap,
         VideoOutputMode::ComicAvatar => match engine {
-            AvatarEngine::Stylized3d => VideoIdentity::Stylized3d,
             AvatarEngine::Portrait3d => VideoIdentity::Portrait3d,
             AvatarEngine::Liveportrait => VideoIdentity::Liveportrait,
         },

@@ -284,7 +284,6 @@ fn worker_arguments(
         arguments.extend([
             "--avatar-engine".into(),
             match avatar.engine {
-                AvatarEngine::Stylized3d => "stylized-3d".into(),
                 AvatarEngine::Portrait3d => "portrait3d".into(),
                 AvatarEngine::Liveportrait => "liveportrait".into(),
             },
@@ -298,8 +297,6 @@ fn worker_arguments(
             project_path(&avatar.portrait_model)
                 .to_string_lossy()
                 .into_owned(),
-            "--avatar-profile".into(),
-            project_path(&avatar.profile).to_string_lossy().into_owned(),
             "--avatar-source".into(),
             project_path(&avatar.source_image)
                 .to_string_lossy()
@@ -431,7 +428,6 @@ mod tests {
         let avatar = AvatarConfig {
             enabled: true,
             engine: AvatarEngine::Liveportrait,
-            profile: "assets/avatars/stylized-3d.json".into(),
             portrait_model: "assets/avatars/portrait/current".into(),
             source_image: "assets/avatars/liveportrait-source.png".into(),
             fps: 15,
@@ -472,11 +468,10 @@ mod tests {
     }
 
     #[test]
-    fn stylized_avatar_uses_the_opengl_runtime_and_profile() {
+    fn personal_avatar_uses_the_opengl_runtime_and_model() {
         let avatar = AvatarConfig {
             enabled: true,
-            engine: AvatarEngine::Stylized3d,
-            profile: "assets/avatars/stylized-3d.json".into(),
+            engine: AvatarEngine::Portrait3d,
             portrait_model: "assets/avatars/portrait/current".into(),
             source_image: "assets/avatars/liveportrait-source.png".into(),
             fps: 30,
@@ -497,17 +492,16 @@ mod tests {
         );
         assert!(
             args.windows(2)
-                .any(|pair| pair == ["--avatar-engine", "stylized-3d"])
+                .any(|pair| pair == ["--avatar-engine", "portrait3d"])
         );
         assert!(args.windows(2).any(|pair| pair == ["--avatar-fps", "30"]));
-        assert!(args.windows(2).any(
-            |pair| pair[0] == "--avatar-profile" && pair[1].ends_with("stylized-3d.json")
-        ));
         assert!(
             args.windows(2)
-                .any(|pair| pair[0] == "--avatar-source"
-                    && pair[1].ends_with("liveportrait-source.png"))
+                .any(|pair| pair[0] == "--portrait-model" && pair[1].ends_with("portrait/current"))
         );
+        assert!(args.windows(2).any(
+            |pair| pair[0] == "--avatar-source" && pair[1].ends_with("liveportrait-source.png")
+        ));
         assert!(args.iter().any(|argument| argument == "--avatar-compile"));
     }
 

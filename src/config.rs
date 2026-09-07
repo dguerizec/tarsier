@@ -92,9 +92,6 @@ impl Config {
             bail!("depth output mode requires depth processing to be enabled");
         }
         if self.avatar.enabled {
-            if self.avatar.profile.as_os_str().is_empty() {
-                bail!("avatar profile must not be empty when avatar output is enabled");
-            }
             if self.avatar.source_image.as_os_str().is_empty() {
                 bail!("avatar source_image must not be empty when avatar output is enabled");
             }
@@ -255,7 +252,6 @@ impl Default for VideoConfig {
 pub struct AvatarConfig {
     pub enabled: bool,
     pub engine: AvatarEngine,
-    pub profile: PathBuf,
     pub portrait_model: PathBuf,
     pub source_image: PathBuf,
     pub fps: u32,
@@ -267,7 +263,6 @@ impl Default for AvatarConfig {
         Self {
             enabled: false,
             engine: AvatarEngine::default(),
-            profile: "assets/avatars/stylized-3d.json".into(),
             portrait_model: "assets/avatars/portrait/current".into(),
             source_image: "assets/avatars/liveportrait-default.png".into(),
             fps: 15,
@@ -434,6 +429,13 @@ impl Default for ScenarioConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn removed_avatar_engine_and_identity_are_rejected() {
+        assert!(serde_json::from_str::<crate::model::AvatarEngine>(r#""stylized-3d""#).is_err());
+        assert!(serde_json::from_str::<crate::model::VideoIdentity>(r#""stylized-3d""#).is_err());
+        assert!(toml::from_str::<super::Config>("[avatar]\nengine = \"stylized-3d\"").is_err());
+    }
 
     #[test]
     fn experimental_profile_limits_audio_and_devices() {

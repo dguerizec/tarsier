@@ -2376,9 +2376,7 @@ async fn set_identity(
     Json(request): Json<IdentityRequest>,
 ) -> Response {
     match request.identity {
-        VideoIdentity::Stylized3d | VideoIdentity::Portrait3d | VideoIdentity::Liveportrait
-            if !state.config.avatar.enabled =>
-        {
+        VideoIdentity::Portrait3d | VideoIdentity::Liveportrait if !state.config.avatar.enabled => {
             return (
                 StatusCode::CONFLICT,
                 Json(json!({"error": "avatar output is disabled in the daemon configuration"})),
@@ -2397,7 +2395,6 @@ async fn set_identity(
     let _guard = state.video_output_control.lock().await;
     let (mode, engine) = match request.identity {
         VideoIdentity::Camera => (VideoOutputMode::Camera, None),
-        VideoIdentity::Stylized3d => (VideoOutputMode::ComicAvatar, Some(AvatarEngine::Stylized3d)),
         VideoIdentity::Portrait3d => (VideoOutputMode::ComicAvatar, Some(AvatarEngine::Portrait3d)),
         VideoIdentity::Liveportrait => (
             VideoOutputMode::ComicAvatar,
@@ -2612,7 +2609,7 @@ fn video_identity(mode: VideoOutputMode, engine: Option<AvatarEngine>) -> VideoI
         (VideoOutputMode::ComicAvatar, Some(AvatarEngine::Liveportrait)) => {
             VideoIdentity::Liveportrait
         }
-        (VideoOutputMode::ComicAvatar, _) => VideoIdentity::Stylized3d,
+        (VideoOutputMode::ComicAvatar, _) => VideoIdentity::Liveportrait,
     }
 }
 
@@ -2818,7 +2815,6 @@ fn required_avatar_engine_header(headers: &HeaderMap) -> Result<AvatarEngine, St
         .to_str()
         .map_err(|_| format!("invalid {name} header"))?;
     match value {
-        "stylized-3d" => Ok(AvatarEngine::Stylized3d),
         "portrait3d" => Ok(AvatarEngine::Portrait3d),
         "liveportrait" => Ok(AvatarEngine::Liveportrait),
         _ => Err(format!("invalid {name} header")),
@@ -5187,7 +5183,7 @@ mod tests {
         );
 
         for (path, body) in [
-            ("/api/v1/video/identity", json!({"identity": "stylized-3d"})),
+            ("/api/v1/video/identity", json!({"identity": "portrait3d"})),
             (
                 "/api/v1/video/background",
                 json!({"enabled": true, "effect": "blur"}),
@@ -5211,7 +5207,7 @@ mod tests {
         let (_, restored) = UserSettingsStore::load(path.clone(), fallback.clone())
             .await
             .unwrap();
-        assert_eq!(restored.video_identity, VideoIdentity::Stylized3d);
+        assert_eq!(restored.video_identity, VideoIdentity::Portrait3d);
         assert!(restored.background_enabled);
         assert_eq!(restored.background_effect, BackgroundEffect::Blur);
         assert!(restored.face_tracking_enabled);
@@ -5287,7 +5283,7 @@ mod tests {
             .oneshot(
                 Request::post("/api/v1/video/identity")
                     .header("content-type", "application/json")
-                    .body(Body::from(r#"{"identity":"stylized-3d"}"#))
+                    .body(Body::from(r#"{"identity":"portrait3d"}"#))
                     .unwrap(),
             )
             .await
@@ -5316,7 +5312,8 @@ mod tests {
             .oneshot(
                 Request::post("/api/v1/avatar/frame")
                     .header("content-type", "application/octet-stream")
-                    .header("x-tarsier-avatar-engine", "stylized-3d")
+                    .header("x-tarsier-avatar-engine", "portrait3d")
+                    .header("x-tarsier-avatar-pixel-format", "bgra")
                     .header("x-tarsier-frame-id", "42")
                     .header("x-tarsier-captured-at-ms", captured_at_ms.to_string())
                     .header("x-tarsier-avatar-width", "2")

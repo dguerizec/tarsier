@@ -181,8 +181,7 @@ class MediaPipeFaceCropper:
 
 
 class MediaPipeAvatarTracker:
-    def __init__(self, model_dir: Path, *, limit_pose: bool = True) -> None:
-        self._limit_pose = limit_pose
+    def __init__(self, model_dir: Path) -> None:
         vision = mp.tasks.vision
         self._landmarker = vision.FaceLandmarker.create_from_options(
             vision.FaceLandmarkerOptions(
@@ -200,12 +199,12 @@ class MediaPipeAvatarTracker:
         )
 
     def track(self, frame_bgr: np.ndarray, timestamp_ms: int):  # noqa: ANN201
-        from .stylized3d import motion_from_mediapipe
+        from .avatar_motion import motion_from_mediapipe
 
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
         return motion_from_mediapipe(
-            self._landmarker.detect_for_video(image, timestamp_ms), limit_pose=self._limit_pose
+            self._landmarker.detect_for_video(image, timestamp_ms)
         )
 
     def close(self) -> None:
@@ -283,7 +282,7 @@ class VideoIdentityClient:
 
     def selected_avatar_engine(self) -> str | None:
         identity = self.selected_identity()
-        return identity if identity in {"stylized-3d", "portrait3d", "liveportrait"} else None
+        return identity if identity in {"portrait3d", "liveportrait"} else None
 
     def report_portrait_error(self, revision: int, error: str) -> None:
         request = urllib.request.Request(
@@ -318,7 +317,7 @@ class VideoIdentityClient:
             ) as response:
                 payload = json.load(response)
             identity = payload.get("identity")
-            if identity not in {"camera", "stylized-3d", "portrait3d", "liveportrait", "depth-map"}:
+            if identity not in {"camera", "portrait3d", "liveportrait", "depth-map"}:
                 raise ValueError(f"invalid video identity: {identity!r}")
             portrait = payload.get("liveportrait")
             if isinstance(portrait, dict):
@@ -352,7 +351,6 @@ class AvatarProcessor:
         model_dir: Path,
         engine: str,
         source_image: Path | None,
-        profile: Path | None,
         width: int,
         height: int,
         *,
@@ -363,7 +361,6 @@ class AvatarProcessor:
         self._model_dir = model_dir
         self._engine = engine
         self._source_image = source_image
-        self._profile = profile
         self._portrait_model = portrait_model
         self._width = width
         self._height = height
@@ -412,7 +409,7 @@ class AvatarProcessor:
 
     def _run(self) -> None:
         try:
-            if self._engine not in {"stylized-3d", "portrait3d", "liveportrait"}:
+            if self._engine not in {"portrait3d", "liveportrait"}:
                 raise RuntimeError(f"unsupported avatar engine: {self._engine}")
             self._run_switchable()
         except BaseException as error:
@@ -483,7 +480,7 @@ class AvatarProcessor:
             from .portrait3d import Portrait3DAvatarEngine
 
             tracker = resources.enter_context(
-                MediaPipeAvatarTracker(self._model_dir, limit_pose=False)
+                MediaPipeAvatarTracker(self._model_dir)
             )
             engine = resources.enter_context(
                 Portrait3DAvatarEngine(self._portrait_model, self._width, self._height)
@@ -493,22 +490,6 @@ class AvatarProcessor:
                 return engine.render(tracker.track(frame.frame_bgr, frame.timestamp_ms))
 
             return render_portrait
-
-        if engine_name == "stylized-3d":
-            if self._profile is None:
-                raise RuntimeError("stylized 3D avatar requires a profile")
-            from .stylized3d import Stylized3DAvatarEngine
-
-            tracker = resources.enter_context(MediaPipeAvatarTracker(self._model_dir))
-            engine = resources.enter_context(
-                Stylized3DAvatarEngine(self._profile, self._width, self._height)
-            )
-
-            def render_stylized(frame: AvatarInputFrame) -> np.ndarray:
-                motion = tracker.track(frame.frame_bgr, frame.timestamp_ms)
-                return engine.render(motion)
-
-            return render_stylized
 
         if engine_name != "liveportrait":
             raise RuntimeError(f"unsupported avatar engine: {engine_name}")

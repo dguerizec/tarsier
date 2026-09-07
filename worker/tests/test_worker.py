@@ -4,8 +4,6 @@ import io
 from dataclasses import dataclass
 from pathlib import Path
 
-import pytest
-
 from tarsier_perception.avatar import (
     AvatarPublisher,
     FaceCropGeometry,
@@ -13,6 +11,10 @@ from tarsier_perception.avatar import (
     VideoIdentityClient,
     compose_avatar_frame,
     crop_face_square,
+)
+from tarsier_perception.avatar_motion import (
+    AvatarMotion,
+    motion_from_mediapipe,
 )
 from tarsier_perception.depth import (
     DEPTH_REPRESENTATION,
@@ -23,11 +25,6 @@ from tarsier_perception.depth import (
     depth_input_width,
 )
 from tarsier_perception.models import describe_models
-from tarsier_perception.stylized3d import (
-    AvatarMotion,
-    Stylized3DAvatarEngine,
-    motion_from_mediapipe,
-)
 from tarsier_perception.worker import (
     Landmark,
     PoseConstraintStore,
@@ -326,9 +323,9 @@ def test_avatar_publisher_tags_frames_with_the_rendering_engine(monkeypatch) -> 
     monkeypatch.setattr("urllib.request.urlopen", respond)
     frame = np.zeros((1, 2, 4), dtype=np.uint8)
 
-    AvatarPublisher("http://127.0.0.1:8742").publish("stylized-3d", 42, 1234, frame)
+    AvatarPublisher("http://127.0.0.1:8742").publish("portrait3d", 42, 1234, frame)
 
-    assert published[0].get_header("X-tarsier-avatar-engine") == "stylized-3d"
+    assert published[0].get_header("X-tarsier-avatar-engine") == "portrait3d"
 
 
 def test_depth_scale_stabilizes_bounds_across_frames() -> None:
@@ -415,21 +412,6 @@ def test_avatar_motion_maps_mediapipe_expressions() -> None:
         brow_raise=0.5,
     )
 
-
-def test_stylized_3d_renderer_produces_an_opaque_bgrx_frame() -> None:
-    pytest.importorskip("moderngl")
-    import numpy as np
-
-    profile = Path(__file__).parents[2] / "assets/avatars/stylized-3d.json"
-    with Stylized3DAvatarEngine(profile, 320, 180) as engine:
-        neutral = engine.render(AvatarMotion.neutral())
-        expressive = engine.render(AvatarMotion(jaw_open=1.0, blink_left=1.0, yaw=0.3))
-
-    assert neutral.shape == (180, 320, 4)
-    assert neutral.dtype == np.uint8
-    assert np.all(neutral[:, :, 3] == 255)
-    assert np.unique(neutral[:, :, :3].reshape(-1, 3), axis=0).shape[0] > 20
-    assert not np.array_equal(neutral, expressive)
 
 
 def test_identity_tracks_portrait_revision_and_keeps_last_state_on_poll_failure(monkeypatch):

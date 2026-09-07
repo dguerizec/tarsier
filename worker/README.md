@@ -9,14 +9,11 @@ nearby furniture is not mistaken for part of the subject during motion. The
 worker reads a raw internal branch; the public V4L2 loopback remains available
 for the daemon's final, optionally processed output.
 
-With the optional `avatar` dependency group, the same worker runs a local
-stylized 3D renderer. A dedicated MediaPipe face landmarker extracts facial
-blendshapes and a head transformation. A head-and-bust OpenGL scene maps those
-signals to pose, blinking, jaw, smile, and eyebrow controls before publishing a
-complete BGRx frame. The geometry is procedural for this first vertical slice;
-recognition colors live in `assets/avatars/stylized-3d.json`. Camera
-pixels never enter the rendered frame, and the queue retains only the newest
-input so latency cannot grow without bound.
+With the optional `avatar` dependency group, the same worker runs Personal 3D
+from a local portrait export. A dedicated MediaPipe face landmarker extracts
+facial blendshapes and head motion to animate the mesh. Camera pixels never
+enter the rendered frame, and the queue retains only the newest input so
+latency cannot grow without bound.
 
 With the optional `depth` dependency group, Depth Anything V2 Small estimates a
 relative inverse-depth field from that same raw input. The model is loaded only
@@ -48,10 +45,10 @@ Pass `--source /dev/video43` only when a dedicated perception device is
 preferred. The worker also accepts `--device` as a compatibility alias.
 
 Avatar output is enabled by the daemon's `[avatar]` configuration. The
-supervisor installs both optional dependency groups and supplies the 3D profile,
+supervisor installs both optional dependency groups and supplies the Personal 3D export,
 LivePortrait source image, output dimensions, and cadence automatically. The
 worker polls the daemon's selected identity and loads only the requested engine;
-PyTorch is not imported while Stylized 3D is selected, or while Camera has no
+PyTorch is not imported while Personal 3D is selected, or while Camera has no
 background effect. The depth and LivePortrait models load independently and
 only for an active use. Models and generated data stay on the local machine.
 Every generated frame identifies its source, and the daemon accepts it only
