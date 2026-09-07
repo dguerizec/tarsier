@@ -19,6 +19,8 @@
           <p><label>Camera <select id="device-camera" disabled></select></label></p>
           <fieldset id="device-microphones" disabled><legend>Microphones to capture</legend><div id="device-microphone-list"></div></fieldset>
           <p><label>Microphone for output <select id="device-output" disabled></select></label></p>
+          <p><label><input id="device-reserve-inputs" type="checkbox" disabled> Reserve microphone inputs for Tarsier</label></p>
+          <p>Reserve available inputs even when capture is Off. Use each input's lock button to release it. Disable this setting to share inputs with other applications.</p>
           <p>Devices are remembered across restarts. Reconnecting a camera keeps its selection when a stable device identifier is available. Saving briefly interrupts capture.</p>
           <button id="devices-refresh" type="button">Refresh devices</button>
           <button id="devices-save" type="submit" disabled>Save and restart</button>

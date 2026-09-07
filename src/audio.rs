@@ -416,6 +416,7 @@ impl AudioHub {
                 .iter()
                 .filter_map(|source| {
                     if self.config.capture_selected_only
+                        && !self.config.reserve_inputs
                         && !state.audio_capture_sources.contains(&source.id)
                     {
                         return None;
@@ -958,16 +959,7 @@ async fn reconcile_reservations(
                 &s.audio_reservations,
                 sources,
                 &if config.reserve_inputs {
-                    let mut released = s.audio_released_sources.clone();
-                    if config.capture_selected_only {
-                        released.extend(
-                            sources
-                                .iter()
-                                .filter(|source| !s.audio_capture_sources.contains(&source.id))
-                                .map(|source| source.id.clone()),
-                        );
-                    }
-                    released
+                    s.audio_released_sources.clone()
                 } else {
                     sources.iter().map(|s| s.id.clone()).collect()
                 },
@@ -1175,6 +1167,32 @@ fn measure(bytes: &[u8]) -> Level {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn reservation_covers_inputs_even_when_capture_is_off() {
+        let runtime = Runtime::new();
+        let sources = vec![Source {
+            id: "microphone".into(),
+            name: "Microphone".into(),
+            muted: false,
+        }];
+        let mut config = crate::config::AudioConfig {
+            reserve_inputs: true,
+            capture_selected_only: true,
+            ..Default::default()
+        };
+        reconcile_reservations(&runtime, &sources, &config).await;
+        assert_eq!(
+            runtime.state().await.audio_reservations["microphone"].status,
+            ReservationStatus::Pending
+        );
+        config.reserve_inputs = false;
+        reconcile_reservations(&runtime, &sources, &config).await;
+        assert_eq!(
+            runtime.state().await.audio_reservations["microphone"].status,
+            ReservationStatus::Released
+        );
+    }
+
     use super::*;
 
     #[test]

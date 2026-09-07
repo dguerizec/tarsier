@@ -182,6 +182,7 @@ loadAuth().catch(error => { authStatus.textContent = error.message; });
 
 
 const devicesForm = document.querySelector('#devices-form');
+const reserveInputs = document.querySelector('#device-reserve-inputs');
 const cameraSelect = document.querySelector('#device-camera');
 const outputSelect = document.querySelector('#device-output');
 const microphoneList = document.querySelector('#device-microphone-list');
@@ -208,7 +209,7 @@ function renderDeviceOutput() {
 }
 function setDevicesPending(pending) {
   devicesPending = pending;
-  cameraSelect.disabled = outputSelect.disabled = devicesSave.disabled = pending || !devicesState?.can_apply;
+  reserveInputs.disabled = cameraSelect.disabled = outputSelect.disabled = devicesSave.disabled = pending || !devicesState?.can_apply;
   document.querySelector('#device-microphones').disabled = pending || !devicesState?.can_apply;
   devicesRefresh.disabled = pending;
 }
@@ -216,6 +217,7 @@ async function loadDevices() {
   const response = await fetch('/api/v1/settings/devices', {cache: 'no-store'});
   if (!response.ok) throw new Error((await response.json()).error || 'Could not load devices');
   devicesState = await response.json();
+  reserveInputs.checked = devicesState.reserve_inputs;
   cameraSelect.replaceChildren();
   deviceOption(cameraSelect, '', 'Synthetic video');
   for (const camera of devicesState.cameras) deviceOption(cameraSelect, camera.id, `${camera.name} · ${camera.id.split('/').pop()}`);
@@ -250,7 +252,7 @@ devicesRefresh.addEventListener('click', () => {
 devicesForm.addEventListener('submit', async event => {
   event.preventDefault();
   if (devicesPending || devicesSave.disabled) return;
-  const body = {camera: cameraSelect.value, capture_sources: selectedMicrophones(), output_source: outputSelect.value || null};
+  const body = {reserve_inputs: reserveInputs.checked, camera: cameraSelect.value, capture_sources: selectedMicrophones(), output_source: outputSelect.value || null};
   const previousStart = devicesState.started_at_ms;
   setDevicesPending(true); devicesStatus.textContent = 'Saving and restarting…';
   try {

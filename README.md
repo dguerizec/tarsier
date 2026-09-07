@@ -1148,3 +1148,13 @@ stop fallback. The overlay buttons do not start a drag.
 
 Run the pointer lifecycle and direction-mapping tests with `npm test --prefix web`.
 The nudge endpoint also accepts `up-left`, `up-right`, `down-left`, and `down-right`.
+
+### Microphone reservation preference
+
+In Settings → Camera and microphones, **Reserve microphone inputs for Tarsier**
+controls automatic exclusive reservation, including inputs whose capture is Off.
+Save and restart applies and remembers the choice. Existing clients are not
+terminated automatically. Individual lock buttons can still release an input.
+When reservation is disabled, the shared icon opens a read-only application list.
+The user preference overrides the `audio.reserve_inputs` startup default; source
+allowlists and virtual-output restrictions remain in effect.

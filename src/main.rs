@@ -146,6 +146,9 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
     if let Some(source) = &user_settings.liveportrait_source {
         config.avatar.source_image = source.clone();
     }
+    if let Some(enabled) = user_settings.audio_reserve_inputs {
+        config.audio.reserve_inputs = enabled;
+    }
     if let Some(camera) = &user_settings.camera_device {
         devices::apply_camera(&mut config, camera);
         config.audio.capture_selected_only = true;
