@@ -59,7 +59,12 @@ while that output still requires it. It emits black when matching data is
 unavailable or stale rather than exposing an unprocessed camera frame.
 
 The `liveportrait` dependency group provides the experimental neural portrait
-fallback. It requires the five additional weights and a source illustration:
+fallback. It requires a CUDA-capable GPU and the five additional weights. The
+daemon supplies the bundled fictional portrait at
+`assets/avatars/liveportrait-default.png` unless `avatar.source_image` is set
+explicitly. For standalone worker use, pass `--avatar-source` with the portrait
+path. See [avatar provenance and source requirements](../assets/avatars/README.md).
+Install the runtime and weights with:
 
 ```sh
 uv sync --project worker --extra liveportrait --locked
