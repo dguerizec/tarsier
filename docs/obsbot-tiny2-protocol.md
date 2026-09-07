@@ -194,6 +194,51 @@ The special pattern was disabled, brightness restored to three, tracking left
 disabled as initially observed, and the original measured camera orientation
 restored. Final daemon health was checked after restoration.
 
+### Deeper local SDK inspection: indicator-state commands
+
+A subsequent static inspection used the exact local file
+`/data/audit/obsbot-camera-control/sdk/v1.0.2/lib/libdev.so`, without loading it
+into a running process or sending device commands. The library is an unstripped
+x86-64 ELF with DWARF debug information:
+
+- Build ID: `5a0debca07356e8f3146024b19ca1701e0e21dad`.
+- SHA-256: `d9fc9cd7f6743a3eefd50dbae104ccaff9c3d45ee37816722cb0bd683854e7a4`.
+
+Symbol, string, DWARF type, and disassembly inspection found an additional
+candidate mechanism that the initial LED-name search missed:
+
+| Export | ELF address | Internal command enum | V3 command ID |
+| --- | --- | --- | --- |
+| `Device::sysMgSetIndicatorStateR(uint8_t state_id)` | `0x6e3b0` | `0x10` | `0x01c0` |
+| `Device::sysMgClearIndicatorStateR(uint8_t state_id)` | `0x6e480` | `0x11` | `0x01c1` |
+
+The internal command set is `CMD_SET_SYS_MG` (`0x0d`). Both wrappers copy the
+single `state_id` byte into their message payload and call `sendMsgAsync`.
+Their bodies contain no color table, state-ID validation, or product-type
+branch. The V3 IDs above come from the static initializer for
+`kCmdIdSysMgV3`; they are not selector-6 tags or complete Tiny 2 wire packets.
+
+These functions are declared in the **local** adjacent `include/dev/dev.hpp`
+at lines 3500 and 3508, categorized for **Tail Air and Tail 2**. The header
+retrieved earlier from GitHub differs and does not declare them. The local
+header does not explain the state IDs; the clear function's brief description
+also appears to be a copied buzzer comment. No indicator-state enum or
+state-to-color mapping was found in the inspected debug information and
+strings. A wrapper accepting one byte does not establish that every byte is
+valid or that Tiny 2 firmware implements the command.
+
+Other exported candidates include LED enable/brightness, tally enable and
+brightness, and battery-light enable. The inspected protobuf LED and tally
+configuration types contain operation options and scalar sliders, not RGB
+fields. `cameraSetBgColorU` is documented as a Meet/Meet 4K virtual-background
+control and is unrelated to the physical indicator.
+
+The set/clear pair is therefore a concrete candidate for preset indicator
+states, potentially including colors, rather than evidence of arbitrary RGB
+selection. Tiny 2 support, valid IDs, actual visual effects, and restoration
+semantics remain unverified. No camera settings were changed for this static
+inspection.
+
 ## Available image and perception surfaces
 
 The tested Tiny 2 advertises standard V4L2 controls for automatic/manual
