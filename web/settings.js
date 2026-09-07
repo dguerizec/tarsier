@@ -224,7 +224,7 @@ async function loadDevices() {
     label.append(input, document.createTextNode(` ${mic.name}`)); row.append(label); microphoneList.append(row);
   }
   setDevicesPending(false);
-  devicesStatus.textContent = devicesState.can_apply ? '' : 'Device changes require the supervised Tarsier service.';
+  devicesStatus.textContent = devicesState.can_apply ? '' : 'Device controls or persistent settings are unavailable.';
 }
 devicesRefresh.addEventListener('click', () => {
   setDevicesPending(true);
@@ -235,22 +235,11 @@ devicesForm.addEventListener('submit', async event => {
   if (devicesPending || devicesSave.disabled) return;
   const input_reservations = Object.fromEntries([...microphoneList.querySelectorAll('input')].map(input => [input.value, input.checked]));
   const body = {camera: cameraSelect.value, input_reservations};
-  const previousStart = devicesState.started_at_ms;
-  setDevicesPending(true); devicesStatus.textContent = 'Saving and restarting…';
+  setDevicesPending(true); devicesStatus.textContent = 'Applying devices…';
   try {
     const response = await fetch('/api/v1/settings/devices', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
-    if (!response.ok) throw new Error((await response.json()).error || 'Could not save devices');
-    const deadline = Date.now() + 30000;
-    while (Date.now() < deadline) {
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      try {
-        const health = await fetch('/api/v1/health', {cache: 'no-store', signal: AbortSignal.timeout(2000)});
-        if (health.ok && (await health.json()).started_at_ms !== previousStart) {
-          await loadDevices(); devicesStatus.textContent = 'Devices saved. Tarsier has restarted.'; return;
-        }
-      } catch { /* Wait for the supervised daemon. */ }
-    }
-    throw new Error('Settings saved, but the service has not reconnected. Check the service and refresh this page.');
+    if (!response.ok) throw new Error((await response.json()).error || 'Could not apply devices');
+    await loadDevices(); devicesStatus.textContent = 'Device preferences saved and applied.';
   } catch (error) { setDevicesPending(false); devicesStatus.textContent = error.message; }
 });
 loadDevices().catch(error => { devicesStatus.textContent = error.message; });

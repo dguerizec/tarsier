@@ -139,6 +139,8 @@ impl PreviewHub {
 }
 
 pub struct VideoPipeline {
+    config: Arc<Mutex<VideoConfig>>,
+    source_changed_at_ms: Arc<AtomicU64>,
     supervisor_running: Arc<AtomicBool>,
     desired_running: Arc<AtomicBool>,
     runtime: Runtime,
@@ -148,6 +150,8 @@ pub struct VideoPipeline {
 
 #[derive(Clone)]
 pub struct VideoPipelineControl {
+    config: Arc<Mutex<VideoConfig>>,
+    source_changed_at_ms: Arc<AtomicU64>,
     desired_running: Arc<AtomicBool>,
     runtime: Runtime,
     #[cfg(test)]
@@ -298,15 +302,18 @@ impl VideoPipeline {
         };
         let pipeline =
             ActivePipeline::start(&config, runtime.clone(), preview.clone(), false).await?;
+        let config = Arc::new(Mutex::new(config));
         let supervisor = spawn_supervisor(
             pipeline,
-            config,
+            Arc::clone(&config),
             runtime.clone(),
             preview,
             Arc::clone(&supervisor_running),
             Arc::clone(&desired_running),
         )?;
         Ok(Self {
+            source_changed_at_ms: Arc::new(AtomicU64::new(0)),
+            config,
             supervisor_running,
             desired_running,
             runtime,
@@ -317,6 +324,8 @@ impl VideoPipeline {
 
     pub fn control(&self) -> VideoPipelineControl {
         VideoPipelineControl {
+            source_changed_at_ms: Arc::clone(&self.source_changed_at_ms),
+            config: Arc::clone(&self.config),
             desired_running: Arc::clone(&self.desired_running),
             runtime: self.runtime.clone(),
             #[cfg(test)]
@@ -326,6 +335,70 @@ impl VideoPipeline {
 }
 
 impl VideoPipelineControl {
+    pub fn accepts_frame(&self, captured_at_ms: u64) -> bool {
+        captured_at_ms >= self.source_changed_at_ms.load(Ordering::Relaxed)
+    }
+
+    pub fn camera_source(&self) -> String {
+        let config = self.config.lock().unwrap();
+        if config.source == VideoSource::Camera {
+            config.input_device.clone()
+        } else {
+            String::new()
+        }
+    }
+
+    // The capture must be stopped first; the virtual output has its own lifetime.
+    pub async fn select_source(&self, camera: &str) -> Result<()> {
+        if self.desired_running.load(Ordering::Relaxed) {
+            anyhow::bail!("stop capture before selecting a camera");
+        }
+        if !camera.is_empty() {
+            validate_path(camera)?;
+        }
+        {
+            let mut config = self.config.lock().unwrap();
+            config.source = if camera.is_empty() {
+                VideoSource::Test
+            } else {
+                VideoSource::Camera
+            };
+            if !camera.is_empty() {
+                config.input_device = camera.into();
+            }
+        }
+        self.source_changed_at_ms
+            .store(unix_ms(), Ordering::Relaxed);
+        self.runtime
+            .update(|state| {
+                state.pipeline.source = if camera.is_empty() { "test" } else { "camera" }.into();
+                state.pipeline.input_device = (!camera.is_empty()).then(|| camera.to_owned());
+            })
+            .await;
+        Ok(())
+    }
+
+    pub async fn wait_for_frame(&self) -> Result<()> {
+        #[cfg(test)]
+        if self.immediate {
+            return Ok(());
+        }
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let pipeline = self.runtime.state().await.pipeline;
+                if pipeline.running && pipeline.last_frame_at_ms.is_some() {
+                    return Ok(());
+                }
+                if let Some(error) = pipeline.error {
+                    anyhow::bail!("{error}");
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .context("timed out waiting for frames from the selected camera")?
+    }
+
     pub async fn set_enabled(&self, enabled: bool) -> Result<()> {
         self.desired_running.store(enabled, Ordering::Relaxed);
         if enabled {
@@ -374,6 +447,8 @@ impl VideoPipelineControl {
     #[cfg(test)]
     pub(crate) fn mock(runtime: Runtime) -> Self {
         Self {
+            source_changed_at_ms: Arc::new(AtomicU64::new(0)),
+            config: Arc::new(Mutex::new(VideoConfig::default())),
             desired_running: Arc::new(AtomicBool::new(true)),
             runtime,
             immediate: true,
@@ -704,7 +779,7 @@ enum PipelineExit {
 
 fn spawn_supervisor(
     initial: ActivePipeline,
-    config: VideoConfig,
+    config: Arc<Mutex<VideoConfig>>,
     runtime: Runtime,
     preview: PreviewHub,
     supervisor_running: Arc<AtomicBool>,
@@ -808,6 +883,7 @@ fn spawn_supervisor(
                 }
 
                 disabled_reported = false;
+                let config = config.lock().unwrap().clone();
                 if retry_after_failure
                     && !wait_for_retry(
                         &supervisor_running,
@@ -938,6 +1014,103 @@ fn wait_for_retry(running: &AtomicBool, desired_running: &AtomicBool, delay: Dur
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn source_selection_keeps_the_same_virtual_output_stream() {
+        gst::init().unwrap();
+        let config = VideoConfig {
+            source: VideoSource::Test,
+            width: 64,
+            height: 48,
+            preview_width: 64,
+            preview_height: 48,
+            loopback_enabled: true,
+            ..VideoConfig::default()
+        };
+        let runtime = Runtime::new();
+        let preview = PreviewHub::new();
+        let enabled = Arc::new(AtomicBool::new(true));
+        let output = VirtualVideoOutput::start(
+            &config,
+            preview.clone(),
+            enabled.clone(),
+            runtime.clone(),
+            "appsink name=consumer max-buffers=1 drop=true sync=false",
+        )
+        .unwrap();
+        let consumer = output
+            .pipeline
+            .by_name("consumer")
+            .unwrap()
+            .downcast::<gst_app::AppSink>()
+            .unwrap();
+        let initial = ActivePipeline::start(&config, runtime.clone(), preview.clone(), false)
+            .await
+            .unwrap();
+        let config = Arc::new(Mutex::new(config));
+        let running = Arc::new(AtomicBool::new(true));
+        let supervisor = spawn_supervisor(
+            initial,
+            config.clone(),
+            runtime.clone(),
+            preview.clone(),
+            running.clone(),
+            enabled.clone(),
+        )
+        .unwrap();
+        let pipeline = VideoPipeline {
+            source_changed_at_ms: Arc::new(AtomicU64::new(0)),
+            config,
+            supervisor_running: running,
+            desired_running: enabled,
+            runtime: runtime.clone(),
+            supervisor: Some(supervisor),
+            _virtual_output: Some(output),
+        };
+        let control = pipeline.control();
+        let mut last_pts = None;
+        for _ in 0..2 {
+            control.set_enabled(false).await.unwrap();
+            control
+                .select_source("/dev/tarsier-test-unavailable-camera")
+                .await
+                .unwrap();
+            assert_eq!(
+                control.camera_source(),
+                "/dev/tarsier-test-unavailable-camera"
+            );
+            let sample = consumer
+                .try_pull_sample(gst::ClockTime::from_seconds(1))
+                .unwrap();
+            let pts = sample.buffer().unwrap().pts().unwrap();
+            if let Some(previous) = last_pts {
+                assert!(pts > previous);
+            }
+            last_pts = Some(pts);
+            control.select_source("").await.unwrap();
+            assert!(!control.accepts_frame(1));
+            assert!(control.accepts_frame(unix_ms()));
+            control.set_enabled(true).await.unwrap();
+            assert_eq!(control.camera_source(), "");
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while preview.latest().is_none() {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(runtime.state().await.pipeline.source, "test");
+        }
+        // Virtual output ownership stays in the original pipeline throughout.
+        assert!(
+            pipeline
+                ._virtual_output
+                .as_ref()
+                .unwrap()
+                .running
+                .load(Ordering::Relaxed)
+        );
+    }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn virtual_video_keeps_streaming_black_across_capture_power_cycles() {
@@ -1094,7 +1267,7 @@ mod tests {
         let desired_running = Arc::new(AtomicBool::new(true));
         let supervisor = spawn_supervisor(
             initial,
-            config,
+            Arc::new(Mutex::new(config)),
             runtime.clone(),
             preview.clone(),
             Arc::clone(&supervisor_running),

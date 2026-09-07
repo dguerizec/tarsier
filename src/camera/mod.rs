@@ -40,6 +40,7 @@ pub const PAN_TILT_LEASE: Duration = Duration::from_millis(350);
 
 #[derive(Debug)]
 enum Command {
+    Shutdown,
     Power {
         enabled: bool,
     },
@@ -195,6 +196,7 @@ impl TelemetryPoller {
 #[derive(Clone)]
 pub struct CameraHandle {
     tx: SyncSender<Request>,
+    telemetry: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     powered_on: Arc<AtomicBool>,
     power_transition: Arc<AtomicBool>,
     max_yaw_degrees: f32,
@@ -203,6 +205,14 @@ pub struct CameraHandle {
 }
 
 impl CameraHandle {
+    pub async fn shutdown(&self) -> Result<()> {
+        self.request(Command::Shutdown).await?;
+        if let Some(task) = self.telemetry.lock().await.take() {
+            let _ = task.await;
+        }
+        Ok(())
+    }
+
     pub async fn set_powered_on(&self, enabled: bool) -> Result<()> {
         self.begin_power_transition();
         let result = self.request(Command::Power { enabled }).await.map(|_| ());
@@ -337,7 +347,7 @@ impl CameraHandle {
     }
 
     async fn request(&self, command: Command) -> Result<CommandOutcome> {
-        if !matches!(command, Command::Power { .. }) {
+        if !matches!(command, Command::Power { .. } | Command::Shutdown) {
             if self.power_transition.load(Ordering::Relaxed) {
                 bail!("camera power is changing");
             }
@@ -421,7 +431,7 @@ pub async fn start(config: CameraConfig, runtime: Runtime) -> Result<Option<Came
                     "low-priority AI telemetry polling is enabled"
                 );
             }
-            spawn_telemetry_updates(telemetry_rx, runtime);
+            *handle.telemetry.lock().await = Some(spawn_telemetry_updates(telemetry_rx, runtime));
             Ok(Some(handle))
         }
     }
@@ -451,6 +461,7 @@ fn spawn_worker<T: XuTransport + 'static>(
     (
         CameraHandle {
             tx,
+            telemetry: Default::default(),
             powered_on,
             power_transition: Arc::new(AtomicBool::new(false)),
             max_yaw_degrees: config.max_yaw_degrees,
@@ -516,6 +527,14 @@ impl<T: XuTransport> Worker<T> {
             self.expire_pan_tilt_lease();
             match self.rx.try_recv() {
                 Ok(request) => {
+                    if matches!(request.command, Command::Shutdown) {
+                        if self.pan_tilt_direction != (0, 0) {
+                            let _ = self.transport.set_pan_tilt_speed_units(0, 0);
+                        }
+                        drop(self);
+                        let _ = request.response.send(Ok(CommandOutcome::Applied));
+                        return;
+                    }
                     let result = self
                         .execute(request.command)
                         .map_err(|error| error.to_string());
@@ -537,10 +556,13 @@ impl<T: XuTransport> Worker<T> {
     }
 
     fn execute(&mut self, command: Command) -> Result<CommandOutcome> {
-        if !matches!(command, Command::Power { .. }) && !self.powered_on.load(Ordering::Relaxed) {
+        if !matches!(command, Command::Power { .. } | Command::Shutdown)
+            && !self.powered_on.load(Ordering::Relaxed)
+        {
             bail!("camera is powered off");
         }
         match command {
+            Command::Shutdown => unreachable!("shutdown is handled by the owner loop"),
             Command::Power { enabled } => {
                 self.set_powered_on(enabled)?;
                 Ok(CommandOutcome::Applied)
@@ -1032,7 +1054,12 @@ fn spawn_mock(config: &CameraConfig) -> CameraHandle {
         .spawn(move || {
             let mut image_controls = mock_image_controls();
             while let Ok(request) = rx.recv() {
+                if matches!(request.command, Command::Shutdown) {
+                    let _ = request.response.send(Ok(CommandOutcome::Applied));
+                    break;
+                }
                 let result = match request.command {
+                    Command::Shutdown => unreachable!(),
                     Command::Power { enabled } => {
                         worker_powered_on.store(enabled, Ordering::Relaxed);
                         Ok(CommandOutcome::Applied)
@@ -1069,6 +1096,7 @@ fn spawn_mock(config: &CameraConfig) -> CameraHandle {
         .expect("failed to spawn mock camera thread");
     CameraHandle {
         tx,
+        telemetry: Default::default(),
         powered_on,
         power_transition: Arc::new(AtomicBool::new(false)),
         max_yaw_degrees: config.max_yaw_degrees,
@@ -1140,7 +1168,7 @@ fn speed_units(control: ZoomControl, direction: i8, speed_fraction: f64) -> Resu
 fn spawn_telemetry_updates(
     mut updates: tokio_mpsc::UnboundedReceiver<TelemetryUpdate>,
     runtime: Runtime,
-) {
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         while let Some(update) = updates.recv().await {
             match update {
@@ -1265,7 +1293,7 @@ fn spawn_telemetry_updates(
                 }
             }
         }
-    });
+    })
 }
 
 fn adapter_name(adapter: CameraAdapter) -> &'static str {
@@ -1283,6 +1311,18 @@ mod tests {
     struct ReplyingTransport {
         request: Option<[u8; FRAME_SIZE]>,
         operations: Vec<&'static str>,
+    }
+
+    #[tokio::test]
+    async fn retiring_a_camera_rejects_commands_from_old_handles() {
+        let config = CameraConfig {
+            adapter: CameraAdapter::Mock,
+            ..CameraConfig::default()
+        };
+        let camera = start(config, Runtime::new()).await.unwrap().unwrap();
+        let old = camera.clone();
+        camera.shutdown().await.unwrap();
+        assert!(old.recenter().await.is_err());
     }
 
     #[derive(Default)]

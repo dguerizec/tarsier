@@ -1159,3 +1159,11 @@ reconnection without changing this preference. An unchecked input remains shared
 after other applications disconnect. Capture toggles and output selection belong
 to the main Audio panel and are preserved when these settings are saved.
 Source allowlists and virtual-output restrictions remain in effect.
+
+Device preferences apply without restarting the daemon. Reservation changes affect
+only inputs whose preference changed. Switching the camera replaces capture and
+camera controls while keeping the virtual camera and microphone connected; video
+is black during the transition and audio continues. Use **Synthetic video** to
+exercise switching with a single physical camera. Switching disables local tracking
+and is rejected during recording. A failed switch attempts to restore the previous
+camera. Saving reservation preferences alone is allowed during recording.
