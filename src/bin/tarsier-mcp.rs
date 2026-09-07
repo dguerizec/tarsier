@@ -68,12 +68,9 @@ impl TarsierGateway {
             anyhow::bail!("daemon URL must use HTTP or HTTPS");
         }
         let mut headers = reqwest::header::HeaderMap::new();
-        // The daemon protects MCP commands while another app uses the virtual camera.
-        headers.insert(
-            "x-tarsier-client",
-            reqwest::header::HeaderValue::from_static("mcp"),
-        );
-        if let Ok(token) = std::env::var("TARSIER_API_TOKEN") {
+        if let Ok(token) =
+            std::env::var("TARSIER_MCP_TOKEN").or_else(|_| std::env::var("TARSIER_API_TOKEN"))
+        {
             let mut value = reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))?;
             value.set_sensitive(true);
             headers.insert(reqwest::header::AUTHORIZATION, value);
@@ -86,7 +83,7 @@ impl TarsierGateway {
     }
 
     fn url(&self, path: &str) -> String {
-        format!("{}{path}", self.daemon_url)
+        format!("{}/mcp{path}", self.daemon_url)
     }
 
     async fn request(&self, method: Method, path: &str, body: Option<Value>) -> CallToolResult {
@@ -340,7 +337,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let app = Router::new().route(
-            "/api/v1/state",
+            "/mcp/api/v1/state",
             get(|| async { Json(json!({"camera": {"available": true}})) }),
         );
         let task = tokio::spawn(async move {
@@ -397,7 +394,7 @@ mod tests {
             let seen = seen.clone();
             async move {
                 assert_eq!(request.method(), axum::http::Method::POST);
-                assert_eq!(request.headers()["x-tarsier-client"], "mcp");
+                assert!(request.uri().path().starts_with("/mcp/api/v1/"));
                 seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 (
                     axum::http::StatusCode::CONFLICT,

@@ -450,12 +450,15 @@ authentication file. Signing in opens
 the main control page.
 Disabling protection revokes all tokens and makes the API public again.
 
-In **Settings → API tokens**, create a named token for each client, such as
-Stream Deck or MCP. Copy it when created: only its SHA-256 hash is stored;
-the secret cannot be displayed again. Tokens allow operator API access but
-cannot administer passwords or tokens. Revoke a token to remove that client's
-access. Existing MJPEG and WebSocket connections recheck authorization every
-second. In-flight commands cannot be undone by revocation.
+In **Settings → Client tokens**, create a named token for each client, such as
+Stream Deck or an MCP agent. Select **API**, **MCP**, or both; at least one
+destination is required. Destinations are immutable: revoke and replace a token
+to change its access. Existing tokens without destinations default to API only.
+Only a master-password browser session can create or revoke tokens; client
+tokens cannot administer other tokens. Copy each token when created: only its
+SHA-256 hash is stored, and the secret cannot be displayed again. Revoke a token
+to remove that client's access. Existing MJPEG and WebSocket connections recheck
+authorization every second. In-flight commands cannot be undone by revocation.
 
 Send client tokens in `Authorization: Bearer <token>`, never in a URL:
 
@@ -464,10 +467,12 @@ curl -fsS http://127.0.0.1:8742/api/v1/state \
   -H "Authorization: Bearer $TARSIER_API_TOKEN"
 ```
 
-Set `TARSIER_API_TOKEN` in the environment of `tarsier-mcp`, `tarsier status`,
-or a manually launched perception worker. The daemon automatically provisions
-its supervised worker with an ephemeral credential restricted to perception
-input/output and reading the selected video identity. It keeps working when
+Set `TARSIER_MCP_TOKEN` in the environment of `tarsier-mcp`, and
+`TARSIER_API_TOKEN` for `tarsier status` or a manually launched perception worker.
+The MCP gateway also accepts `TARSIER_API_TOKEN` as a legacy environment variable
+name, but the token must still have the MCP destination. The daemon automatically
+provisions its supervised worker with an ephemeral credential restricted to
+perception input/output and reading the selected video identity. It keeps working when
 protection is enabled, without a manually created token.
 
 For forgotten-password recovery, run the CLI as the same OS user as the daemon:
@@ -614,8 +619,11 @@ The gateway exposes eleven typed tools:
   `recall_camera_preset`, and `trigger_scenario`.
 
 MCP transports commands, state, events, and snapshots, not continuous video.
-The gateway identifies its requests with `X-Tarsier-Client: mcp`. The daemon
-rejects MCP mutations with HTTP 409 while the virtual camera has an active
+The gateway uses dedicated `/mcp/api/v1/...` routes for its eleven operations.
+Tokens need the MCP destination on these routes and the API destination on
+regular API routes. Destination checks use the route, not a client-supplied
+header. These are internal HTTP routes for the stdio gateway, not a separate
+HTTP MCP transport. The daemon rejects MCP mutations with HTTP 409 while the virtual camera has an active
 capture or a detected external open handle. This covers movement, recentering,
 preset recall, tracking changes, and scenario triggers. Read-only tools remain available;
 manual UI controls and existing automatic tracking are unaffected. Each command
@@ -628,8 +636,7 @@ owned by the daemon's user and excludes the daemon and its descendants. Neither
 check uses the UI's two-second cache. Inspection errors or an unavailable driver
 signal on an existing device block mutations with HTTP 503. The applications
 API exposes `capture_active` as true, false, or null (unknown). This is a
-command-time guard, not a stop for motion already in progress. The header is
-a gateway marker, not an authorization boundary for arbitrary HTTP clients.
+command-time guard, not a stop for motion already in progress.
 Movement limits and event recording remain enforced by the daemon regardless
 of the MCP client.
 
