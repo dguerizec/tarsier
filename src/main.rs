@@ -2,6 +2,7 @@ mod api;
 mod audio;
 mod audio_gain;
 mod auth;
+mod avatar_source;
 mod camera;
 mod config;
 mod devices;
@@ -142,6 +143,9 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
         settings::UserSettings::from_config(&config),
     )
     .await?;
+    if let Some(source) = &user_settings.liveportrait_source {
+        config.avatar.source_image = source.clone();
+    }
     if let Some(camera) = &user_settings.camera_device {
         devices::apply_camera(&mut config, camera);
         config.audio.capture_selected_only = true;

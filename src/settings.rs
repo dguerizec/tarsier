@@ -98,6 +98,8 @@ impl AudioSettings {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct UserSettings {
     #[serde(default)]
+    pub liveportrait_source: Option<PathBuf>,
+    #[serde(default)]
     pub camera_device: Option<String>,
     #[serde(default)]
     pub audio: AudioSettings,
@@ -121,6 +123,7 @@ pub struct UserSettings {
 impl UserSettings {
     pub fn from_config(config: &Config) -> Self {
         Self {
+            liveportrait_source: None,
             camera_device: None,
             audio: AudioSettings::default(),
             version: SETTINGS_VERSION,
@@ -232,6 +235,18 @@ impl UserSettingsStore {
             },
             settings,
         ))
+    }
+
+    pub fn portrait_directory(&self) -> PathBuf {
+        self.path
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join("portraits")
+    }
+
+    pub async fn set_liveportrait_source(&self, path: PathBuf) -> Result<()> {
+        self.replace(|settings| settings.liveportrait_source = Some(path))
+            .await
     }
 
     pub async fn set_audio(&self, audio: AudioSettings) -> Result<()> {

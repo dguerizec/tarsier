@@ -19,6 +19,7 @@ fs2 = "0.4.3"
 futures-util = "0.3"
 gstreamer = "0.25.3"
 gstreamer-app = "0.25.2"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 nix = { version = "0.31", features = ["fs", "ioctl"] }
 rand = "0.8"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }

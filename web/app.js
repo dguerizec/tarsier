@@ -63,6 +63,16 @@ let trackingPending = false;
 let faceTrackingPending = false;
 let handsTrackingPending = false;
 let imageSettingError = null;
+let portraitPending = false;
+let selectedPortraitId = null;
+let currentPortraitId = null;
+const portraitChoose = $("#liveportrait-choose");
+const portraitDialog = $("#liveportrait-dialog");
+const portraitGallery = $("#liveportrait-gallery");
+const portraitGalleryStatus = $("#liveportrait-gallery-status");
+const portraitSave = $("#liveportrait-save");
+const portraitCancel = $("#liveportrait-cancel");
+const portraitError = $("#liveportrait-error");
 let outputModePending = false;
 let outputModeError = null;
 let outputModeDraft = null;
@@ -741,6 +751,7 @@ function renderOutputMode(videoEffects) {
     input.disabled = outputModePending || (cameraOnly4k() && input.value !== "camera");
     input.checked = input.value === identity;
   }
+  portraitChoose.disabled = portraitPending || !daemonRestartAvailable || !socketConnected;
   skeletonToggle.disabled = identity !== "camera";
   const status = outputModeError
     ? "Change failed"
@@ -1067,6 +1078,95 @@ async function setOutputMode(identity) {
     if (state) render(state);
   }
 }
+
+portraitChoose.append(createElement(FolderOpen, { width: 16, height: 16, "aria-hidden": "true", focusable: "false" }));
+portraitChoose.addEventListener("click", async () => {
+  portraitError.hidden = true;
+  portraitGallery.replaceChildren();
+  portraitGalleryStatus.textContent = "Loading avatars…";
+  selectedPortraitId = currentPortraitId = null;
+  portraitSave.disabled = true;
+  portraitDialog.showModal();
+  try {
+    const response = await fetch("/api/v1/video/liveportrait/source", { cache: "no-store" });
+    if (!response.ok) throw new Error(`Could not load avatars (${response.status})`);
+    const portraits = await response.json();
+    currentPortraitId = portraits.find((portrait) => portrait.selected)?.id || null;
+    selectedPortraitId = currentPortraitId;
+    for (const portrait of portraits) {
+      const label = document.createElement("label");
+      label.className = "portrait-option";
+      const input = document.createElement("input");
+      input.type = "radio";
+      input.name = "portrait-source";
+      input.value = portrait.id;
+      input.checked = portrait.selected;
+      const card = document.createElement("span");
+      card.className = "portrait-card";
+      const image = document.createElement("img");
+      image.src = `/api/v1/video/liveportrait/source/${encodeURIComponent(portrait.id)}`;
+      image.alt = "";
+      image.loading = "lazy";
+      const name = document.createElement("span");
+      name.textContent = portrait.name;
+      card.append(image, name);
+      if (portrait.selected) {
+        const badge = document.createElement("small");
+        badge.textContent = "Current avatar";
+        card.append(badge);
+      }
+      image.addEventListener("error", () => {
+        input.disabled = true;
+        card.classList.add("portrait-unavailable");
+        name.textContent = `${portrait.name} · unavailable`;
+        if (selectedPortraitId === portrait.id) portraitSave.disabled = true;
+      });
+      input.addEventListener("change", () => {
+        selectedPortraitId = portrait.id;
+        portraitSave.disabled = portraitPending || selectedPortraitId === currentPortraitId;
+      });
+      label.append(input, card);
+      portraitGallery.append(label);
+    }
+    portraitGalleryStatus.textContent = portraits.length ? "" : "No avatars found. Add PNG or JPEG images to assets/avatars/.";
+  } catch (error) {
+    portraitGalleryStatus.textContent = "";
+    portraitError.textContent = error instanceof Error ? error.message : String(error);
+    portraitError.hidden = false;
+  }
+});
+portraitCancel.addEventListener("click", () => portraitDialog.close());
+portraitDialog.addEventListener("cancel", (event) => {
+  if (portraitPending) event.preventDefault();
+});
+$("#liveportrait-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!selectedPortraitId || portraitPending) return;
+  portraitPending = true;
+  portraitSave.disabled = portraitCancel.disabled = true;
+  portraitGallery.inert = true;
+  portraitSave.textContent = "Saving…";
+  portraitError.hidden = true;
+  try {
+    const response = await fetch("/api/v1/video/liveportrait/source", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: selectedPortraitId }),
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.error || `Avatar selection failed (${response.status})`);
+    }
+    portraitSave.textContent = "Saved. Reconnecting…";
+    // The existing daemon-instance observer reloads after the supervised restart.
+    void checkDaemonInstance();
+  } catch (error) {
+    portraitPending = false;
+    portraitSave.disabled = portraitCancel.disabled = false;
+    portraitGallery.inert = false;
+    portraitSave.textContent = "Use this avatar";
+    portraitError.textContent = error instanceof Error ? error.message : String(error);
+    portraitError.hidden = false;
+  }
+});
 
 for (const input of outputModeInputs) {
   input.addEventListener("change", () => {

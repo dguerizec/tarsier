@@ -163,6 +163,11 @@ pub fn router_with_controls(
     let router = Router::new()
         .route("/", get(index))
         .route("/settings", get(settings_page))
+        .route(
+            "/api/v1/video/liveportrait/source",
+            get(liveportrait_sources).post(set_liveportrait_source),
+        )
+        .route("/api/v1/video/liveportrait/source/{id}", get(liveportrait_thumbnail))
         .route("/assets/logo.svg", get(logo_svg))
         .route("/assets/favicon.svg", get(favicon_svg))
         .route("/assets/settings.js", get(settings_js))
@@ -337,6 +342,116 @@ async fn settings_js() -> impl IntoResponse {
         ],
         include_str!("../web/settings.js"),
     )
+}
+
+async fn portrait_catalog(state: &ApiState) -> anyhow::Result<Vec<crate::avatar_source::Portrait>> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut directories = vec![root.join("assets/avatars")];
+    if let Some(settings) = &state.user_settings {
+        directories.push(settings.portrait_directory());
+    }
+    let current = root.join(&state.config.avatar.source_image);
+    tokio::task::spawn_blocking(move || crate::avatar_source::catalog(&directories, &current))
+        .await?
+}
+
+async fn liveportrait_sources(State(state): State<ApiState>) -> Response {
+    match portrait_catalog(&state).await {
+        Ok(portraits) => ([(header::CACHE_CONTROL, "no-store")], Json(portraits)).into_response(),
+        Err(error) => command_error(error),
+    }
+}
+
+async fn liveportrait_thumbnail(
+    State(state): State<ApiState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Response {
+    let portraits = match portrait_catalog(&state).await {
+        Ok(portraits) => portraits,
+        Err(error) => return command_error(error),
+    };
+    let Some(portrait) = portraits.into_iter().find(|portrait| portrait.id == id) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    match tokio::task::spawn_blocking(move || crate::avatar_source::thumbnail(&portrait.path)).await
+    {
+        Ok(Ok(bytes)) => (
+            [
+                (header::CONTENT_TYPE, "image/png"),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            bytes,
+        )
+            .into_response(),
+        _ => StatusCode::UNPROCESSABLE_ENTITY.into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct PortraitSelection {
+    id: String,
+}
+
+async fn set_liveportrait_source(
+    State(state): State<ApiState>,
+    Json(selection): Json<PortraitSelection>,
+) -> Response {
+    let _video = state.video_output_control.lock().await;
+    if !state.config.avatar.enabled {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "Avatar output is disabled"})),
+        )
+            .into_response();
+    }
+    if state.recorder.status().await.active {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "Stop recording before changing the portrait"})),
+        )
+            .into_response();
+    }
+    let (Some(restart), Some(settings)) = (&state.daemon_restart, &state.user_settings) else {
+        return (StatusCode::CONFLICT, Json(json!({"error": "Portrait changes require a supervised daemon and persistent settings"}))).into_response();
+    };
+    let portraits = match portrait_catalog(&state).await {
+        Ok(portraits) => portraits,
+        Err(error) => return command_error(error),
+    };
+    let Some(portrait) = portraits
+        .into_iter()
+        .find(|portrait| portrait.id == selection.id)
+    else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "This portrait is no longer available"})),
+        )
+            .into_response();
+    };
+    let path = portrait.path;
+    let validation_path = path.clone();
+    if !matches!(
+        tokio::task::spawn_blocking(move || crate::avatar_source::thumbnail(&validation_path))
+            .await,
+        Ok(Ok(_))
+    ) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "This file is not a supported portrait image"})),
+        )
+            .into_response();
+    }
+    if let Err(error) = settings.set_liveportrait_source(path).await {
+        return user_settings_error(error);
+    }
+    if let Err(error) = restart.request().await {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error": format!("Portrait saved; restart Tarsier to apply it: {error}")})),
+        )
+            .into_response();
+    }
+    (StatusCode::ACCEPTED, Json(json!({"restarting": true}))).into_response()
 }
 
 async fn device_settings(State(state): State<ApiState>) -> Response {
@@ -4561,6 +4676,120 @@ mod tests {
         let events = runtime.recent_events().await;
         assert_eq!(events[0].kind, "video.output.mode");
         assert_eq!(events[0].data["mode"], "comic-avatar");
+    }
+
+    #[tokio::test]
+    async fn portrait_selection_requires_supervision() {
+        let mut config = Config::default();
+        config.avatar.enabled = true;
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = router(config, Runtime::new(), PreviewHub::new(), None, shutdown_rx);
+        let response = app
+            .oneshot(
+                Request::post("/api/v1/video/liveportrait/source")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"id":"unknown"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn portrait_gallery_selects_existing_file_and_requests_restart() {
+        let mut config = Config::default();
+        config.avatar.enabled = true;
+        let directory =
+            std::env::temp_dir().join(format!("tarsier-portrait-{:032x}", rand::random::<u128>()));
+        let path = directory.join("settings.json");
+        let fallback = UserSettings::from_config(&config);
+        let (settings, _) = UserSettingsStore::load(path.clone(), fallback.clone())
+            .await
+            .unwrap();
+        let (restart_tx, mut restart_rx) = oneshot::channel();
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = router_with_controls(
+            config,
+            Runtime::new(),
+            PreviewHub::new(),
+            None,
+            ApiOptions {
+                user_settings: Some(settings),
+                daemon_restart: Some(DaemonRestart::new(restart_tx)),
+                ..ApiOptions::default()
+            },
+            shutdown_rx,
+        );
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/video/liveportrait/source")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let portraits: Vec<Value> = serde_json::from_slice(&bytes).unwrap();
+        let portrait = portraits
+            .iter()
+            .find(|p| p["name"] == "liveportrait-default.png")
+            .unwrap();
+        assert!(portrait.get("path").is_none());
+        assert_eq!(portrait["selected"], true);
+        let id = portrait["id"].as_str().unwrap();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get(format!("/api/v1/video/liveportrait/source/{id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "image/png");
+        let invalid = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/video/liveportrait/source")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"id":"../../etc/passwd"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(invalid.status(), StatusCode::NOT_FOUND);
+        assert!(restart_rx.try_recv().is_err());
+        assert!(!path.exists());
+        let response = app
+            .oneshot(
+                Request::post("/api/v1/video/liveportrait/source")
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({"id":id}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        restart_rx.await.unwrap();
+        let (_, restored) = UserSettingsStore::load(path, fallback.clone())
+            .await
+            .unwrap();
+        assert_eq!(restored.video_identity, fallback.video_identity);
+        assert_eq!(
+            restored.liveportrait_source.unwrap(),
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("assets/avatars/liveportrait-default.png")
+                .canonicalize()
+                .unwrap()
+        );
+        assert!(!directory.join("portraits").exists());
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[tokio::test]
