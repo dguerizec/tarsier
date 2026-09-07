@@ -18,15 +18,110 @@ const BLOCK_BYTES: usize = 3840;
 const CHUNK_BYTES: usize = BLOCK_BYTES * 8;
 const MAX_AGE: Duration = Duration::from_millis(650);
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct VoiceState {
     pub enabled: bool,
+    #[serde(default = "default_model")]
+    pub model: String,
+    #[serde(skip)]
+    pub generation: u64,
     pub pitch: i32,
     pub ready: bool,
     pub inference_ms: Option<f32>,
     pub pipeline_ms: Option<u64>,
     pub dropped_chunks: u64,
     pub error: Option<String>,
+}
+
+pub fn default_model() -> String {
+    "FrenchWoman.pth".into()
+}
+
+impl Default for VoiceState {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            model: default_model(),
+            generation: 0,
+            pitch: 0,
+            ready: false,
+            inference_ms: None,
+            pipeline_ms: None,
+            dropped_chunks: 0,
+            error: None,
+        }
+    }
+}
+
+pub fn valid_model_name(name: &str) -> bool {
+    name.len() <= 120
+        && name.len() > 4
+        && !name.starts_with('.')
+        && name.ends_with(".pth")
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b" ._-".contains(&b))
+}
+
+#[derive(Serialize)]
+pub struct Model {
+    pub id: String,
+    pub name: String,
+}
+
+pub fn models(directory: &std::path::Path) -> anyhow::Result<Vec<Model>> {
+    let mut models = Vec::new();
+    if !directory.exists() {
+        return Ok(models);
+    }
+    for entry in std::fs::read_dir(directory)? {
+        let entry = entry?;
+        let id = entry.file_name().to_string_lossy().into_owned();
+        if valid_model_name(&id) && entry.file_type()?.is_file() {
+            let name = match id.as_str() {
+                "FrenchWoman.pth" => "French Woman — DantSu (French)".into(),
+                "Shigure.pth" => "Shigure Tokina — Marukoro (Japanese)".into(),
+                _ => id.trim_end_matches(".pth").to_owned(),
+            };
+            models.push(Model { id, name });
+        }
+    }
+    models.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(models)
+}
+
+pub fn model_path(directory: &std::path::Path, name: &str) -> anyhow::Result<std::path::PathBuf> {
+    anyhow::ensure!(valid_model_name(name), "Invalid model filename");
+    let path = directory.join(name);
+    anyhow::ensure!(
+        std::fs::symlink_metadata(&path)?.file_type().is_file(),
+        "Model must be a regular file"
+    );
+    Ok(path.canonicalize()?)
+}
+
+pub fn install_model(directory: &std::path::Path, name: &str, bytes: &[u8]) -> anyhow::Result<()> {
+    use std::io::Write;
+    anyhow::ensure!(
+        valid_model_name(name),
+        "Use a .pth filename with letters, numbers, spaces, dots, hyphens or underscores"
+    );
+    anyhow::ensure!(!bytes.is_empty(), "Model file is empty");
+    std::fs::create_dir_all(directory)?;
+    let temporary = directory.join(format!(".upload-{:032x}", rand::random::<u128>()));
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        // Publish atomically without replacing an installed or currently loaded model.
+        std::fs::hard_link(&temporary, directory.join(name))?;
+        Ok::<_, anyhow::Error>(())
+    })();
+    let _ = std::fs::remove_file(temporary);
+    result
 }
 
 struct Request {
@@ -52,6 +147,7 @@ pub struct Bridge {
     playback: VecDeque<(Vec<u8>, Instant)>,
     generation: u64,
     reset_worker: bool,
+    pub model_generation: u64,
     pub dropped: u64,
     pub inference_ms: Option<f32>,
     pub pipeline_ms: Option<u64>,
@@ -64,10 +160,16 @@ impl Drop for Bridge {
 }
 
 impl Bridge {
-    pub fn new(command: Vec<String>, runtime: Runtime) -> Self {
+    pub fn new(command: Vec<String>, runtime: Runtime, model_generation: u64) -> Self {
         let (input, requests) = mpsc::channel(1);
         let (responses, output) = mpsc::channel(1);
-        let task = tokio::spawn(supervise(command, requests, responses, runtime));
+        let task = tokio::spawn(supervise(
+            command,
+            requests,
+            responses,
+            runtime,
+            model_generation,
+        ));
         Self {
             input,
             output,
@@ -77,6 +179,7 @@ impl Bridge {
             playback: VecDeque::new(),
             generation: 0,
             reset_worker: true,
+            model_generation,
             dropped: 0,
             inference_ms: None,
             pipeline_ms: None,
@@ -145,14 +248,24 @@ async fn supervise(
     mut requests: mpsc::Receiver<Request>,
     responses: mpsc::Sender<Response>,
     runtime: Runtime,
+    model_generation: u64,
 ) {
     loop {
-        let result = run(&command, &mut requests, &responses, &runtime).await;
+        let result = run(
+            &command,
+            &mut requests,
+            &responses,
+            &runtime,
+            model_generation,
+        )
+        .await;
         let error = result.err().map(|error| error.to_string());
         runtime
             .update(|s| {
-                s.audio_voice.ready = false;
-                s.audio_voice.error = error;
+                if s.audio_voice.generation == model_generation {
+                    s.audio_voice.ready = false;
+                    s.audio_voice.error = error;
+                }
             })
             .await;
         if requests.is_closed() {
@@ -167,6 +280,7 @@ async fn run(
     requests: &mut mpsc::Receiver<Request>,
     responses: &mpsc::Sender<Response>,
     runtime: &Runtime,
+    model_generation: u64,
 ) -> anyhow::Result<()> {
     use anyhow::{Context, bail};
     let program = command.first().context("No voice worker configured")?;
@@ -183,14 +297,17 @@ async fn run(
     let mut magic = [0; 4];
     timeout(Duration::from_secs(60), reader.read_exact(&mut magic))
         .await
-        .context("Voice model startup timed out")??;
+        .context("Voice model startup timed out")?
+        .context("Could not load voice model; choose a compatible RVC .pth file")?;
     if &magic != b"RVC1" {
         bail!("Invalid voice worker handshake");
     }
     runtime
         .update(|s| {
-            s.audio_voice.ready = true;
-            s.audio_voice.error = None;
+            if s.audio_voice.generation == model_generation {
+                s.audio_voice.ready = true;
+                s.audio_voice.error = None;
+            }
         })
         .await;
     let mut reset = true;
@@ -231,6 +348,47 @@ async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_import_is_atomic_and_does_not_replace_files_or_follow_links() {
+        let dir =
+            std::env::temp_dir().join(format!("tarsier-models-{:032x}", rand::random::<u128>()));
+        install_model(&dir, "Sample Voice.pth", b"first").unwrap();
+        assert!(install_model(&dir, "Sample Voice.pth", b"replacement").is_err());
+        assert_eq!(
+            std::fs::read(dir.join("Sample Voice.pth")).unwrap(),
+            b"first"
+        );
+        for name in ["../outside.pth", "/outside.pth", "voice.zip", ".hidden.pth"] {
+            assert!(install_model(&dir, name, b"invalid").is_err());
+        }
+        assert!(install_model(&dir, "empty.pth", b"").is_err());
+        std::os::unix::fs::symlink(dir.join("Sample Voice.pth"), dir.join("link.pth")).unwrap();
+        assert!(model_path(&dir, "link.pth").is_err());
+        let listed = models(&dir).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "Sample Voice.pth");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_old_model_cannot_publish_readiness_after_reselection() {
+        let runtime = Runtime::new();
+        runtime.update(|s| s.audio_voice.generation = 2).await;
+        let (sender, mut requests) = mpsc::channel(1);
+        drop(sender);
+        let (responses, _receiver) = mpsc::channel(1);
+        let command = vec!["sh".into(), "-c".into(), "printf RVC1".into()];
+        run(&command, &mut requests, &responses, &runtime, 0)
+            .await
+            .unwrap();
+        assert!(!runtime.state().await.audio_voice.ready);
+        run(&command, &mut requests, &responses, &runtime, 2)
+            .await
+            .unwrap();
+        assert!(runtime.state().await.audio_voice.ready);
+    }
     #[tokio::test]
     async fn reset_discards_inflight_results_and_stale_audio() {
         let (input, _requests) = mpsc::channel(1);
@@ -244,6 +402,7 @@ mod tests {
             playback: VecDeque::new(),
             generation: 0,
             reset_worker: false,
+            model_generation: 0,
             dropped: 0,
             inference_ms: None,
             pipeline_ms: None,

@@ -5,6 +5,7 @@ bind = "127.0.0.1:8743"
 [audio]
 reserve_inputs = false
 voice_worker = ["tools/voice-rvc"]
+voice_models_dir = ".voice-conversion/voice-model"
 virtual_source = "tarsier_voice_conversion"
 virtual_output_enabled = true
 set_default_source = false

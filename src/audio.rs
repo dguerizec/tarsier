@@ -646,6 +646,12 @@ impl AudioHub {
                 (pcm.to_vec(), crate::audio_gain::GainStatus::default())
             };
             let voice_settings = state.audio_voice.clone();
+            if voice
+                .as_ref()
+                .is_some_and(|v| v.model_generation != voice_settings.generation)
+            {
+                voice.take();
+            }
             if voice_settings.enabled && voice.is_none() {
                 runtime
                     .update(|s| {
@@ -653,9 +659,20 @@ impl AudioHub {
                         s.audio_voice.error = None;
                     })
                     .await;
+                let mut command = self.config.voice_worker.clone();
+                if let Some(directory) = &self.config.voice_models_dir {
+                    command.push("--model".into());
+                    command.push(
+                        directory
+                            .join(&voice_settings.model)
+                            .to_string_lossy()
+                            .into_owned(),
+                    );
+                }
                 voice = Some(crate::voice::Bridge::new(
-                    self.config.voice_worker.clone(),
+                    command,
                     runtime.clone(),
+                    voice_settings.generation,
                 ));
                 voice_key = None;
             } else if !voice_settings.enabled && voice.take().is_some() {
@@ -715,6 +732,7 @@ impl AudioHub {
                 && latest.audio_virtual.source == settings.source
                 && latest.audio_voice.enabled == voice_settings.enabled
                 && latest.audio_voice.pitch == voice_settings.pitch
+                && latest.audio_voice.generation == voice_settings.generation
                 && (!voice_settings.enabled || latest.audio_voice.ready)
                 && latest
                     .audio_virtual
