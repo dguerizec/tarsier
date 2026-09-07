@@ -282,6 +282,7 @@ pub fn router_with_controls(
         .route("/api/v1/daemon/restart", post(restart_daemon))
         .route("/api/v1/state", get(current_state))
         .route("/api/v1/camera/state", get(camera_state))
+        .route("/api/v1/camera/position", get(camera_position))
         .route("/api/v1/camera/power", post(set_camera_power))
         .route("/api/v1/camera/move", post(move_camera))
         .route("/api/v1/camera/nudge/{direction}", post(nudge_camera))
@@ -359,8 +360,9 @@ pub fn router_with_controls(
             "/api/v1/camera/photos/{filename}/open",
             post(open_saved_photo),
         )
-        // Only the fourteen gateway operations are exposed on the MCP destination.
+        // Only the fifteen gateway operations are exposed on the MCP destination.
         .route("/mcp/api/v1/state", get(current_state))
+        .route("/mcp/api/v1/camera/position", get(camera_position))
         .route("/mcp/api/v1/config", get(effective_config))
         .route("/mcp/api/v1/events/recent", get(recent_events))
         .route("/mcp/api/v1/scenarios", get(scenarios))
@@ -788,6 +790,29 @@ async fn camera_state(State(state): State<ApiState>) -> Json<crate::model::Camer
     Json(state.runtime.state().await.camera)
 }
 
+async fn camera_position(State(state): State<ApiState>) -> Json<Value> {
+    let camera = state.runtime.state().await.camera;
+    let zoom_source = if camera.zoom_magnification.is_none() {
+        "unavailable"
+    } else if camera.zoom_sample_at_ms.is_some() {
+        "measured"
+    } else {
+        "last-commanded"
+    };
+    Json(json!({
+        "available": camera.available,
+        "pan_degrees": camera.yaw_degrees,
+        "tilt_degrees": camera.pitch_degrees,
+        "zoom_magnification": camera.zoom_magnification,
+        "orientation_source": camera.attitude_source,
+        "orientation_sample_at_ms": camera.sample_at_ms,
+        "zoom_source": zoom_source,
+        "zoom_sample_at_ms": camera.zoom_sample_at_ms,
+        "orientation_error": camera.telemetry_error,
+        "zoom_error": camera.zoom_error,
+    }))
+}
+
 async fn camera_presets(State(state): State<ApiState>) -> Json<Vec<CameraPresetConfig>> {
     Json(state.config.presets)
 }
@@ -798,6 +823,8 @@ struct MoveCameraRequest {
     pitch: f32,
     #[serde(default)]
     roll: f32,
+    #[serde(default)]
+    zoom: Option<f32>,
 }
 
 #[derive(Deserialize)]
@@ -1066,6 +1093,14 @@ async fn move_camera(
     let Some(camera) = state.camera.clone() else {
         return camera_unavailable();
     };
+    if let Err(error) = camera.validate_orientation(request.yaw, request.pitch, request.roll) {
+        return command_error(error);
+    }
+    if let Some(zoom) = request.zoom
+        && let Err(error) = CameraHandle::validate_zoom(zoom)
+    {
+        return command_error(error);
+    }
     if let Err(error) = disable_tracking_for_manual_control(&state, &camera).await {
         return command_error(error);
     }
@@ -1081,6 +1116,22 @@ async fn move_camera(
                 json!({"yaw": request.yaw, "pitch": request.pitch, "roll": request.roll}),
             )
             .await;
+            if let Some(magnification) = request.zoom {
+                let response = set_zoom(State(state), Json(ZoomRequest { magnification })).await;
+                if !response.status().is_success() {
+                    let status = response.status();
+                    let detail = axum::body::to_bytes(response.into_body(), 4096)
+                        .await
+                        .ok()
+                        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+                    return (status, Json(json!({
+                        "error": "Camera orientation was commanded, but zoom failed. Read the camera position before retrying.",
+                        "orientation_commanded": true,
+                        "zoom_confirmed": false,
+                        "detail": detail,
+                    }))).into_response();
+                }
+            }
             StatusCode::ACCEPTED.into_response()
         }
         Err(error) => command_error(error),
@@ -3975,6 +4026,119 @@ mod tests {
             assert!(!state.camera.face_tracking.enabled);
             assert!(!state.camera.face_tracking.auto_zoom.enabled);
         }
+    }
+
+    #[tokio::test]
+    async fn mcp_move_with_zoom_validates_before_side_effects_and_reports_position() {
+        let mut config = Config::default();
+        config.camera.adapter = CameraAdapter::Mock;
+        config.video.loopback_enabled = false;
+        let runtime = Runtime::new();
+        let camera = camera::start(config.camera.clone(), runtime.clone())
+            .await
+            .unwrap();
+        let (_stop, shutdown) = watch::channel(false);
+        let app = router(config, runtime.clone(), PreviewHub::new(), camera, shutdown);
+        let enable = app
+            .clone()
+            .oneshot(
+                Request::post("/mcp/api/v1/camera/tracking")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"enabled":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(enable.status(), StatusCode::ACCEPTED);
+        let before = runtime.state().await.camera;
+        for body in [
+            json!({"yaw": 10, "pitch": -5, "zoom": 4.1}),
+            json!({"yaw": 1000, "pitch": 0, "zoom": 2}),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post("/mcp/api/v1/camera/move")
+                        .header("content-type", "application/json")
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+            let after = runtime.state().await.camera;
+            assert_eq!(after.tracking, Some(true));
+            assert_eq!(after.yaw_degrees, before.yaw_degrees);
+            assert_eq!(after.zoom_magnification, before.zoom_magnification);
+        }
+        for (body, pan, tilt) in [
+            (json!({"yaw": 10, "pitch": -5, "zoom": 2}), 10.0, -5.0),
+            (json!({"yaw": 20, "pitch": 0}), 20.0, 0.0),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post("/mcp/api/v1/camera/move")
+                        .header("content-type", "application/json")
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::ACCEPTED);
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::get("/mcp/api/v1/camera/position")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let position: Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap())
+                    .unwrap();
+            assert_eq!(position["pan_degrees"], pan);
+            assert_eq!(position["tilt_degrees"], tilt);
+            assert_eq!(position["zoom_magnification"], 2.0);
+            assert_eq!(position["orientation_source"], "last-commanded");
+            assert_eq!(position["zoom_source"], "last-commanded");
+            assert!(position["orientation_sample_at_ms"].is_u64());
+        }
+    }
+
+    #[tokio::test]
+    async fn camera_position_keeps_unknown_values_null() {
+        let (_stop, shutdown) = watch::channel(false);
+        let app = router(
+            Config::default(),
+            Runtime::new(),
+            PreviewHub::new(),
+            None,
+            shutdown,
+        );
+        let response = app
+            .oneshot(
+                Request::get("/mcp/api/v1/camera/position")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let position: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+        for field in [
+            "pan_degrees",
+            "tilt_degrees",
+            "zoom_magnification",
+            "orientation_sample_at_ms",
+            "zoom_sample_at_ms",
+        ] {
+            assert!(position[field].is_null(), "{field}");
+        }
+        assert_eq!(position["orientation_source"], "unavailable");
+        assert_eq!(position["zoom_source"], "unavailable");
     }
 
     #[tokio::test]
