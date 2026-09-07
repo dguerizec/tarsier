@@ -1,3 +1,5 @@
+mod led;
+pub(crate) use led::LedMode;
 mod linux_uvc;
 mod protocol;
 
@@ -41,6 +43,9 @@ pub const PAN_TILT_LEASE: Duration = Duration::from_millis(350);
 #[derive(Debug)]
 enum Command {
     Shutdown,
+    Led {
+        mode: LedMode,
+    },
     Power {
         enabled: bool,
     },
@@ -205,6 +210,13 @@ pub struct CameraHandle {
 }
 
 impl CameraHandle {
+    /// Accept a desired mode; USB application is asynchronous with bounded retries.
+    /// Internal backend control; no API, MCP tool, or persisted user setting.
+    #[allow(dead_code)] // Usage policy is deliberately deferred; production stays off.
+    pub(crate) async fn set_led_mode(&self, mode: LedMode) -> Result<()> {
+        self.request(Command::Led { mode }).await.map(|_| ())
+    }
+
     pub async fn shutdown(&self) -> Result<()> {
         self.request(Command::Shutdown).await?;
         if let Some(task) = self.telemetry.lock().await.take() {
@@ -453,6 +465,7 @@ fn spawn_worker<T: XuTransport + 'static>(
         .name("tarsier-camera-owner".into())
         .spawn(move || {
             Worker::new(transport, rx, interval)
+                .with_led_control()
                 .with_power_state(worker_powered_on)
                 .with_telemetry(poll_interval, telemetry_tx)
                 .run()
@@ -475,6 +488,7 @@ fn spawn_worker<T: XuTransport + 'static>(
 }
 
 struct Worker<T> {
+    led: Option<led::Led>,
     transport: T,
     rx: Receiver<Request>,
     sequence: u16,
@@ -492,6 +506,7 @@ struct Worker<T> {
 impl<T: XuTransport> Worker<T> {
     fn new(transport: T, rx: Receiver<Request>, minimum_interval: Duration) -> Self {
         Self {
+            led: None,
             transport,
             rx,
             sequence: 0,
@@ -504,6 +519,53 @@ impl<T: XuTransport> Worker<T> {
             last_hdr_switch: None,
             telemetry: None,
             powered_on: Arc::new(AtomicBool::new(true)),
+        }
+    }
+
+    fn with_led_control(mut self) -> Self {
+        self.led = Some(led::Led::new(Instant::now()));
+        self
+    }
+
+    fn update_led(&mut self) {
+        if !self.powered_on.load(Ordering::Relaxed) {
+            return;
+        }
+        let Some(led) = &self.led else {
+            return;
+        };
+        if Instant::now() < led.retry_at {
+            return;
+        }
+        let initialized = led.initialized;
+        let result = (|| -> Result<()> {
+            if !initialized {
+                let mut frame = [0; FRAME_SIZE];
+                frame[..3].copy_from_slice(&[0x18, 1, 0]);
+                self.set(TRACKING_SELECTOR, &mut frame)?;
+                self.led.as_mut().unwrap().initialized = true;
+            }
+            let led = self.led.as_ref().unwrap();
+            let level = led.brightness(Instant::now());
+            if led.applied != Some(level) {
+                let mut frame = [0; FRAME_SIZE];
+                frame[..3].copy_from_slice(&[0x1a, 1, level]);
+                self.set(TRACKING_SELECTOR, &mut frame)?;
+                self.led.as_mut().unwrap().applied = Some(level);
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            self.led.as_mut().unwrap().failed(Instant::now());
+            tracing::warn!(%error, "camera LED update failed; retrying in five seconds");
+        }
+    }
+
+    fn extinguish_led(&mut self) {
+        if let Some(led) = &mut self.led {
+            led.set_mode(LedMode::Off, Instant::now());
+            led.invalidate(Instant::now());
+            self.update_led();
         }
     }
 
@@ -531,6 +593,7 @@ impl<T: XuTransport> Worker<T> {
                         if self.pan_tilt_direction != (0, 0) {
                             let _ = self.transport.set_pan_tilt_speed_units(0, 0);
                         }
+                        self.extinguish_led();
                         drop(self);
                         let _ = request.response.send(Ok(CommandOutcome::Applied));
                         return;
@@ -549,9 +612,11 @@ impl<T: XuTransport> Worker<T> {
                     if self.pan_tilt_direction != (0, 0) {
                         let _ = self.transport.set_pan_tilt_speed_units(0, 0);
                     }
+                    self.extinguish_led();
                     break;
                 }
             }
+            self.update_led();
         }
     }
 
@@ -563,6 +628,12 @@ impl<T: XuTransport> Worker<T> {
         }
         match command {
             Command::Shutdown => unreachable!("shutdown is handled by the owner loop"),
+            Command::Led { mode } => {
+                if let Some(led) = &mut self.led {
+                    led.set_mode(mode, Instant::now());
+                }
+                Ok(CommandOutcome::Applied)
+            }
             Command::Power { enabled } => {
                 self.set_powered_on(enabled)?;
                 Ok(CommandOutcome::Applied)
@@ -712,6 +783,9 @@ impl<T: XuTransport> Worker<T> {
         };
         self.set(VENDOR_SELECTOR, &mut frame)?;
         self.powered_on.store(enabled, Ordering::Relaxed);
+        if let Some(led) = &mut self.led {
+            led.invalidate(Instant::now());
+        }
         if enabled {
             std::thread::sleep(Duration::from_millis(100));
         }
@@ -1064,7 +1138,8 @@ fn spawn_mock(config: &CameraConfig) -> CameraHandle {
                         worker_powered_on.store(enabled, Ordering::Relaxed);
                         Ok(CommandOutcome::Applied)
                     }
-                    Command::Move { .. }
+                    Command::Led { .. }
+                    | Command::Move { .. }
                     | Command::Recenter
                     | Command::Tracking { .. }
                     | Command::Hdr { .. }
@@ -1308,6 +1383,61 @@ fn adapter_name(adapter: CameraAdapter) -> &'static str {
 mod tests {
     use super::*;
 
+    #[test]
+    fn led_initializes_once_and_reapplies_after_sleep() {
+        let (_tx, rx) = sync_channel(1);
+        let mut worker =
+            Worker::new(RecordingTransport::default(), rx, Duration::ZERO).with_led_control();
+        worker.update_led();
+        assert_eq!(worker.transport.writes.len(), 2);
+        assert_eq!(worker.transport.writes[0].0, TRACKING_SELECTOR);
+        assert_eq!(&worker.transport.writes[0].1[..3], &[0x18, 1, 0]);
+        assert_eq!(&worker.transport.writes[1].1[..3], &[0x1a, 1, 0]);
+        assert!(worker.transport.writes[1].1[3..].iter().all(|b| *b == 0));
+        worker.update_led();
+        assert_eq!(worker.transport.writes.len(), 2);
+        worker
+            .execute(Command::Led {
+                mode: LedMode::Steady,
+            })
+            .unwrap();
+        worker.update_led();
+        assert_eq!(
+            &worker.transport.writes.last().unwrap().1[..3],
+            &[0x1a, 1, 3]
+        );
+        worker.set_powered_on(false).unwrap();
+        let count = worker.transport.writes.len();
+        worker.update_led();
+        assert_eq!(worker.transport.writes.len(), count);
+        worker.set_powered_on(true).unwrap();
+        worker.update_led();
+        assert_eq!(
+            &worker.transport.writes.last().unwrap().1[..3],
+            &[0x1a, 1, 3]
+        );
+        worker.extinguish_led();
+        assert_eq!(
+            &worker.transport.writes.last().unwrap().1[..3],
+            &[0x1a, 1, 0]
+        );
+    }
+
+    #[test]
+    fn led_failure_backoff_suppresses_io_until_retry() {
+        let (_tx, rx) = sync_channel(1);
+        let mut worker =
+            Worker::new(RecordingTransport::default(), rx, Duration::ZERO).with_led_control();
+        worker.transport.fail_led_once = true;
+        worker.update_led();
+        assert!(worker.led.as_ref().unwrap().retry_at > Instant::now());
+        worker.update_led();
+        assert!(worker.transport.writes.is_empty());
+        worker.led.as_mut().unwrap().retry_at = Instant::now();
+        worker.update_led();
+        assert_eq!(worker.transport.writes.len(), 2);
+    }
+
     struct ReplyingTransport {
         request: Option<[u8; FRAME_SIZE]>,
         operations: Vec<&'static str>,
@@ -1327,6 +1457,7 @@ mod tests {
 
     #[derive(Default)]
     struct RecordingTransport {
+        fail_led_once: bool,
         writes: Vec<(u8, [u8; FRAME_SIZE])>,
         zoom_units: Vec<i32>,
         pan_tilt_speed_units: Vec<(i32, i32)>,
@@ -1355,6 +1486,10 @@ mod tests {
 
     impl XuTransport for RecordingTransport {
         fn set(&mut self, selector: u8, data: &mut [u8]) -> Result<()> {
+            if selector == TRACKING_SELECTOR && self.fail_led_once {
+                self.fail_led_once = false;
+                bail!("injected LED transport failure");
+            }
             if selector == TRACKING_SELECTOR && data[..2] == [0x03, 0x01] {
                 self.face_priority_auto_exposure = data[2] != 0;
             }

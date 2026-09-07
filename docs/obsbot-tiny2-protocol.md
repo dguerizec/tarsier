@@ -487,3 +487,28 @@ the next measured sample arrives.
 The executable protocol logic and packet fixtures live in
 `src/camera/protocol.rs`; Linux UVC transport lives in
 `src/camera/linux_uvc.rs`.
+
+## Backend LED control
+
+The camera-owner thread now owns LED writes alongside other camera I/O.
+Its internal desired modes are off, steady at brightness three, and host-timed
+blinking at three cycles per second. No HTTP endpoint, MCP tool, configuration
+field, or user setting exposes these modes. Usage mapping is deliberately
+unassigned: the daemon currently requests only off, regardless of recording
+or virtual-camera consumers.
+
+On startup and after waking, the owner disables the native special pattern
+and applies the desired brightness. Stable brightness is not repeatedly
+written. Blink phase follows monotonic elapsed time, skipping missed phases
+instead of issuing catch-up bursts. Camera I/O pacing still applies, so this
+is a best-effort cadence, not a real-time guarantee. Failed LED updates log a
+warning and retry after five seconds without stopping camera control. Sleep
+suspends LED writes; shutdown makes a best-effort attempt to leave it off.
+The internal mode setter acknowledges the desired state, not device readback.
+
+Validation: the backend suite passed 221 tests (one ignored); focused camera
+coverage includes mode timing, repeated-state suppression, wake restoration,
+shutdown extinction, and transport-failure backoff. After loading the build,
+selector-6 status byte 33 read zero. Daemon health was OK, with approximately
+30 fps and no pipeline restarts. The readback briefly paused the owner to
+serialize this external diagnostic; no production LED path pauses the daemon.
