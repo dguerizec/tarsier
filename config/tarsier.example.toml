@@ -53,8 +53,8 @@ engine = "stylized-3d"
 profile = "assets/avatars/stylized-3d.json"
 # Optional versioned runtime export for the Personal 3D identity.
 portrait_model = "assets/avatars/portrait/current"
-# Kept ready for the optional LivePortrait fallback.
-source_image = "assets/avatars/liveportrait-source.png"
+# Bundled fictional portrait for LivePortrait; set a custom local path to override.
+source_image = "assets/avatars/liveportrait-default.png"
 fps = 30
 compile = false
 

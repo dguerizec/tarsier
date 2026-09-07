@@ -225,7 +225,7 @@ impl Default for AvatarConfig {
             engine: AvatarEngine::default(),
             profile: "assets/avatars/stylized-3d.json".into(),
             portrait_model: "assets/avatars/portrait/current".into(),
-            source_image: "assets/avatars/liveportrait-source.png".into(),
+            source_image: "assets/avatars/liveportrait-default.png".into(),
             fps: 15,
             compile: true,
         }
@@ -409,7 +409,32 @@ mod tests {
     #[test]
     fn example_configuration_is_loadable() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("config/tarsier.example.toml");
-        Config::load(Some(&path)).unwrap();
+        let example = Config::load(Some(&path)).unwrap();
+        let default_source = AvatarConfig::default().source_image;
+        assert_eq!(example.avatar.source_image, default_source);
+        assert!(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(default_source)
+                .is_file()
+        );
+    }
+
+    #[test]
+    fn avatar_source_defaults_without_replacing_explicit_custom_portraits() {
+        let omitted: Config = toml::from_str("[avatar]\nenabled = true").unwrap();
+        assert_eq!(
+            omitted.avatar.source_image,
+            AvatarConfig::default().source_image
+        );
+
+        for source in [
+            "assets/avatars/liveportrait-source.png",
+            "/tmp/custom-portrait.png",
+        ] {
+            let config: Config =
+                toml::from_str(&format!("[avatar]\nsource_image = {source:?}")).unwrap();
+            assert_eq!(config.avatar.source_image, PathBuf::from(source));
+        }
     }
 
     #[test]

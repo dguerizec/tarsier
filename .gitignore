@@ -12,3 +12,4 @@ __pycache__/
 
 /assets/avatars/portrait/current/
 /assets/avatars/*.png
+!/assets/avatars/liveportrait-default.png
