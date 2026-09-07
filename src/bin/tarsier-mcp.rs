@@ -44,7 +44,7 @@ struct MoveCameraParams {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct TrackingParams {
-    #[schemars(description = "Whether built-in camera tracking should be enabled")]
+    #[schemars(description = "Whether this tracking or auto-zoom mode should be enabled")]
     enabled: bool,
 }
 
@@ -164,7 +164,7 @@ impl TarsierGateway {
     }
 
     #[tool(
-        description = "Enable or disable the camera's built-in tracking",
+        description = "Enable or disable built-in camera tracking. Prefer this mode when smooth camera movement matters most. Enabling it disables Tarsier face tracking and auto zoom.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -172,10 +172,55 @@ impl TarsierGateway {
             open_world_hint = false
         )
     )]
-    async fn set_tracking(&self, Parameters(params): Parameters<TrackingParams>) -> CallToolResult {
+    async fn set_camera_tracking(
+        &self,
+        Parameters(params): Parameters<TrackingParams>,
+    ) -> CallToolResult {
         self.request(
             Method::POST,
             "/api/v1/camera/tracking",
+            Some(json!({"enabled": params.enabled})),
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Enable or disable Tarsier face/shoulder tracking. Prefer this mode by default for framing. Enabling it disables built-in camera tracking; auto zoom must be requested separately.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn set_face_tracking(
+        &self,
+        Parameters(params): Parameters<TrackingParams>,
+    ) -> CallToolResult {
+        self.request(
+            Method::POST,
+            "/api/v1/camera/face-tracking",
+            Some(json!({"enabled": params.enabled})),
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Enable or disable auto zoom for Tarsier face tracking. Enable face tracking first. Only enable zoom when the user requests it; calibration preserves the current face size.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn set_auto_zoom(
+        &self,
+        Parameters(params): Parameters<TrackingParams>,
+    ) -> CallToolResult {
+        self.request(
+            Method::POST,
+            "/api/v1/camera/auto-zoom",
             Some(json!({"enabled": params.enabled})),
         )
         .await
@@ -281,7 +326,7 @@ impl TarsierGateway {
 #[tool_handler(
     name = "tarsier",
     version = "0.1.0",
-    instructions = "Inspect and safely control the local Tarsier camera daemon. Camera movement is bounded by daemon configuration, and every mutation is recorded as an event. Mutations are blocked while another application uses the virtual camera; read-only tools remain available."
+    instructions = "Inspect and safely control the local Tarsier camera daemon. Camera movement is bounded by daemon configuration, and every mutation is recorded as an event. Prefer set_face_tracking for framing, or set_camera_tracking when smoother movement is requested. Do not switch modes automatically. Enable set_auto_zoom only when requested, after face tracking. Mutations are blocked while another application uses the virtual camera; read-only tools remain available."
 )]
 impl ServerHandler for TarsierGateway {}
 
@@ -367,7 +412,11 @@ mod tests {
 
         let client = ().serve(client_transport).await.unwrap();
         let tools = client.list_all_tools().await.unwrap();
-        assert_eq!(tools.len(), 11);
+        assert_eq!(tools.len(), 13);
+        for name in ["set_camera_tracking", "set_face_tracking", "set_auto_zoom"] {
+            assert!(tools.iter().any(|tool| tool.name == name));
+        }
+        assert!(!tools.iter().any(|tool| tool.name == "set_tracking"));
         assert!(tools.iter().any(|tool| tool.name == "get_state"));
 
         let result = client
@@ -419,8 +468,12 @@ mod tests {
             ("move_camera", json!({"yaw": 0, "pitch": 0})),
             ("recenter_camera", json!({})),
             ("recall_camera_preset", json!({"id": "test"})),
-            ("set_tracking", json!({"enabled": true})),
-            ("set_tracking", json!({"enabled": false})),
+            ("set_camera_tracking", json!({"enabled": true})),
+            ("set_camera_tracking", json!({"enabled": false})),
+            ("set_face_tracking", json!({"enabled": true})),
+            ("set_face_tracking", json!({"enabled": false})),
+            ("set_auto_zoom", json!({"enabled": true})),
+            ("set_auto_zoom", json!({"enabled": false})),
             ("trigger_scenario", json!({"id": "test"})),
         ] {
             let result = client
@@ -437,7 +490,7 @@ mod tests {
                     .contains("409 Conflict")
             );
         }
-        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 6);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 10);
         client.cancel().await.unwrap();
         server.await.unwrap();
         daemon.abort();
