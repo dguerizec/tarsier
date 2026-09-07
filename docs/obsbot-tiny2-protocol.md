@@ -126,6 +126,42 @@ owner enforces. On the tested camera, an enabled-to-disabled-to-enabled round
 trip was confirmed by readback without USB re-enumeration or a pipeline restart.
 The effective frame rate dipped during reconfiguration and returned to 30 FPS.
 
+## LED brightness experiment
+
+On 2026-09-07, a bounded hardware experiment confirmed independent LED
+brightness control while the Tiny 2 continued producing video. This control is
+not yet exposed by Tarsier's API or UI.
+
+- Write: unit `2`, selector `6`, `SET_CUR`, 60-byte buffer beginning with
+  `[0x1a, 0x01, level]`, followed by zeros.
+- Read: unit `2`, selector `6`, `GET_CUR`, 60-byte status buffer; byte `0x21`
+  contains the brightness level.
+- Levels: `0` off, `1` low, `2` medium, `3` high.
+
+The write layout matches the Tiny-family UVC branch of libdev's
+`Device::sysMgSetLedBrightnessR(unsigned char)`. The packed `CameraStatus.tiny`
+definition in the [SDK header](https://github.com/aaronsb/obsbot-camera-control/blob/main/sdk/v1.0.2/include/dev/dev.hpp)
+documents `led_brightness_level` as off or one of three brightness levels.
+
+The sequence `3 -> 0 -> 1 -> 2 -> 3` returned the requested value at every
+readback. Only byte `0x21` changed in the sampled selector-6 status blocks.
+Snapshots of the camera reflected in a mirror visually confirmed extinction
+at zero and increasing green illumination at levels one through three.
+Exposure was automatic, so these images are not calibrated photometry.
+
+The existing daemon was briefly suspended during each standalone USB
+transaction and resumed in a `finally` block, preventing concurrent camera
+I/O. Capture descriptors remained open. After every transition, the pipeline
+reported running at approximately 30 FPS, with increasing frame counts,
+zero restarts, and no pipeline error. This establishes live video with the LED
+off, not frame-by-frame continuity during the brief process suspensions.
+The original level (`3`) and camera orientation were restored afterward.
+
+Color selection, hardware blinking, and persistence across power cycles were
+not tested. A future integration should execute these operations inside the
+existing camera-owner thread rather than use the experimental suspension
+method.
+
 ## Available image and perception surfaces
 
 The tested Tiny 2 advertises standard V4L2 controls for automatic/manual
