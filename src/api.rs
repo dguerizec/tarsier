@@ -359,7 +359,7 @@ pub fn router_with_controls(
             "/api/v1/camera/photos/{filename}/open",
             post(open_saved_photo),
         )
-        // Only the eleven gateway operations are exposed on the MCP destination.
+        // Only the thirteen gateway operations are exposed on the MCP destination.
         .route("/mcp/api/v1/state", get(current_state))
         .route("/mcp/api/v1/config", get(effective_config))
         .route("/mcp/api/v1/events/recent", get(recent_events))
@@ -368,6 +368,8 @@ pub fn router_with_controls(
         .route("/mcp/api/v1/camera/snapshot", get(snapshot))
         .route("/mcp/api/v1/camera/move", post(move_camera))
         .route("/mcp/api/v1/camera/tracking", post(set_tracking))
+        .route("/mcp/api/v1/camera/face-tracking", post(set_face_tracking))
+        .route("/mcp/api/v1/camera/auto-zoom", post(set_auto_zoom))
         .route("/mcp/api/v1/camera/actions/recenter", post(mcp_recenter))
         .route("/mcp/api/v1/camera/presets/{id}/recall", post(recall_camera_preset))
         .route("/mcp/api/v1/scenarios/{id}/trigger", post(trigger_scenario))
@@ -3867,6 +3869,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mcp_tracking_modes_are_exclusive_and_auto_zoom_is_explicit() {
+        let mut config = Config::default();
+        config.camera.adapter = CameraAdapter::Mock;
+        config.video.loopback_enabled = false;
+        let runtime = Runtime::new();
+        let camera = camera::start(config.camera.clone(), runtime.clone())
+            .await
+            .unwrap();
+        let (_stop, shutdown) = watch::channel(false);
+        let app = router(config, runtime.clone(), PreviewHub::new(), camera, shutdown);
+        for (mode, enabled, expected, camera_tracking, face_tracking, auto_zoom) in [
+            ("auto-zoom", true, StatusCode::CONFLICT, false, false, false),
+            ("tracking", true, StatusCode::ACCEPTED, true, false, false),
+            (
+                "face-tracking",
+                true,
+                StatusCode::ACCEPTED,
+                false,
+                true,
+                false,
+            ),
+            ("auto-zoom", true, StatusCode::ACCEPTED, false, true, true),
+            ("tracking", true, StatusCode::ACCEPTED, true, false, false),
+            (
+                "face-tracking",
+                true,
+                StatusCode::ACCEPTED,
+                false,
+                true,
+                false,
+            ),
+            (
+                "face-tracking",
+                false,
+                StatusCode::ACCEPTED,
+                false,
+                false,
+                false,
+            ),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post(format!("/mcp/api/v1/camera/{mode}"))
+                        .header("content-type", "application/json")
+                        .body(Body::from(json!({"enabled": enabled}).to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected, "{mode}");
+            let state = runtime.state().await;
+            assert_eq!(
+                state.camera.tracking.unwrap_or(false),
+                camera_tracking,
+                "{mode}"
+            );
+            assert_eq!(state.camera.face_tracking.enabled, face_tracking, "{mode}");
+            assert_eq!(
+                state.camera.face_tracking.auto_zoom.enabled, auto_zoom,
+                "{mode}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn mcp_mutations_require_inspection_but_reads_and_ui_do_not() {
         let mut config = Config::default();
         config.video.loopback_enabled = true;
@@ -3878,6 +3946,8 @@ mod tests {
             "/api/v1/camera/move",
             "/api/v1/camera/actions/recenter",
             "/api/v1/camera/tracking",
+            "/api/v1/camera/face-tracking",
+            "/api/v1/camera/auto-zoom",
             "/api/v1/camera/presets/test/recall",
             "/api/v1/scenarios/test/trigger",
         ] {
