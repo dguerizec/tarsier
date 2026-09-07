@@ -225,6 +225,29 @@ be reported as the last successfully sent request, not a measured device
 state. A daemon restart or external controller can invalidate that assumption
 unless the desired pattern is explicitly reapplied.
 
+### Host-driven fast blinking experiment
+
+A mirror trial on 2026-09-07 disabled the native pattern and alternated
+brightness zero and three at a target of three complete cycles per second
+for six seconds. All 36 writes returned the requested brightness on readback;
+the median interval between completed writes was approximately 166 ms.
+Captured mirror images confirmed repeated lit and dark phases consistent
+with this cadence. This uses host-timed brightness commands, not a native
+blink-speed parameter.
+
+The trial obtained 44 snapshots and encountered 41 HTTP 503 responses. The
+video-pipeline restart counter increased from one to three. The experimental
+helper briefly suspends the daemon for each USB exchange, including a 60 ms
+settling delay, to avoid concurrent camera access. This confounds the trial:
+it demonstrates visible fast blinking, but does not establish uninterrupted
+video operation or show whether the device itself causes these interruptions.
+A production feasibility test would need commands serialized within the
+existing camera-owner thread without suspending the daemon.
+
+Brightness three and the original camera orientation were restored, with the
+native pattern disabled. Final health was OK and video returned to about
+30 frames per second.
+
 ### Deeper local SDK inspection: indicator-state commands
 
 A subsequent static inspection used the exact local file
