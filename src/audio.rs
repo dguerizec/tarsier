@@ -311,11 +311,43 @@ enum Packet {
 #[derive(Clone, Default)]
 pub struct AudioHub {
     config: crate::config::AudioConfig,
+    reservation_policy: Arc<Mutex<Option<(bool, BTreeMap<String, bool>)>>>,
     channels: Arc<Mutex<HashMap<String, broadcast::Sender<Packet>>>>,
     terminated: Arc<Mutex<HashSet<ProcessIdentity>>>,
 }
 
 impl AudioHub {
+    pub fn reservation_config(&self) -> crate::config::AudioConfig {
+        let mut config = self.config.clone();
+        if let Some((enabled, preferences)) = self.reservation_policy.lock().unwrap().as_ref() {
+            config.reserve_inputs = *enabled;
+            config.input_reservations = preferences.clone();
+        }
+        config
+    }
+
+    pub async fn set_reservation_preferences(
+        &self,
+        runtime: &Runtime,
+        preferences: BTreeMap<String, bool>,
+    ) {
+        let previous = self.reservation_config();
+        *self.reservation_policy.lock().unwrap() = Some((true, preferences.clone()));
+        runtime
+            .update(|state| {
+                for source in state.audio_reservations.keys() {
+                    let reserved = preferences.get(source).copied().unwrap_or(true);
+                    if reserved != previous.auto_reserve(source) {
+                        state.audio_released_sources.retain(|id| id != source);
+                        if !reserved {
+                            state.audio_released_sources.push(source.clone());
+                        }
+                    }
+                }
+            })
+            .await;
+    }
+
     pub async fn inspect_applications(&self, source: &str) -> Result<SourceApplications> {
         let mut result = applications(source).await?;
         let mut terminated = self.terminated.lock().unwrap();
@@ -335,7 +367,7 @@ impl AudioHub {
         process: ProcessIdentity,
         signal: i32,
     ) -> Result<()> {
-        if !self.config.reserve_inputs {
+        if !self.reservation_config().reserve_inputs {
             bail!("Application termination is disabled by the shared audio policy");
         }
         if signal != 15 && signal != 9 {
@@ -391,11 +423,12 @@ impl AudioHub {
             shutdown.clone(),
         ));
         let connections = tokio::spawn(monitor_connections(
-            self.config.clone(),
+            self.clone(),
             runtime.clone(),
             shutdown.clone(),
         ));
         let mut last_inventory = Vec::new();
+        let mut last_policy = None;
         let mut output: Option<(oneshot::Sender<()>, JoinHandle<()>)> = None;
         let mut tick = interval(Duration::from_millis(100));
         tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -404,25 +437,28 @@ impl AudioHub {
                 _ = shutdown.changed() => break,
                 _ = tick.tick() => {}
             }
+            let config = self.reservation_config();
+            let policy = (config.reserve_inputs, config.input_reservations.clone());
             let discovered = inventory.borrow().clone();
             if let Some(sources) = discovered
-                && sources != last_inventory
+                && (sources != last_inventory || last_policy.as_ref() != Some(&policy))
             {
-                reconcile_reservations(&runtime, &sources, &self.config).await;
+                reconcile_reservations(&runtime, &sources, &config).await;
                 last_inventory = sources;
+                last_policy = Some(policy);
             }
             let state = runtime.state().await;
             let mut wanted: HashMap<String, bool> = last_inventory
                 .iter()
                 .filter_map(|source| {
                     if self.config.capture_selected_only
-                        && !self.config.reserve_inputs
+                        && !config.reserve_inputs
                         && !state.audio_capture_sources.contains(&source.id)
                     {
                         return None;
                     }
-                    let exclusive = self.config.reserve_inputs
-                        && !state.audio_released_sources.contains(&source.id);
+                    let exclusive =
+                        config.reserve_inputs && !state.audio_released_sources.contains(&source.id);
                     (exclusive || state.audio_capture_sources.contains(&source.id))
                         .then(|| (source.id.clone(), exclusive))
                 })
@@ -941,7 +977,10 @@ fn reservation_inventory(
                 status: ReservationStatus::Released,
                 error: None,
             };
-        } else if reservation.status == ReservationStatus::Disconnected {
+        } else if matches!(
+            reservation.status,
+            ReservationStatus::Disconnected | ReservationStatus::Released
+        ) {
             *reservation = Reservation::default();
         }
     }
@@ -1061,11 +1100,7 @@ async fn refresh_connections(runtime: &Runtime, config: &crate::config::AudioCon
     Ok(())
 }
 
-async fn monitor_connections(
-    config: crate::config::AudioConfig,
-    runtime: Runtime,
-    mut shutdown: watch::Receiver<bool>,
-) {
+async fn monitor_connections(hub: AudioHub, runtime: Runtime, mut shutdown: watch::Receiver<bool>) {
     loop {
         if *shutdown.borrow() {
             return;
@@ -1096,12 +1131,12 @@ async fn monitor_connections(
                 }
                 if dirty {
                     dirty = false;
-                    let _ = refresh_connections(&runtime, &config).await;
+                    let _ = refresh_connections(&runtime, &hub.reservation_config()).await;
                 }
             }
         }
         // Keep the fallback scan working even when the monitor cannot start.
-        let _ = refresh_connections(&runtime, &config).await;
+        let _ = refresh_connections(&runtime, &hub.reservation_config()).await;
         tokio::select! { _ = shutdown.changed() => return, _ = sleep(Duration::from_secs(5)) => {} }
     }
 }
@@ -1183,6 +1218,52 @@ fn measure(bytes: &[u8]) -> Level {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn live_reservation_changes_preserve_capture_output_and_unmodified_overrides() {
+        let runtime = Runtime::new();
+        let hub = AudioHub::default();
+        let sources = vec![Source {
+            id: "mic".into(),
+            name: "Mic".into(),
+            muted: false,
+        }];
+        reconcile_reservations(&runtime, &sources, &hub.reservation_config()).await;
+        runtime
+            .update(|state| {
+                state.audio_capture_sources = vec!["mic".into()];
+                state.audio_virtual.enabled = true;
+                state.audio_virtual.source = Some("mic".into());
+            })
+            .await;
+        let output = runtime.state().await.audio_virtual;
+        hub.set_reservation_preferences(&runtime, BTreeMap::from([("mic".into(), false)]))
+            .await;
+        reconcile_reservations(&runtime, &sources, &hub.reservation_config()).await;
+        assert_eq!(
+            runtime.state().await.audio_reservations["mic"].status,
+            ReservationStatus::Released
+        );
+        hub.set_reservation_preferences(&runtime, BTreeMap::from([("mic".into(), true)]))
+            .await;
+        reconcile_reservations(&runtime, &sources, &hub.reservation_config()).await;
+        assert_eq!(
+            runtime.state().await.audio_reservations["mic"].status,
+            ReservationStatus::Pending
+        );
+        runtime
+            .update(|state| state.audio_released_sources.push("mic".into()))
+            .await;
+        hub.set_reservation_preferences(&runtime, BTreeMap::from([("mic".into(), true)]))
+            .await;
+        let state = runtime.state().await;
+        assert_eq!(state.audio_released_sources, vec!["mic"]);
+        assert_eq!(state.audio_capture_sources, vec!["mic"]);
+        assert_eq!(
+            serde_json::to_value(state.audio_virtual).unwrap(),
+            serde_json::to_value(output).unwrap()
+        );
+    }
+
     #[tokio::test]
     async fn reservation_covers_inputs_even_when_capture_is_off() {
         let runtime = Runtime::new();

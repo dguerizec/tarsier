@@ -46,7 +46,7 @@ struct ApiState {
     stabilizer: Arc<Mutex<OpenPalmStabilizer>>,
     face_presence: Arc<Mutex<FacePresenceStabilizer>>,
     preview: PreviewHub,
-    camera: Option<CameraHandle>,
+    camera: Arc<tokio::sync::RwLock<Option<CameraHandle>>>,
     pipeline: Option<VideoPipelineControl>,
     camera_power_control: Arc<Mutex<()>>,
     pan_tilt_motion: Arc<Mutex<PanTiltMotion>>,
@@ -197,7 +197,7 @@ pub fn router_with_controls(
         config,
         runtime,
         preview,
-        camera,
+        camera: Arc::new(tokio::sync::RwLock::new(camera)),
         pipeline: options.pipeline,
         camera_power_control: Arc::new(Mutex::new(())),
         pan_tilt_motion: Arc::new(Mutex::new(PanTiltMotion::default())),
@@ -554,14 +554,19 @@ async fn device_settings(State(state): State<ApiState>) -> Response {
         Err(error) => return command_error(error),
     };
     let runtime = state.runtime.state().await;
+    let audio_config = state
+        .audio
+        .as_ref()
+        .map(|audio| audio.reservation_config())
+        .unwrap_or_else(|| state.config.audio.clone());
     Json(json!({
         "cameras": cameras, "microphones": microphones,
-        "input_reservations": state.config.audio.input_reservations,
-        "reserve_new_inputs": state.config.audio.reserve_inputs,
-        "camera": if state.config.video.source == crate::config::VideoSource::Camera { state.config.video.input_device.as_str() } else { "" },
+        "input_reservations": audio_config.input_reservations,
+        "reserve_new_inputs": audio_config.reserve_inputs,
+        "camera": state.pipeline.as_ref().map(|pipeline| pipeline.camera_source()).unwrap_or_default(),
         "capture_sources": runtime.audio_capture_sources,
         "output_source": runtime.audio_virtual.source,
-        "can_apply": state.daemon_restart.is_some() && state.user_settings.is_some(),
+        "can_apply": state.pipeline.is_some() && state.audio.is_some() && state.user_settings.is_some(),
         "started_at_ms": runtime.started_at_ms,
     })).into_response()
 }
@@ -577,17 +582,26 @@ async fn set_device_settings(
     State(state): State<ApiState>,
     Json(request): Json<DeviceSettingsRequest>,
 ) -> Response {
+    let _power = state.camera_power_control.lock().await;
     let _video = state.video_output_control.lock().await;
     let _audio = state.audio_settings_control.lock().await;
-    if state.recorder.status().await.active {
+    let previous_camera = state
+        .pipeline
+        .as_ref()
+        .map(|pipeline| pipeline.camera_source())
+        .unwrap_or_default();
+    let camera_changed = previous_camera != request.camera;
+    if camera_changed && state.recorder.status().await.active {
         return (
             StatusCode::CONFLICT,
             Json(json!({"error": "Stop recording before changing devices"})),
         )
             .into_response();
     }
-    let (Some(restart), Some(settings)) = (&state.daemon_restart, &state.user_settings) else {
-        return (StatusCode::CONFLICT, Json(json!({"error": "Device changes require a supervised daemon and persistent settings"}))).into_response();
+    let (Some(pipeline), Some(audio), Some(settings)) =
+        (&state.pipeline, &state.audio, &state.user_settings)
+    else {
+        return (StatusCode::CONFLICT, Json(json!({"error": "Device changes require active device controls and persistent settings"}))).into_response();
     };
     let cameras = match crate::devices::cameras() {
         Ok(c) => c,
@@ -595,8 +609,7 @@ async fn set_device_settings(
     };
     if !request.camera.is_empty()
         && !cameras.iter().any(|c| c.id == request.camera)
-        && !(state.config.video.source == crate::config::VideoSource::Camera
-            && request.camera == state.config.video.input_device)
+        && request.camera != pipeline.camera_source()
     {
         return (
             StatusCode::BAD_REQUEST,
@@ -609,10 +622,11 @@ async fn set_device_settings(
         Err(e) => return command_error(e),
     };
     let current = state.runtime.state().await;
+    let audio_config = audio.reservation_config();
     if request.input_reservations.keys().any(|id| {
         !state.config.audio.allows(id)
             || (!microphones.iter().any(|mic| &mic.id == id)
-                && !state.config.audio.input_reservations.contains_key(id)
+                && !audio_config.input_reservations.contains_key(id)
                 && !current.audio_capture_sources.contains(id))
     }) {
         return (
@@ -622,15 +636,65 @@ async fn set_device_settings(
             .into_response();
     }
     if let Err(error) = settings
-        .set_devices(request.camera, request.input_reservations)
+        .set_devices(request.camera.clone(), request.input_reservations.clone())
         .await
     {
         return user_settings_error(error);
     }
-    if let Err(error) = restart.request().await {
-        return (StatusCode::CONFLICT, Json(json!({"error": error}))).into_response();
+    audio
+        .set_reservation_preferences(&state.runtime, request.input_reservations.clone())
+        .await;
+    if camera_changed {
+        if let Err(error) = switch_camera(&state, &request.camera, current.pipeline.enabled).await {
+            let rollback = switch_camera(&state, &previous_camera, current.pipeline.enabled).await;
+            let persisted = settings
+                .set_devices(previous_camera, request.input_reservations)
+                .await;
+            return command_error(anyhow::anyhow!(
+                "Camera switch failed: {error:#}; restore capture: {rollback:?}; restore settings: {persisted:?}"
+            ));
+        }
     }
-    (StatusCode::ACCEPTED, Json(json!({"restarting": true}))).into_response()
+    Json(json!({"applied": true})).into_response()
+}
+
+async fn switch_camera(state: &ApiState, source: &str, enabled: bool) -> anyhow::Result<()> {
+    let pipeline = state.pipeline.as_ref().expect("validated pipeline control");
+    pipeline.set_enabled(false).await?;
+    {
+        let mut tracking = state.face_tracking.lock().await;
+        tracking.set_enabled(false);
+        tracking.set_auto_zoom_enabled(false, unix_ms());
+    }
+    state.hands_tracking.lock().await.set_enabled(false);
+    clear_pan_tilt_motion(state).await;
+    let previous = state.camera.write().await.take();
+    if let Some(camera) = previous {
+        camera.shutdown().await?;
+    }
+    state
+        .runtime
+        .update(|runtime| runtime.camera = Default::default())
+        .await;
+    pipeline.select_source(source).await?;
+    let mut config = state.config.clone();
+    crate::devices::apply_camera(&mut config, source);
+    let camera = crate::camera::start(config.camera, state.runtime.clone()).await?;
+    if !enabled {
+        if let Some(camera) = &camera {
+            camera.set_powered_on(false).await?;
+        }
+        state
+            .runtime
+            .update(|runtime| runtime.camera.powered_on = Some(false))
+            .await;
+    }
+    *state.camera.write().await = camera;
+    if enabled {
+        pipeline.set_enabled(true).await?;
+        pipeline.wait_for_frame().await?;
+    }
+    Ok(())
 }
 
 async fn network_settings(State(state): State<ApiState>) -> Json<Value> {
@@ -832,7 +896,7 @@ async fn set_camera_power(
     if !request.enabled {
         let _ = state.recorder.stop().await;
     }
-    let Some(camera) = state.camera.clone() else {
+    let Some(camera) = state.camera.read().await.clone() else {
         return camera_unavailable();
     };
     let Some(pipeline) = state.pipeline.clone() else {
@@ -1076,7 +1140,7 @@ async fn move_camera(
     State(state): State<ApiState>,
     Json(request): Json<MoveCameraRequest>,
 ) -> Response {
-    let Some(camera) = state.camera.clone() else {
+    let Some(camera) = state.camera.read().await.clone() else {
         return camera_unavailable();
     };
     if let Err(error) = camera.validate_orientation(request.yaw, request.pitch, request.roll) {
@@ -1128,7 +1192,7 @@ async fn nudge_camera(
     State(state): State<ApiState>,
     axum::extract::Path(direction): axum::extract::Path<PanTiltDirection>,
 ) -> Response {
-    let Some(camera) = state.camera.clone() else {
+    let Some(camera) = state.camera.read().await.clone() else {
         return camera_unavailable();
     };
     if direction != PanTiltDirection::Stop
@@ -1221,7 +1285,7 @@ async fn set_hands_tracking(
 }
 
 async fn set_hdr(State(state): State<ApiState>, Json(request): Json<HdrRequest>) -> Response {
-    let Some(camera) = state.camera.clone() else {
+    let Some(camera) = state.camera.read().await.clone() else {
         return camera_unavailable();
     };
     match camera.set_hdr(request.enabled).await {
@@ -1246,7 +1310,7 @@ async fn set_built_in_gesture(
     axum::extract::Path(feature): axum::extract::Path<BuiltInGesture>,
     Json(request): Json<BuiltInGestureRequest>,
 ) -> Response {
-    let Some(camera) = state.camera.clone() else {
+    let Some(camera) = state.camera.read().await.clone() else {
         return camera_unavailable();
     };
     match camera.set_built_in_gesture(feature, request.enabled).await {
@@ -1275,7 +1339,7 @@ async fn set_built_in_gesture(
 }
 
 async fn set_zoom(State(state): State<ApiState>, Json(request): Json<ZoomRequest>) -> Response {
-    let Some(camera) = state.camera.clone() else {
+    let Some(camera) = state.camera.read().await.clone() else {
         return camera_unavailable();
     };
     match camera.set_zoom(request.magnification).await {
@@ -1333,7 +1397,7 @@ async fn set_image_control(
     axum::extract::Path(control): axum::extract::Path<CameraImageControl>,
     Json(request): Json<ImageControlRequest>,
 ) -> Response {
-    let Some(camera) = state.camera.clone() else {
+    let Some(camera) = state.camera.read().await.clone() else {
         return camera_unavailable();
     };
     match camera.set_image_control(control, request.value).await {
@@ -1371,11 +1435,13 @@ async fn set_auto_zoom(
     State(state): State<ApiState>,
     Json(request): Json<AutoZoomRequest>,
 ) -> Response {
-    if state.camera.is_none() {
+    if state.camera.read().await.is_none() {
         return camera_unavailable();
     }
     let controlled_zoom = state
         .camera
+        .read()
+        .await
         .as_ref()
         .and_then(CameraHandle::controlled_zoom_magnification);
     if request.enabled && controlled_zoom.is_none() {
@@ -1421,7 +1487,7 @@ async fn camera_action(
     State(state): State<ApiState>,
     axum::extract::Path(action): axum::extract::Path<String>,
 ) -> Response {
-    let Some(camera) = state.camera.clone() else {
+    let Some(camera) = state.camera.read().await.clone() else {
         return camera_unavailable();
     };
     match action.as_str() {
@@ -1465,7 +1531,7 @@ async fn recall_camera_preset(
         )
             .into_response();
     };
-    let Some(camera) = state.camera.clone() else {
+    let Some(camera) = state.camera.read().await.clone() else {
         return camera_unavailable();
     };
     if let Err(error) = disable_tracking_for_manual_control(&state, &camera).await {
@@ -1492,7 +1558,7 @@ async fn recall_camera_preset(
 }
 
 async fn set_tracking_inner(state: &ApiState, enabled: bool) -> Response {
-    let Some(camera) = state.camera.clone() else {
+    let Some(camera) = state.camera.read().await.clone() else {
         return camera_unavailable();
     };
     if enabled {
@@ -1525,7 +1591,7 @@ async fn set_tracking_inner(state: &ApiState, enabled: bool) -> Response {
 }
 
 async fn set_face_tracking_inner(state: &ApiState, enabled: bool) -> Response {
-    let Some(camera) = state.camera.clone() else {
+    let Some(camera) = state.camera.read().await.clone() else {
         return camera_unavailable();
     };
     if state.face_tracking.lock().await.enabled() == enabled {
@@ -1605,7 +1671,7 @@ async fn set_face_tracking_inner(state: &ApiState, enabled: bool) -> Response {
 }
 
 async fn set_hands_tracking_inner(state: &ApiState, enabled: bool) -> Response {
-    let Some(camera) = state.camera.clone() else {
+    let Some(camera) = state.camera.read().await.clone() else {
         return camera_unavailable();
     };
     if state.hands_tracking.lock().await.enabled() == enabled {
@@ -1858,7 +1924,14 @@ fn command_error(error: anyhow::Error) -> Response {
 }
 
 async fn effective_config(State(state): State<ApiState>) -> Json<Config> {
-    Json(state.config)
+    let mut config = state.config;
+    if let Some(audio) = state.audio {
+        config.audio = audio.reservation_config();
+    }
+    if let Some(pipeline) = state.pipeline {
+        crate::devices::apply_camera(&mut config, &pipeline.camera_source());
+    }
+    Json(config)
 }
 
 async fn scenarios(State(state): State<ApiState>) -> Json<Vec<ScenarioConfig>> {
@@ -2559,7 +2632,12 @@ fn user_settings_error(error: anyhow::Error) -> Response {
 }
 
 async fn avatar_frame(State(state): State<ApiState>, headers: HeaderMap, body: Bytes) -> Response {
-    if let Some(response) = reject_stale_worker_update(&state).await {
+    if let Some(response) = reject_stale_worker_update(
+        &state,
+        required_u64_header(&headers, "x-tarsier-captured-at-ms").ok(),
+    )
+    .await
+    {
         return response;
     }
     let engine = match required_avatar_engine_header(&headers) {
@@ -2687,7 +2765,12 @@ fn clear_depth_state(runtime: &mut crate::model::RuntimeState) {
 }
 
 async fn depth_frame(State(state): State<ApiState>, headers: HeaderMap, body: Bytes) -> Response {
-    if let Some(response) = reject_stale_worker_update(&state).await {
+    if let Some(response) = reject_stale_worker_update(
+        &state,
+        required_u64_header(&headers, "x-tarsier-captured-at-ms").ok(),
+    )
+    .await
+    {
         return response;
     }
     if let Err(error) = required_exact_header(
@@ -2785,7 +2868,12 @@ async fn perception_mask(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    if let Some(response) = reject_stale_worker_update(&state).await {
+    if let Some(response) = reject_stale_worker_update(
+        &state,
+        required_u64_header(&headers, "x-tarsier-captured-at-ms").ok(),
+    )
+    .await
+    {
         return response;
     }
     let frame_id = match required_u64_header(&headers, "x-tarsier-frame-id") {
@@ -2924,7 +3012,9 @@ async fn perception_observation(
     State(state): State<ApiState>,
     Json(observation): Json<PerceptionObservation>,
 ) -> Response {
-    if let Some(response) = reject_stale_worker_update(&state).await {
+    if let Some(response) =
+        reject_stale_worker_update(&state, Some(observation.captured_at_ms)).await
+    {
         return response;
     }
     if observation.confidence.is_nan() || !(0.0..=1.0).contains(&observation.confidence) {
@@ -3078,12 +3168,18 @@ async fn perception_observation(
     StatusCode::NO_CONTENT.into_response()
 }
 
-async fn reject_stale_worker_update(state: &ApiState) -> Option<Response> {
-    if state.pipeline.is_some() && !state.runtime.state().await.pipeline.running {
+async fn reject_stale_worker_update(
+    state: &ApiState,
+    captured_at_ms: Option<u64>,
+) -> Option<Response> {
+    if let Some(pipeline) = &state.pipeline
+        && (!state.runtime.state().await.pipeline.running
+            || captured_at_ms.is_some_and(|captured| !pipeline.accepts_frame(captured)))
+    {
         Some(
             (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({"error": "video pipeline is paused"})),
+                Json(json!({"error": "video pipeline is paused or the frame belongs to a previous camera"})),
             )
                 .into_response(),
         )
@@ -3098,7 +3194,7 @@ async fn drive_face_tracking(
     pose_landmarks: &[Landmark],
     captured_at_ms: u64,
 ) {
-    let Some(camera) = state.camera.clone() else {
+    let Some(camera) = state.camera.read().await.clone() else {
         return;
     };
     let mut controller = state.face_tracking.lock().await;
@@ -3236,7 +3332,7 @@ async fn drive_face_tracking(
 }
 
 async fn drive_hands_tracking(state: &ApiState, hand_landmarks: &[Landmark], captured_at_ms: u64) {
-    let Some(camera) = state.camera.clone() else {
+    let Some(camera) = state.camera.read().await.clone() else {
         return;
     };
     let mut controller = state.hands_tracking.lock().await;
@@ -3562,7 +3658,13 @@ async fn set_audio_exclusive(
     State(state): State<ApiState>,
     Json(request): Json<AudioExclusiveRequest>,
 ) -> Response {
-    if !state.config.audio.reserve_inputs || request.source == state.config.audio.virtual_source {
+    if !state
+        .audio
+        .as_ref()
+        .map(|audio| audio.reservation_config().reserve_inputs)
+        .unwrap_or(state.config.audio.reserve_inputs)
+        || request.source == state.config.audio.virtual_source
+    {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({"error": "Tarsier Microphone must stay shared"})),
@@ -3884,6 +3986,97 @@ mod tests {
                 .status(),
             StatusCode::SERVICE_UNAVAILABLE
         );
+    }
+
+    #[tokio::test]
+    async fn devices_apply_without_restart_and_preserve_audio() {
+        let config = Config::default();
+        let runtime = Runtime::new();
+        runtime
+            .update(|state| {
+                state.audio_capture_sources = vec!["remembered-mic".into()];
+                state.audio_virtual.source = Some("remembered-mic".into());
+                state.audio_virtual.enabled = true;
+            })
+            .await;
+        let before = runtime.state().await;
+        let directory = std::env::temp_dir().join(format!(
+            "tarsier-device-live-{:032x}",
+            rand::random::<u128>()
+        ));
+        let path = directory.join("settings.json");
+        let fallback = UserSettings::from_config(&config);
+        let (settings, _) = UserSettingsStore::load(path.clone(), fallback.clone())
+            .await
+            .unwrap();
+        settings
+            .set_audio(crate::settings::AudioSettings::from_state(&before))
+            .await
+            .unwrap();
+        let camera = camera::start(
+            crate::config::CameraConfig {
+                adapter: CameraAdapter::Mock,
+                ..Default::default()
+            },
+            runtime.clone(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let old_camera = camera.clone();
+        let (_shutdown, shutdown) = watch::channel(false);
+        let app = router_with_controls(
+            config,
+            runtime.clone(),
+            PreviewHub::new(),
+            Some(camera),
+            ApiOptions {
+                pipeline: Some(VideoPipelineControl::mock(runtime.clone())),
+                audio: Some(crate::audio::AudioHub::default()),
+                user_settings: Some(settings),
+                ..Default::default()
+            },
+            shutdown,
+        );
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/settings/devices")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"camera":"","input_reservations":{"remembered-mic":false}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(old_camera.recenter().await.is_err());
+        let after = runtime.state().await;
+        assert_eq!(after.started_at_ms, before.started_at_ms);
+        assert_eq!(after.audio_capture_sources, before.audio_capture_sources);
+        assert_eq!(
+            serde_json::to_value(after.audio_virtual).unwrap(),
+            serde_json::to_value(before.audio_virtual).unwrap()
+        );
+        let (_, restored) = UserSettingsStore::load(path, fallback).await.unwrap();
+        assert_eq!(restored.camera_device.as_deref(), Some(""));
+        assert_eq!(restored.audio_input_reservations["remembered-mic"], false);
+        assert_eq!(restored.audio.capture_sources, vec!["remembered-mic"]);
+        let response = app
+            .oneshot(
+                Request::get("/api/v1/settings/devices")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(body["camera"], "");
+        assert_eq!(body["input_reservations"]["remembered-mic"], false);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[tokio::test]
