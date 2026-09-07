@@ -11,9 +11,31 @@ upstream GUI or device capture. The runtime uses Torch/Torchaudio 2.11 with the
 locked minimal dependencies; this differs from upstream's full GUI environment
 and is verified here as an experimental integration.
 
-## Demo voice and attribution
+## Current French trial
 
-The demo model is **Shigure Tokina / 刻鳴時雨 (CV: Marukoro / 丸ころ)**,
+The default model is [French Woman by DantSu](https://github.com/DantSu/RVC-french-woman-model),
+release 0.0.1 (`Beatrice-Harvest.pth`, RVC v2, 48 kHz). The publisher describes
+it as a French female voice trained with Harvest. Inference still uses RMVPE,
+the same pitch setting, and no retrieval index to compare the model alone.
+The release archive and extracted checkpoint are SHA-256 verified; the large
+retrieval index is not extracted. The public release does not document a license
+or detailed corpus provenance; this repository does not redistribute its weights
+or claim rights for redistribution.
+
+A synthetic benchmark with the original voice and camera running measured
+35–64 ms per 160 ms chunk, with 451 MiB peak Torch allocation. Listening quality
+is not inferred from these timings. A live camera/voice check measured a median
+37 ms inference time with no additional dropped chunks over ten seconds.
+The voice-worker-only model replacement retained the existing virtual source.
+On digital silence at +12 semitones, the unmodified French model produced
+approximately -53 to -43 dBFS output (Shigure: about -90 dBFS). The prototype
+does not yet reproduce upstream volume-envelope matching; background artifacts
+therefore remain an open issue, even with the French model. The first Japanese trial produced background
+voice/echo artifacts and a slight accent according to the user.
+
+## Original demo voice and attribution
+
+The original model is **Shigure Tokina / 刻鳴時雨 (CV: Marukoro / 丸ころ)**,
 managed by **Bindume / 瓶詰め**, trained and distributed by **yasyune**:
 
 - Original model and terms: https://huggingface.co/yasyune/Shigure_Tokina_RVC
