@@ -153,7 +153,7 @@ fn valid_identifier(identifier: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
-/// Process-level audio policy; user settings cannot widen these permissions.
+/// Audio policy. Only reserve_inputs can be overridden by the user preference.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AudioConfig {

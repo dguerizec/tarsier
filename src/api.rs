@@ -556,6 +556,7 @@ async fn device_settings(State(state): State<ApiState>) -> Response {
     let runtime = state.runtime.state().await;
     Json(json!({
         "cameras": cameras, "microphones": microphones,
+        "reserve_inputs": state.config.audio.reserve_inputs,
         "camera": if state.config.video.source == crate::config::VideoSource::Camera { state.config.video.input_device.as_str() } else { "" },
         "capture_sources": runtime.audio_capture_sources,
         "output_source": runtime.audio_virtual.source,
@@ -567,6 +568,7 @@ async fn device_settings(State(state): State<ApiState>) -> Response {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DeviceSettingsRequest {
+    reserve_inputs: Option<bool>,
     camera: String,
     capture_sources: Vec<String>,
     output_source: Option<String>,
@@ -638,7 +640,10 @@ async fn set_device_settings(
     if audio.output_source.is_none() {
         audio.output_enabled = false;
     }
-    if let Err(error) = settings.set_devices(request.camera, audio).await {
+    if let Err(error) = settings
+        .set_devices(request.camera, audio, request.reserve_inputs)
+        .await
+    {
         return user_settings_error(error);
     }
     if let Err(error) = restart.request().await {

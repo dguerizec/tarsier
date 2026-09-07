@@ -102,6 +102,8 @@ pub struct UserSettings {
     #[serde(default)]
     pub camera_device: Option<String>,
     #[serde(default)]
+    pub audio_reserve_inputs: Option<bool>,
+    #[serde(default)]
     pub audio: AudioSettings,
     #[serde(default)]
     pub network_lan_access: Option<bool>,
@@ -125,6 +127,7 @@ impl UserSettings {
         Self {
             liveportrait_source: None,
             camera_device: None,
+            audio_reserve_inputs: None,
             audio: AudioSettings::default(),
             version: SETTINGS_VERSION,
             network_lan_access: None,
@@ -270,7 +273,12 @@ impl UserSettingsStore {
         .await
     }
 
-    pub async fn set_devices(&self, camera: String, audio: AudioSettings) -> Result<()> {
+    pub async fn set_devices(
+        &self,
+        camera: String,
+        audio: AudioSettings,
+        reserve_inputs: Option<bool>,
+    ) -> Result<()> {
         self.replace(|settings| {
             if settings.camera_device.as_ref() != Some(&camera) {
                 settings.face_tracking_enabled = false;
@@ -278,6 +286,9 @@ impl UserSettingsStore {
                 settings.hands_tracking_enabled = false;
             }
             settings.camera_device = Some(camera);
+            if let Some(enabled) = reserve_inputs {
+                settings.audio_reserve_inputs = Some(enabled);
+            }
             settings.audio = audio;
         })
         .await
@@ -466,14 +477,26 @@ mod tests {
             ..Default::default()
         };
         store
-            .set_devices(camera.clone(), audio.clone())
+            .set_devices(camera.clone(), audio.clone(), Some(true))
             .await
             .unwrap();
         let (_, restored) = UserSettingsStore::load(path.clone(), defaults)
             .await
             .unwrap();
         assert_eq!(restored.camera_device, Some(camera));
+        assert_eq!(restored.audio_reserve_inputs, Some(true));
         assert_eq!(restored.audio, audio);
+        store
+            .set_devices("".into(), audio.clone(), Some(false))
+            .await
+            .unwrap();
+        store.set_audio(audio.clone()).await.unwrap();
+        store.set_devices("".into(), audio, None).await.unwrap();
+        let (_, restored) =
+            UserSettingsStore::load(path.clone(), UserSettings::from_config(&Config::default()))
+                .await
+                .unwrap();
+        assert_eq!(restored.audio_reserve_inputs, Some(false));
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 

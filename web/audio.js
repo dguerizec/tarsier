@@ -99,7 +99,8 @@ async function refreshApplications() {
       kill.disabled = !app.process || !app.next_signal || applicationKillPending;
       kill.title = app.process ? `Send ${app.next_signal === 9 ? 'SIGKILL' : 'SIGTERM'} to ${app.name}` : 'No verifiable local process is available';
       kill.onclick = () => void killApplication(app);
-      row.append(info, kill);
+      row.append(info);
+      if (audioConfig.audio.reserve_inputs) row.append(kill);
       applicationsList.append(row);
     }
     applicationsStatus.classList.remove('error');
@@ -143,9 +144,13 @@ applicationsDialog.addEventListener('click', (event) => {
 function renderReservation(track) {
   if (track.id === virtualId) return;
   if (!audioConfig.audio.reserve_inputs) {
-    track.reserveButton.disabled = true;
-    track.reserveButton.title = 'Shared input';
-    track.reserveButton.setAttribute('aria-label', 'Shared input');
+    const button = track.reserveButton;
+    button.innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${reservationIcons.shared}</svg>`;
+    button.dataset.state = 'shared';
+    button.disabled = false;
+    button.title = 'Shared input · Show applications. Reservation is disabled in Settings.';
+    button.setAttribute('aria-label', `Shared input · ${track.name}. Show applications`);
+    button.setAttribute('aria-haspopup', 'dialog');
     return;
   }
   const released = releasedSources.has(track.id);
