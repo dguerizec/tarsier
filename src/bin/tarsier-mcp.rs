@@ -40,6 +40,12 @@ struct MoveCameraParams {
     #[serde(default)]
     #[schemars(description = "Absolute roll target in degrees; defaults to zero")]
     roll: f32,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional absolute zoom from 1x to 4x; omit to leave zoom unchanged",
+        range(min = 1.0, max = 4.0)
+    )]
+    zoom: Option<f32>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -118,6 +124,15 @@ impl TarsierGateway {
     }
 
     #[tool(
+        description = "Read the latest known pan_degrees, tilt_degrees, and zoom_magnification, with sources, sample timestamps and telemetry errors. Unknown values are null. Last-commanded values are targets, not confirmation that the camera has reached them.",
+        annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
+    )]
+    async fn get_camera_position(&self) -> CallToolResult {
+        self.request(Method::GET, "/api/v1/camera/position", None)
+            .await
+    }
+
+    #[tool(
         description = "Read effective Tarsier configuration, including camera safety limits",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
@@ -152,7 +167,7 @@ impl TarsierGateway {
     }
 
     #[tool(
-        description = "Move the camera gimbal to a bounded absolute orientation",
+        description = "Move to absolute yaw/pitch/roll angles, optionally setting absolute zoom (1x to 4x). Omitted zoom stays unchanged. Orientation and zoom are applied sequentially, not atomically.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -167,7 +182,7 @@ impl TarsierGateway {
         self.request(
             Method::POST,
             "/api/v1/camera/move",
-            Some(json!({"yaw": params.yaw, "pitch": params.pitch, "roll": params.roll})),
+            Some(json!({"yaw": params.yaw, "pitch": params.pitch, "roll": params.roll, "zoom": params.zoom})),
         )
         .await
     }
@@ -439,12 +454,13 @@ mod tests {
 
         let client = ().serve(client_transport).await.unwrap();
         let tools = client.list_all_tools().await.unwrap();
-        assert_eq!(tools.len(), 14);
+        assert_eq!(tools.len(), 15);
         for name in [
             "set_camera_tracking",
             "set_face_tracking",
             "set_auto_zoom",
             "set_zoom",
+            "get_camera_position",
         ] {
             assert!(tools.iter().any(|tool| tool.name == name));
         }

@@ -611,9 +611,9 @@ For a release installation, use the built executable instead:
 /absolute/path/to/tarsier-mcp --daemon-url http://127.0.0.1:8742
 ```
 
-The gateway exposes fourteen typed tools:
+The gateway exposes fifteen typed tools:
 
-- read-only: `get_state`, `get_config`, `list_scenarios`, `recent_events`,
+- read-only: `get_state`, `get_camera_position`, `get_config`, `list_scenarios`, `recent_events`,
   `list_camera_presets`, and `take_snapshot`;
 - mutating: `move_camera`, `set_camera_tracking`, `set_face_tracking`,
   `set_auto_zoom`, `set_zoom`, `recenter_camera`, `recall_camera_preset`, and `trigger_scenario`.
@@ -623,12 +623,22 @@ Use `set_face_tracking` by default for Tarsier face/shoulder framing, or
 Enabling either tracking mode disables the other. Auto zoom is a separate,
 explicit choice through `set_auto_zoom` and requires face tracking first.
 The old MCP tool name `set_tracking` is removed without an alias.
+Call `move_camera` with `{"yaw": 20, "pitch": -10, "zoom": 2.0}` to set
+orientation and zoom together. Omit `zoom` to preserve its current value. All
+values are validated before changing tracking or issuing hardware commands.
+Orientation and zoom are applied sequentially, not atomically; a zoom failure
+after movement is reported explicitly with `orientation_commanded: true`.
+`get_camera_position` returns the latest known `pan_degrees`, `tilt_degrees`,
+and `zoom_magnification`, their sources, timestamps and telemetry errors.
+Unknown values are null. A `last-commanded` source is a target, not confirmation
+that physical motion has completed.
+
 For manual zoom, call `set_zoom` with `{"magnification": 2.0}` for 2x zoom.
 The accepted range is 1.0 to 4.0. Manual zoom does not enable tracking or auto
 zoom; an already-active auto zoom recalibrates to the new framing.
 
 MCP transports commands, state, events, and snapshots, not continuous video.
-The gateway uses dedicated `/mcp/api/v1/...` routes for its fourteen operations.
+The gateway uses dedicated `/mcp/api/v1/...` routes for its fifteen operations.
 Tokens need the MCP destination on these routes and the API destination on
 regular API routes. Destination checks use the route, not a client-supplied
 header. These are internal HTTP routes for the stdio gateway, not a separate

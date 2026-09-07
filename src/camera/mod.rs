@@ -222,7 +222,7 @@ impl CameraHandle {
         self.power_transition.store(false, Ordering::Relaxed);
     }
 
-    pub async fn move_to(&self, yaw: f32, pitch: f32, roll: f32) -> Result<()> {
+    pub fn validate_orientation(&self, yaw: f32, pitch: f32, roll: f32) -> Result<()> {
         if !yaw.is_finite() || !pitch.is_finite() || !roll.is_finite() {
             bail!("camera angles must be finite");
         }
@@ -235,6 +235,11 @@ impl CameraHandle {
         if roll.abs() > 45.0 {
             bail!("roll exceeds the fixed safe limit");
         }
+        Ok(())
+    }
+
+    pub async fn move_to(&self, yaw: f32, pitch: f32, roll: f32) -> Result<()> {
+        self.validate_orientation(yaw, pitch, roll)?;
         self.request(Command::Move { yaw, pitch, roll })
             .await
             .map(|_| ())
@@ -260,10 +265,15 @@ impl CameraHandle {
             .map(|_| ())
     }
 
-    pub async fn set_zoom(&self, magnification: f32) -> Result<()> {
+    pub fn validate_zoom(magnification: f32) -> Result<()> {
         if !magnification.is_finite() || !(1.0..=4.0).contains(&magnification) {
             bail!("zoom magnification must be between 1.0 and 4.0");
         }
+        Ok(())
+    }
+
+    pub async fn set_zoom(&self, magnification: f32) -> Result<()> {
+        Self::validate_zoom(magnification)?;
         self.request(Command::Zoom { magnification }).await?;
         self.controlled_zoom_bits
             .store(magnification.to_bits(), Ordering::Relaxed);
