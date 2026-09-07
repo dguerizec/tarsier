@@ -43,6 +43,7 @@ pub const PAN_TILT_LEASE: Duration = Duration::from_millis(350);
 #[derive(Debug)]
 enum Command {
     Shutdown,
+    McpActivity,
     Led {
         mode: LedMode,
     },
@@ -210,6 +211,20 @@ pub struct CameraHandle {
 }
 
 impl CameraHandle {
+    /// Best-effort feedback must never block or fail an MCP operation.
+    pub(crate) fn notify_mcp_activity(&self) {
+        if !self.is_powered_on() || self.power_transition.load(Ordering::Relaxed) {
+            return;
+        }
+        let (response, _) = oneshot::channel();
+        if let Err(error) = self.tx.try_send(Request {
+            command: Command::McpActivity,
+            response,
+        }) {
+            tracing::debug!(%error, "MCP LED feedback could not be queued");
+        }
+    }
+
     /// Accept a desired mode; USB application is asynchronous with bounded retries.
     /// Internal backend control; no API, MCP tool, or persisted user setting.
     #[allow(dead_code)] // Usage policy is deliberately deferred; production stays off.
@@ -531,9 +546,10 @@ impl<T: XuTransport> Worker<T> {
         if !self.powered_on.load(Ordering::Relaxed) {
             return;
         }
-        let Some(led) = &self.led else {
+        let Some(led) = &mut self.led else {
             return;
         };
+        led.advance(Instant::now());
         if Instant::now() < led.retry_at {
             return;
         }
@@ -628,6 +644,12 @@ impl<T: XuTransport> Worker<T> {
         }
         match command {
             Command::Shutdown => unreachable!("shutdown is handled by the owner loop"),
+            Command::McpActivity => {
+                if let Some(led) = &mut self.led {
+                    led.notify_mcp(Instant::now());
+                }
+                Ok(CommandOutcome::Applied)
+            }
             Command::Led { mode } => {
                 if let Some(led) = &mut self.led {
                     led.set_mode(mode, Instant::now());
@@ -1138,7 +1160,8 @@ fn spawn_mock(config: &CameraConfig) -> CameraHandle {
                         worker_powered_on.store(enabled, Ordering::Relaxed);
                         Ok(CommandOutcome::Applied)
                     }
-                    Command::Led { .. }
+                    Command::McpActivity
+                    | Command::Led { .. }
                     | Command::Move { .. }
                     | Command::Recenter
                     | Command::Tracking { .. }
