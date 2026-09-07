@@ -189,14 +189,31 @@
                 <small>Animate your scanned portrait with a replaceable background</small>
               </span>
             </label>
-            <label class="output-mode-option">
-              <input type="radio" name="output-mode" value="liveportrait" data-output-mode disabled>
-              <span class="output-mode-card">
-                <strong>LivePortrait</strong>
-                <small>Animate the approved portrait and virtual decor</small>
-              </span>
-            </label>
+            <div class="liveportrait-option">
+              <label class="output-mode-option">
+                <input type="radio" name="output-mode" value="liveportrait" data-output-mode disabled>
+                <span class="output-mode-card">
+                  <strong>LivePortrait</strong>
+                  <small>Animate your chosen portrait</small>
+                </span>
+              </label>
+              <button id="liveportrait-choose" class="liveportrait-choose" type="button" aria-label="Choose LivePortrait image" title="Choose LivePortrait image" disabled></button>
+            </div>
           </div>
+          <dialog id="liveportrait-dialog">
+            <form id="liveportrait-form">
+              <h2>Choose LivePortrait image</h2>
+              <p>Choose an avatar from <code>assets/avatars/</code>.</p>
+              <div id="liveportrait-gallery" class="portrait-gallery" role="radiogroup" aria-label="Available avatars"></div>
+              <p id="liveportrait-gallery-status" role="status"></p>
+              <small>Tarsier restarts briefly to apply your choice.</small>
+              <p id="liveportrait-error" class="error" role="alert" hidden></p>
+              <div class="dialog-actions">
+                <button id="liveportrait-cancel" type="button">Cancel</button>
+                <button id="liveportrait-save" type="submit" disabled>Use this avatar</button>
+              </div>
+            </form>
+          </dialog>
           <p id="output-error" class="error" role="alert" hidden></p>
         </div>
         <div class="background-control">

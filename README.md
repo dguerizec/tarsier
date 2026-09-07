@@ -277,6 +277,18 @@ PyTorch and loads the neural models only after LivePortrait is selected.
 Download the weights with `models --download --avatar`. A fictional adult portrait
 is bundled at `assets/avatars/liveportrait-default.png`, so no personal image is
 needed on a fresh checkout. See [avatar provenance and usage](assets/avatars/README.md).
+Use the folder icon on the **LivePortrait** card to browse a thumbnail gallery of
+PNG/JPEG images in `assets/avatars/`. The current portrait is marked. Select a
+thumbnail and choose **Use this avatar** to save its path and briefly restart the
+supervised daemon. Existing portraits beside the user settings (under `portraits/`)
+and the currently configured source are included too. The listing is refreshed on
+each open, excludes nested directories and directory-entry symlinks, and does not
+copy or modify portraits. Image previews are decoded locally with bounded sizes.
+The selected path persists across restarts, takes precedence over
+`avatar.source_image`, and keeps the video identity unchanged. Recording must be
+stopped before applying a change. Remove `liveportrait_source` from the user
+settings while Tarsier is stopped to return to the configured source.
+
 Set `avatar.source_image` to a custom local path to use your own portrait; explicit
 settings (including the older `assets/avatars/liveportrait-source.png` path) remain
 unchanged. Other PNG portraits in `assets/avatars/` stay ignored by Git.
@@ -501,6 +513,8 @@ requests must be same-origin. Login attempts are throttled to one per second.
 | `POST` | `/api/v1/camera/photos/{filename}/open` | Show a saved photo in its folder, selected in the file manager; send an empty JSON object |
 | `GET` / `POST` | `/api/v1/settings/network` | Read network settings or persist `{ "lan_access": true }` and restart |
 | `GET` | `/api/v1/health` | Health, version, daemon start time, uptime, and restart availability |
+| `GET` / `POST` | `/api/v1/video/liveportrait/source` | List local portraits or select one by `{ "id": "…" }` and restart |
+| `GET` | `/api/v1/video/liveportrait/source/{id}` | Locally decoded thumbnail for a catalogued portrait |
 | `POST` | `/api/v1/daemon/restart` | Gracefully exit for restart by the active service supervisor |
 | `POST` | `/api/v1/video/resolution` | Persist `{ "width": 3840, "height": 2160 }` (also 720p/1080p) and restart under supervision; 4K disables effects |
 | `GET` | `/api/v1/state` | Complete runtime state |

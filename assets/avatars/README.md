@@ -16,7 +16,10 @@ The daemon default and `config/tarsier.example.toml` use this bundled image.
 Relative paths are resolved against the daemon's build-time project directory.
 Set `[avatar].source_image` to another path to use a custom portrait. Existing
 explicit values, including `assets/avatars/liveportrait-source.png`, are preserved;
-there is no automatic migration or replacement of personal images. Other PNGs
+there is no automatic migration or replacement of personal images. The folder
+icon on the LivePortrait card can save a UI override outside the repository,
+beside the user settings. That explicit UI choice takes precedence on subsequent
+starts; it does not overwrite the configured source file. Other PNGs
 in this directory and `portrait/current/` remain ignored by Git.
 
 The local LivePortrait implementation reads the image as BGR with OpenCV, takes

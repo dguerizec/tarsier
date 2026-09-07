@@ -351,3 +351,20 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 #voice-model-controls label { flex: 1; min-width: 12rem; }
 #voice-model { flex: 1; min-width: 0; max-width: 100%; padding: .4rem; color: inherit; background: var(--panel); border: 1px solid var(--panel-edge); border-radius: .35rem; }
 #voice-model-controls[hidden] { display: none; }
+
+.liveportrait-option { position: relative; }
+.liveportrait-option .output-mode-option { display: block; height: 100%; }
+.liveportrait-option .output-mode-card { padding-right: 2.8rem; height: 100%; box-sizing: border-box; }
+.liveportrait-choose { position: absolute; top: .45rem; right: .4rem; display: grid; place-items: center; width: 2rem; height: 2rem; padding: .3rem; }
+#liveportrait-dialog { width: min(38rem, calc(100vw - 2rem)); max-height: calc(100dvh - 2rem); }
+#liveportrait-form { display: grid; gap: .8rem; }
+.portrait-gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: .75rem; }
+.portrait-option { position: relative; cursor: pointer; }
+.portrait-option input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.portrait-card { display: grid; gap: .4rem; height: 100%; align-content: start; border: 2px solid var(--panel-edge); padding: .5rem; border-radius: .7rem; box-sizing: border-box; }
+.portrait-card img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: .4rem; }
+.portrait-card span { font-size: .75rem; overflow-wrap: anywhere; }
+.portrait-card small { color: var(--green); }
+.portrait-option input:checked + .portrait-card { border-color: var(--green); background: #182219; }
+.portrait-option input:focus-visible + .portrait-card { outline: 2px solid var(--green); outline-offset: 2px; }
+.portrait-unavailable { opacity: .45; cursor: not-allowed; }
