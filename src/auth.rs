@@ -37,6 +37,8 @@ struct Credentials {
     password: Option<String>,
     #[serde(default)]
     tokens: Vec<Token>,
+    #[serde(default)]
+    sessions: HashMap<String, Session>,
 }
 #[derive(Serialize, Deserialize)]
 struct Token {
@@ -45,14 +47,14 @@ struct Token {
     hash: String,
     created_at_ms: u64,
 }
+#[derive(Serialize, Deserialize)]
 struct Session {
     password_hash: String,
-    expires: Instant,
+    expires_at_ms: u64,
 }
 #[derive(Clone)]
 pub struct Auth {
     path: PathBuf,
-    sessions: Arc<Mutex<HashMap<String, Session>>>,
     login_gate: Arc<Mutex<Instant>>,
     worker_hash: String,
 }
@@ -91,7 +93,6 @@ impl Auth {
     pub fn new(path: PathBuf, worker_token: &str) -> Result<Self> {
         let auth = Self {
             path,
-            sessions: Default::default(),
             login_gate: Arc::new(Mutex::new(Instant::now())),
             worker_hash: digest(worker_token),
         };
@@ -149,12 +150,14 @@ impl Auth {
         let hash = password_hash(password)?;
         self.transaction(|data| {
             data.password = Some(hash);
+            data.sessions.clear();
             Ok(())
         })
     }
     pub fn disable(&self) -> Result<()> {
         self.transaction(|data| {
             data.password = None;
+            data.sessions.clear();
             data.tokens.clear();
             Ok(())
         })
@@ -163,11 +166,17 @@ impl Auth {
         let Some(cookie) = session_cookie(headers) else {
             return false;
         };
-        let mut sessions = self.sessions.lock().await;
-        sessions.retain(|_, session| session.expires > Instant::now());
-        sessions
-            .get(&digest(cookie))
-            .is_some_and(|session| session.password_hash == hash)
+        let token_hash = digest(cookie);
+        let password_hash = hash.to_owned();
+        self.run(move |data| {
+            Ok(data.password.as_ref() == Some(&password_hash)
+                && data.sessions.get(&token_hash).is_some_and(|session| {
+                    session.expires_at_ms > crate::model::unix_ms()
+                        && session.password_hash == password_hash
+                }))
+        })
+        .await
+        .unwrap_or(false)
     }
     pub async fn allowed(&self, headers: &HeaderMap, path: &str, method: &str) -> bool {
         let Ok((password, tokens)) = self
@@ -205,21 +214,37 @@ impl Auth {
         }
         self.master(headers, &password).await
     }
-    async fn session(&self, password_hash: String) -> String {
-        let token = secret();
-        let mut sessions = self.sessions.lock().await;
-        sessions.retain(|_, session| session.expires > Instant::now());
-        if sessions.len() >= 128 {
-            sessions.clear();
+    async fn session(&self, password_hash: String) -> Result<String> {
+        self.run(move |data| {
+            if data.password.as_ref() != Some(&password_hash) {
+                bail!("Password changed during sign in");
+            }
+            let now = crate::model::unix_ms();
+            data.sessions
+                .retain(|_, session| session.expires_at_ms > now);
+            if data.sessions.len() >= 128 {
+                data.sessions.clear();
+            }
+            let token = secret();
+            data.sessions.insert(
+                digest(&token),
+                Session {
+                    password_hash,
+                    expires_at_ms: now + SESSION_SECONDS * 1000,
+                },
+            );
+            Ok(token)
+        })
+        .await
+    }
+    async fn session_response(&self, password_hash: String, headers: &HeaderMap) -> Response {
+        match self.session(password_hash).await {
+            Ok(token) => cookie_response(&token, headers),
+            Err(_) => error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Authentication storage unavailable",
+            ),
         }
-        sessions.insert(
-            digest(&token),
-            Session {
-                password_hash,
-                expires: Instant::now() + Duration::from_secs(SESSION_SECONDS),
-            },
-        );
-        token
     }
 }
 pub fn worker_token() -> String {
@@ -405,7 +430,7 @@ async fn login(
         })
         .await;
     match result {
-        Ok(hash) => cookie_response(&auth.session(hash).await, &headers),
+        Ok(hash) => auth.session_response(hash, &headers).await,
         Err(_) => error(
             StatusCode::UNAUTHORIZED,
             "Invalid password or authentication unavailable",
@@ -417,7 +442,20 @@ async fn logout(State(auth): State<Auth>, headers: HeaderMap) -> Response {
         return error(StatusCode::FORBIDDEN, "Same-origin request required");
     }
     if let Some(token) = session_cookie(&headers) {
-        auth.sessions.lock().await.remove(&digest(token));
+        let token_hash = digest(token);
+        if auth
+            .run(move |data| {
+                data.sessions.remove(&token_hash);
+                Ok(())
+            })
+            .await
+            .is_err()
+        {
+            return error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Authentication storage unavailable",
+            );
+        }
     }
     (
         [(
@@ -472,6 +510,7 @@ async fn change_password(
             {
                 bail!("Current password is incorrect");
             }
+            data.sessions.clear();
             data.password = if input.password.is_empty() {
                 None
             } else {
@@ -484,13 +523,10 @@ async fn change_password(
         })
         .await;
     match result {
-        Ok(hash) => {
-            auth.sessions.lock().await.clear();
-            match hash {
-                Some(hash) => cookie_response(&auth.session(hash).await, &headers),
-                None => logout(State(auth), headers).await,
-            }
-        }
+        Ok(hash) => match hash {
+            Some(hash) => auth.session_response(hash, &headers).await,
+            None => logout(State(auth), headers).await,
+        },
         Err(err) => error(StatusCode::BAD_REQUEST, &err.to_string()),
     }
 }
@@ -1010,6 +1046,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn browser_session_survives_restart_and_logout_stays_revoked() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut fixture = Fixture::new();
+        let cookie = fixture.setup().await;
+        let token = cookie.split_once('=').unwrap().1;
+        let stored = fs::read_to_string(&fixture.auth.path).unwrap();
+        assert!(!stored.contains(token));
+        assert!(stored.contains(&digest(token)));
+        assert_eq!(
+            fs::metadata(&fixture.auth.path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        let expires_before = fixture
+            .auth
+            .transaction(|data| Ok(data.sessions[&digest(token)].expires_at_ms))
+            .unwrap();
+
+        fixture.auth = Auth::new(fixture.auth.path.clone(), "new-worker").unwrap();
+        assert_eq!(
+            fixture
+                .request("GET", "/", Some(&cookie), None, json!(null))
+                .await
+                .status(),
+            StatusCode::OK
+        );
+        let expires_after = fixture
+            .auth
+            .transaction(|data| Ok(data.sessions[&digest(token)].expires_at_ms))
+            .unwrap();
+        assert_eq!(expires_before, expires_after);
+        assert_eq!(
+            fixture
+                .request(
+                    "POST",
+                    "/api/v1/auth/logout",
+                    Some(&cookie),
+                    None,
+                    json!({})
+                )
+                .await
+                .status(),
+            StatusCode::OK
+        );
+
+        fixture.auth = Auth::new(fixture.auth.path.clone(), "third-worker").unwrap();
+        assert_eq!(
+            fixture
+                .request("GET", "/api/v1/state", Some(&cookie), None, json!(null))
+                .await
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[tokio::test]
     async fn worker_credential_is_scoped_and_sessions_expire() {
         let fixture = Fixture::new();
         let cookie = fixture.setup().await;
@@ -1034,8 +1130,18 @@ mod tests {
                 .allowed(&headers, "/api/v1/video/identity", "POST")
                 .await
         );
-        assert!(fixture.auth.allowed(&headers, "/api/v1/video/liveportrait/status", "POST").await);
-        assert!(!fixture.auth.allowed(&headers, "/api/v1/video/liveportrait/source", "POST").await);
+        assert!(
+            fixture
+                .auth
+                .allowed(&headers, "/api/v1/video/liveportrait/status", "POST")
+                .await
+        );
+        assert!(
+            !fixture
+                .auth
+                .allowed(&headers, "/api/v1/video/liveportrait/source", "POST")
+                .await
+        );
         assert!(!fixture.auth.allowed(&headers, "/api/v1/state", "GET").await);
         assert!(
             !fixture
@@ -1043,9 +1149,15 @@ mod tests {
                 .allowed(&headers, "/api/v1/camera/power", "POST")
                 .await
         );
-        for session in fixture.auth.sessions.lock().await.values_mut() {
-            session.expires = Instant::now();
-        }
+        fixture
+            .auth
+            .transaction(|data| {
+                for session in data.sessions.values_mut() {
+                    session.expires_at_ms = crate::model::unix_ms();
+                }
+                Ok(())
+            })
+            .unwrap();
         assert_eq!(
             fixture
                 .request("GET", "/api/v1/state", Some(&cookie), None, json!(null))

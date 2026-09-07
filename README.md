@@ -444,7 +444,10 @@ There are no user accounts.
 Web clients sign in with the master password and receive a 12-hour HttpOnly,
 SameSite=Strict session cookie (also Secure when signing in over HTTPS).
 Passwords use salted Argon2id hashes. Password changes invalidate all previous
-web sessions but preserve client tokens. Sessions also end on daemon restart.
+web sessions but preserve client tokens. Sessions survive daemon restarts until
+their original expiration; only hashed session tokens are stored in the protected
+authentication file. Signing in opens
+the main control page.
 Disabling protection revokes all tokens and makes the API public again.
 
 In **Settings → API tokens**, create a named token for each client, such as
