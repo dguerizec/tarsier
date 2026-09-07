@@ -14,6 +14,8 @@ import sys
 import time
 from types import SimpleNamespace
 
+from speech_filter import SpeechFilter
+
 FRAMES = 7680
 BLOCK_BYTES = FRAMES * 4
 
@@ -38,6 +40,7 @@ class Converter:
                        SimpleNamespace(device=device, is_half=device.startswith("cuda")))
         if getattr(self.rvc, "net_g", None) is None:
             raise RuntimeError("RVC model initialization failed")
+        self.speech_filter = SpeechFilter()
         self.device = device
         self.resample_in = Resample(48000, 16000).to(device)
         self.resample_out = Resample(self.rvc.tgt_sr, 48000).to(device)
@@ -47,6 +50,7 @@ class Converter:
         self.kernel = torch.ones(1, 1, 1920, device=device)
 
     def reset(self):
+        self.speech_filter.reset()
         self.audio.zero_()
         self.overlap.zero_()
         self.rvc.cache_pitch.zero_()
@@ -59,11 +63,16 @@ class Converter:
         start = time.perf_counter()
         with torch.inference_mode():
             mono = np.frombuffer(pcm, dtype='<i2').reshape(-1, 2).mean(axis=1).astype(np.float32) / 32768
+            mono = self.speech_filter.process(mono)
             self.audio[:-FRAMES] = self.audio[FRAMES:].clone()
             self.audio[-FRAMES:] = torch.from_numpy(mono).to(self.device)
             self.rvc.change_key(pitch)
             inferred = self.rvc.infer(self.resample_in(self.audio), FRAMES // 3, 60, 21, 'rmvpe')
             converted = self.resample_out(inferred.float())
+            # Match the cleaned input envelope before SOLA, as in upstream RVC.
+            # This also suppresses model-generated sound during gated silence.
+            source = self.audio[28800:28800 + converted.numel()]
+            converted = match_envelope(source, converted, self.functional)
             segment = converted[None, None, :2400]
             correlation = self.functional.conv1d(segment, self.overlap[None, None, :])
             energy = self.functional.conv1d(segment.square(), self.kernel).add(1e-8).sqrt()
@@ -76,6 +85,16 @@ class Converter:
         if len(stereo) != BLOCK_BYTES or not np.isfinite(output).all():
             raise RuntimeError('Invalid converted PCM block')
         return stereo, (time.perf_counter() - start) * 1000
+
+
+def match_envelope(source, converted, functional):
+    """Follow 40 ms input RMS windows on the same timeline as converted audio."""
+    def rms(signal):
+        padded = functional.pad(signal[None, None, :], (960, 960), mode='reflect')
+        values = functional.avg_pool1d(padded.square(), 1920, 480).sqrt()
+        return functional.interpolate(values, size=signal.numel() + 1,
+                                      mode='linear', align_corners=True)[0, 0, :-1]
+    return converted * (rms(source) / rms(converted).clamp_min(1e-3))
 
 
 def read_exact(stream, count):
