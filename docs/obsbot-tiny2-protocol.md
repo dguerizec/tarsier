@@ -194,6 +194,37 @@ The special pattern was disabled, brightness restored to three, tracking left
 disabled as initially observed, and the original measured camera orientation
 restored. Final daemon health was checked after restoration.
 
+### Brightness zero and blinking interaction
+
+A further mirror experiment on 2026-09-07 tested both command orders. At
+brightness three, enabling the special pattern produced blinking. Setting
+brightness to zero then extinguished the LED; restoring brightness three
+resumed blinking without another special-pattern command. Conversely, setting
+brightness zero with the special pattern disabled, then enabling the pattern,
+left the LED dark after transition latency. Raising brightness to three again
+revealed blinking without resending its enable command.
+
+Each phase sampled 40 snapshots over approximately four seconds. The
+zero-after-blink phase contained no lit samples. The blink-after-zero phase
+contained one initially lit sample followed by 39 dark samples; the first
+sample may have been a preview frame retained from before the transition.
+Brightness readback was zero in both dark phases. Thus brightness zero masks
+the pattern while retaining its enabled state, as inferred from its later
+resumption; there is still no direct blink-state readback.
+
+The first attempt encountered HTTP 503 from the snapshot endpoint and one
+automatic video-pipeline restart. Restoration ran before retrying. The cause
+was not established. The complete second attempt added no pipeline restarts.
+The original brightness and orientation were restored, the special pattern
+disabled, and final health checked as OK.
+
+For API/UI design, brightness and blinking can remain independent desired
+settings: zero brightness means no visible light without discarding the
+blinking preference. Brightness can be reported as measured; blinking should
+be reported as the last successfully sent request, not a measured device
+state. A daemon restart or external controller can invalidate that assumption
+unless the desired pattern is explicitly reapplied.
+
 ### Deeper local SDK inspection: indicator-state commands
 
 A subsequent static inspection used the exact local file
