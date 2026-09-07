@@ -27,10 +27,9 @@ A synthetic benchmark with the original voice and camera running measured
 is not inferred from these timings. A live camera/voice check measured a median
 37 ms inference time with no additional dropped chunks over ten seconds.
 The voice-worker-only model replacement retained the existing virtual source.
-On digital silence at +12 semitones, the unmodified French model produced
-approximately -53 to -43 dBFS output (Shigure: about -90 dBFS). The prototype
-does not yet reproduce upstream volume-envelope matching; background artifacts
-therefore remain an open issue, even with the French model. The first Japanese trial produced background
+Before speech filtering, digital silence at +12 semitones produced approximately
+-53 to -43 dBFS output with the French model (Shigure: about -90 dBFS).
+Speech filtering and envelope matching now suppress this generated output. The first Japanese trial produced background
 voice/echo artifacts and a slight accent according to the user.
 
 ## Original demo voice and attribution
@@ -50,10 +49,12 @@ French pronunciation and accent quality are not validated.
 ## Audio behavior
 
 The worker receives 160 ms chunks of 48 kHz stereo S16LE after gain processing.
-It converts to mono, resamples to 16 kHz, retains 600 ms of model context, and
+It converts to mono, applies RNNoise and a speech gate, resamples to 16 kHz,
+retains 600 ms of model context, and
 uses RVC with RMVPE pitch extraction, a 40 ms overlap, and a 10 ms alignment
 search. Retrieval index mixing is disabled for this baseline. Output is
-resampled to 48 kHz stereo and clamped to 0.95 full scale.
+matched to the cleaned input volume envelope before overlap alignment, then
+published as 48 kHz stereo clamped to 0.95 full scale.
 
 The daemon continues publishing the same virtual microphone while the worker
 loads, fails, or is switched off. Conversion errors produce silence, never raw
@@ -70,7 +71,8 @@ isolated audio preferences. No default microphone is changed by this profile.
 
 `Pipeline delay` measures elapsed time from a PCM block entering the daemon to
 its publication. It excludes hardware, PulseAudio capture buffering, downstream
-application buffers, and acoustic playback. It is not total microphone-to-ear
+application buffers, and acoustic playback. It also does not track the signal
+alignment inside RNNoise, the 40 ms speech-gate buffer, or RVC overlap alignment. It is not total microphone-to-ear
 latency. Dropped chunks and inference time are shown separately.
 
 ## Initial benchmark
@@ -80,3 +82,36 @@ and performs warmup followed by nine measurements. On the RTX 3070, the first
 warmup took about 10.3 s; subsequent 160 ms chunks took about 35–40 ms and peak
 Torch allocation was about 448 MiB. These are inference-only measurements with
 video processing available, not proof of speech quality or total latency.
+
+
+## Speech filtering
+
+The voice worker uses [RNNoise](https://github.com/xiph/rnnoise) through the pinned
+`pyrnnoise==0.4.3` wheel (RNNoise BSD license; Python wrapper Apache-2.0).
+Processing is local on CPU, in 10 ms mono frames, with no additional audio device
+or GPU model. The filter is always active when this experimental RVC worker is
+used. Raw output when voice conversion is off is unaffected.
+
+Two consecutive frames with speech probability at least 0.65 open the gate.
+A 0.35 continuation threshold and 180 ms hold preserve gaps and word endings;
+a 40 ms delay retains audio preceding detection. Five-millisecond ramps smooth
+gate transitions. RNNoise continues analyzing input while the gate is closed.
+Resetting the conversion flushes denoiser state, delayed audio, and gate state.
+This is speech detection, not speaker identification: other people speaking may
+still pass, and actual desk taps mixed with speech require listening validation.
+
+The converted signal follows the filtered input's 40 ms RMS envelope before SOLA,
+following upstream RVC's volume matching. This prevents the model's generated
+noise from filling gated silences. Final daemon mute remains unchanged. Automatic
+gain should stay off for this trial: the user confirmed fewer artifacts without
+it, and gain up to +24 dB was observed amplifying the input before conversion.
+
+Validation: four CPU regression tests cover impact/noise rejection, reset,
+chunk continuity, and envelope matching (`voice/.venv/bin/python -m unittest
+discover -s voice -p 'test_*.py'`). With the French model at +12 semitones,
+full GPU conversion produced digital zero for silence and three synthetic damped
+noise impacts. The local ALSA `Front_Center.wav` speech fixture remained nonzero
+(output RMS 0.048 full scale), with median processing around 47 ms and maximum
+steady processing around 63 ms per 160 ms chunk while the live instance ran.
+These are bounded signal checks, not proof that every real noise is rejected,
+that speech quality is unchanged, or that latency equals Google Meet.
