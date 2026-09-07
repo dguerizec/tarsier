@@ -4,7 +4,7 @@ use axum::{
     Json, Router,
     body::Body,
     extract::{
-        DefaultBodyLimit, State, WebSocketUpgrade,
+        DefaultBodyLimit, Query, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
     http::{HeaderMap, StatusCode, header},
@@ -198,6 +198,12 @@ pub fn router_with_controls(
         .route(
             "/api/v1/audio/voice",
             get(voice_settings).post(set_voice_settings),
+        )
+        .route(
+            "/api/v1/audio/voice/models",
+            get(voice_models)
+                .post(upload_voice_model)
+                .layer(DefaultBodyLimit::max(128 * 1024 * 1024)),
         )
         .route("/api/v1/audio/sources", get(audio_sources))
         .route("/api/v1/audio/meter", get(audio_meter))
@@ -3118,6 +3124,8 @@ async fn voice_settings(State(state): State<ApiState>) -> Json<Value> {
 struct VoiceRequest {
     enabled: bool,
     pitch: i32,
+    #[serde(default)]
+    model: Option<String>,
 }
 
 async fn set_voice_settings(
@@ -3137,6 +3145,23 @@ async fn set_voice_settings(
     let mut audio = crate::settings::AudioSettings::from_state(&state.runtime.state().await);
     audio.voice_enabled = request.enabled;
     audio.voice_pitch = request.pitch;
+    if let Some(model) = request.model {
+        let Some(directory) = &state.config.audio.voice_models_dir else {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":"Model selection is unavailable"})),
+            )
+                .into_response();
+        };
+        if crate::voice::model_path(directory, &model).is_err() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":"Model is not installed"})),
+            )
+                .into_response();
+        }
+        audio.voice_model = model;
+    }
     if let Some(settings) = &state.user_settings {
         if let Err(error) = settings.set_audio(audio.clone()).await {
             return user_settings_error(error);
@@ -3144,6 +3169,49 @@ async fn set_voice_settings(
     }
     state.runtime.update(|s| audio.apply(s)).await;
     Json(state.runtime.state().await.audio_voice).into_response()
+}
+
+async fn voice_models(State(state): State<ApiState>) -> Response {
+    let Some(directory) = &state.config.audio.voice_models_dir else {
+        return Json(json!({"available":false,"models":[]})).into_response();
+    };
+    match crate::voice::models(directory) {
+        Ok(models) => Json(json!({"available":true,"models":models})).into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error":error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ModelUpload {
+    name: String,
+}
+
+async fn upload_voice_model(
+    State(state): State<ApiState>,
+    Query(query): Query<ModelUpload>,
+    bytes: Bytes,
+) -> Response {
+    let Some(directory) = state.config.audio.voice_models_dir.clone() else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"Model import is unavailable"})),
+        )
+            .into_response();
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        crate::voice::install_model(&directory, &query.name, &bytes)
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => voice_models(State(state)).await,
+        Ok(Err(error)) => (StatusCode::BAD_REQUEST, Json(json!({"error":format!("Could not import model (existing files are not replaced): {error}")}))).into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"Model import failed"}))).into_response(),
+    }
 }
 
 async fn audio_sources(State(state): State<ApiState>) -> Response {
@@ -3517,6 +3585,74 @@ mod tests {
     use super::*;
     use crate::{camera, config::CameraAdapter, settings::UserSettings};
 
+    #[tokio::test]
+    async fn voice_model_import_and_selection_preserve_output_settings() {
+        let directory =
+            std::env::temp_dir().join(format!("tarsier-voice-api-{:032x}", rand::random::<u128>()));
+        let runtime = Runtime::new();
+        runtime
+            .update(|s| {
+                s.audio_virtual.muted = true;
+                s.audio_virtual.auto_gain = false;
+            })
+            .await;
+        let mut config = Config::default();
+        config.audio.voice_worker = vec!["unused-test-worker".into()];
+        config.audio.voice_models_dir = Some(directory.clone());
+        let (_stop, shutdown) = watch::channel(false);
+        let app = router(config, runtime.clone(), PreviewHub::new(), None, shutdown);
+        let imported = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/audio/voice/models?name=Trial.pth")
+                    .body(Body::from("test checkpoint placeholder"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(imported.status(), StatusCode::OK);
+        assert_eq!(
+            runtime.state().await.audio_voice.model,
+            crate::voice::default_model()
+        );
+        for (model, expected) in [
+            ("Missing.pth", StatusCode::BAD_REQUEST),
+            ("../Trial.pth", StatusCode::BAD_REQUEST),
+            ("Trial.pth", StatusCode::OK),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post("/api/v1/audio/voice")
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            json!({"enabled":true,"pitch":4,"model":model}).to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+        }
+        let selected = runtime.state().await;
+        assert_eq!(selected.audio_voice.model, "Trial.pth");
+        assert_eq!(selected.audio_voice.generation, 1);
+        assert!(!selected.audio_voice.ready);
+        assert!(selected.audio_virtual.muted);
+        assert!(!selected.audio_virtual.auto_gain);
+        let response = app
+            .oneshot(
+                Request::post("/api/v1/audio/voice")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"enabled":false,"pitch":3}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(runtime.state().await.audio_voice.model, "Trial.pth");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
     #[tokio::test]
     async fn voice_controls_validate_pitch_and_preserve_mute() {
         let runtime = Runtime::new();

@@ -115,3 +115,40 @@ noise impacts. The local ALSA `Front_Center.wav` speech fixture remained nonzero
 steady processing around 63 ms per 160 ms chunk while the live instance ran.
 These are bounded signal checks, not proof that every real noise is rejected,
 that speech quality is unchanged, or that latency equals Google Meet.
+
+
+## Model selection and import
+
+Audio → Output provides a model selector and an **Import .pth** button. The
+profile's `audio.voice_models_dir` points to the isolated model directory.
+Both installed demo voices are listed; importing a local RVC checkpoint adds it
+to the list without selecting it. Uploads are limited to 128 MiB, accept regular
+`.pth` filenames, and never overwrite installed files. ZIP archives and optional
+retrieval indexes are not supported by this import control. Compatibility is
+checked when the worker loads the selected model; a failed load stays silent
+and reports an error so another model can be selected.
+
+Selection is persisted as `audio.voice_model` in this worktree's settings.
+Switching flushes buffered conversion audio and starts a new voice worker while
+the virtual microphone stays published. Loading produces silence, not raw voice.
+Mute, pitch, selected input, speech filtering and gain settings are preserved.
+A generation counter prevents an obsolete worker from reporting readiness after
+rapid selection changes, including selecting the original model again.
+
+API: `GET /api/v1/audio/voice/models` lists installed models;
+`POST /api/v1/audio/voice/models?name=Example.pth` imports the raw checkpoint body.
+`POST /api/v1/audio/voice` accepts `enabled`, `pitch`, and optional `model` (the
+installed filename). Omitting `model` preserves the current selection. These
+routes use the daemon's existing authentication rules. Imported checkpoints are
+local to this worktree and are not committed or uploaded to another service.
+
+
+Model-management validation: Rust API/filesystem tests cover import without
+activation, missing/path-traversal rejection, non-overwrite publication, symlink
+exclusion, persisted selection, and obsolete-worker readiness. A headless Chrome
+check exercised both demo selections, a 55 MB checkpoint import through the file
+picker, selection of that imported voice, incompatible-checkpoint error, and
+recovery to French Woman. The virtual-source ID and output mute were preserved
+through these switches; temporary validation models were removed. The user also
+confirmed that the preceding speech-filter change removed parasitic voices in
+their setup.

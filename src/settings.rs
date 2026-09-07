@@ -39,6 +39,7 @@ impl VideoResolution {
 pub struct AudioSettings {
     pub voice_enabled: bool,
     pub voice_pitch: i32,
+    pub voice_model: String,
     pub capture_sources: Vec<String>,
     pub output_source: Option<String>,
     pub output_enabled: bool,
@@ -51,6 +52,7 @@ impl Default for AudioSettings {
         Self {
             voice_enabled: false,
             voice_pitch: 0,
+            voice_model: crate::voice::default_model(),
             capture_sources: Vec::new(),
             output_source: None,
             output_enabled: false,
@@ -65,6 +67,7 @@ impl AudioSettings {
         Self {
             voice_enabled: state.audio_voice.enabled,
             voice_pitch: state.audio_voice.pitch,
+            voice_model: state.audio_voice.model.clone(),
             capture_sources: state.audio_capture_sources.clone(),
             output_source: state.audio_virtual.source.clone(),
             output_enabled: state.audio_virtual.enabled,
@@ -74,6 +77,14 @@ impl AudioSettings {
     }
 
     pub fn apply(&self, state: &mut crate::model::RuntimeState) {
+        if state.audio_voice.model != self.voice_model {
+            state.audio_voice.generation = state.audio_voice.generation.wrapping_add(1);
+            state.audio_voice.ready = false;
+            state.audio_voice.error = None;
+            state.audio_voice.inference_ms = None;
+            state.audio_voice.pipeline_ms = None;
+            state.audio_voice.model = self.voice_model.clone();
+        }
         state.audio_voice.enabled = self.voice_enabled;
         state.audio_voice.pitch = self.voice_pitch;
         state.audio_capture_sources = self.capture_sources.clone();
@@ -145,6 +156,9 @@ impl UserSettings {
     }
 
     fn validate(self) -> Result<Self> {
+        if !crate::voice::valid_model_name(&self.audio.voice_model) {
+            bail!("invalid voice model filename");
+        }
         if !(-12..=12).contains(&self.audio.voice_pitch) {
             bail!("voice pitch must be between -12 and 12");
         }
@@ -475,6 +489,7 @@ mod tests {
             output_auto_gain: false,
             voice_enabled: true,
             voice_pitch: 3,
+            voice_model: "Shigure.pth".into(),
         };
         store.set_audio(audio.clone()).await.unwrap();
         store.set_network_lan_access(true).await.unwrap();

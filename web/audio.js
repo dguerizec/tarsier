@@ -548,6 +548,40 @@ window.addEventListener('pagehide', () => {
 
 let voiceState = {};
 let voicePending = false;
+let voiceImportPending = false;
+const voiceModel = document.querySelector('#voice-model');
+const voiceImport = document.querySelector('#voice-import');
+const voiceFile = document.querySelector('#voice-model-file');
+const voiceImportStatus = document.querySelector('#voice-import-status');
+async function refreshVoiceModels() {
+  const response = await fetch('/api/v1/audio/voice/models');
+  const body = await response.json();
+  if (!response.ok) throw new Error(body.error || 'Could not list voice models');
+  document.querySelector('#voice-model-controls').hidden = !body.available;
+  voiceModel.replaceChildren(...body.models.map(model => new Option(model.name, model.id)));
+  renderVoice();
+}
+voiceImport.onclick = () => voiceFile.click();
+voiceFile.onchange = async () => {
+  const file = voiceFile.files[0];
+  if (!file) return;
+  if (!file.name.endsWith('.pth') || !file.size || file.size > 128 * 1024 * 1024) {
+    voiceImportStatus.textContent = 'Choose a nonempty RVC .pth file up to 128 MiB.';
+    voiceFile.value = ''; return;
+  }
+  voiceImportPending = true; renderVoice();
+  voiceImportStatus.textContent = 'Importing model…';
+  try {
+    const response = await fetch(`/api/v1/audio/voice/models?name=${encodeURIComponent(file.name)}`, {
+      method: 'POST', headers: {'Content-Type':'application/octet-stream'}, body: file,
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || 'Could not import model');
+    await refreshVoiceModels();
+    voiceImportStatus.textContent = 'Imported. Select the model to load it; compatibility is checked when loading.';
+  } catch (error) { voiceImportStatus.textContent = error.message; }
+  finally { voiceImportPending = false; voiceFile.value = ''; renderVoice(); }
+};
 const voiceToggle = document.querySelector('#voice-toggle');
 const voicePitch = document.querySelector('#voice-pitch');
 const voiceStatus = document.querySelector('#voice-status');
@@ -557,18 +591,33 @@ function renderVoice() {
   voiceToggle.setAttribute('aria-pressed', String(!!voiceState.enabled));
   voiceToggle.disabled = voicePending;
   voicePitch.disabled = voicePending;
+  voiceModel.disabled = voicePending || voiceImportPending;
+  voiceImport.disabled = voiceImportPending;
+  voiceModel.value = voiceState.model || 'FrenchWoman.pth';
+  const credit = document.querySelector('#voice-model-credit');
+  const credits = {
+    'FrenchWoman.pth': ['French Woman — DantSu', 'https://github.com/DantSu/RVC-french-woman-model'],
+    'Shigure.pth': ['Shigure Tokina — CV: Marukoro · Managed by Bindume · Trained by yasyune', 'https://huggingface.co/yasyune/Shigure_Tokina_RVC'],
+  };
+  const metadata = credits[voiceState.model || 'FrenchWoman.pth'];
+  credit.replaceChildren();
+  if (metadata) {
+    const link = document.createElement('a');
+    link.textContent = metadata[0]; link.href = metadata[1]; link.target = '_blank'; link.rel = 'noopener';
+    credit.append(link);
+  } else { credit.textContent = voiceState.model || ''; }
   if (document.activeElement !== voicePitch) voicePitch.value = voiceState.pitch || 0;
   document.querySelector('#voice-pitch-value').textContent = `${voicePitch.value} st`;
   voiceStatus.textContent = voiceState.error || (!voiceState.enabled ? 'Off' : !virtualState.enabled
     ? 'Turn on audio output to start conversion.' : !voiceState.ready ? 'Loading voice model…'
     : `Ready${virtualState.muted ? ' · Output muted' : ''} · Inference ${Math.round(voiceState.inference_ms || 0)} ms · Pipeline delay ${voiceState.pipeline_ms ?? '–'} ms · Dropped chunks ${voiceState.dropped_chunks || 0}`);
-  voiceStatus.title = 'Pipeline delay is measured from daemon capture to output. It excludes hardware and application buffering.';
+  voiceStatus.title = 'Pipeline delay measures daemon queue and processing time. It excludes filter alignment, hardware and application buffering.';
 }
-async function updateVoice(enabled, pitch) {
+async function updateVoice(enabled, pitch, model) {
   if (voicePending) return;
   voicePending = true; renderVoice();
   try {
-    const response = await fetch('/api/v1/audio/voice', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({enabled, pitch})});
+    const response = await fetch('/api/v1/audio/voice', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({enabled, pitch, ...(model ? {model} : {})})});
     const body = await response.json();
     if (!response.ok) throw new Error(body.error || 'Could not change voice conversion');
     voiceState = body;
@@ -578,3 +627,6 @@ async function updateVoice(enabled, pitch) {
 voiceToggle.onclick = () => updateVoice(!voiceState.enabled, Number(voicePitch.value));
 voicePitch.oninput = () => { document.querySelector('#voice-pitch-value').textContent = `${voicePitch.value} st`; };
 voicePitch.onchange = () => updateVoice(!!voiceState.enabled, Number(voicePitch.value));
+
+voiceModel.onchange = () => updateVoice(!!voiceState.enabled, Number(voicePitch.value), voiceModel.value);
+if (audioConfig.audio.voice_worker?.length) refreshVoiceModels().catch(error => { voiceImportStatus.textContent = error.message; });

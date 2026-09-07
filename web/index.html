@@ -116,7 +116,13 @@
             <div id="audio-output-track"></div>
             <div id="voice-conversion" class="voice-conversion" hidden>
               <div><strong>Voice conversion</strong> <button id="voice-toggle" class="secondary compact" type="button" aria-pressed="false">Off</button></div>
-              <p class="hint">Demo: <a href="https://github.com/DantSu/RVC-french-woman-model" target="_blank" rel="noopener">French Woman (DantSu)</a> · French training</p>
+              <div id="voice-model-controls" hidden>
+                <label>Model <select id="voice-model" aria-label="Voice model"></select></label>
+                <button id="voice-import" class="secondary compact" type="button">Import .pth</button>
+                <input id="voice-model-file" type="file" accept=".pth" hidden>
+              </div>
+              <p id="voice-model-credit" class="hint"></p>
+              <p id="voice-import-status" class="hint" role="status"></p>
               <label>Pitch <input id="voice-pitch" type="range" min="-12" max="12" step="1" value="0"> <output id="voice-pitch-value">0 st</output></label>
               <p id="voice-status" class="hint" role="status">Off</p>
             </div>

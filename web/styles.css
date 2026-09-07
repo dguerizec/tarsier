@@ -346,3 +346,8 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .voice-conversion > div { display: flex; justify-content: space-between; align-items: center; }
 .voice-conversion label { display: flex; gap: .6rem; align-items: center; font-size: .8rem; }
 .voice-conversion input { flex: 1; min-width: 0; }
+
+#voice-model-controls { gap: .6rem; flex-wrap: wrap; }
+#voice-model-controls label { flex: 1; min-width: 12rem; }
+#voice-model { flex: 1; min-width: 0; max-width: 100%; padding: .4rem; color: inherit; background: var(--panel); border: 1px solid var(--panel-edge); border-radius: .35rem; }
+#voice-model-controls[hidden] { display: none; }
