@@ -101,8 +101,15 @@ async function loadAuth() {
     const {tokens} = await authRequest("tokens");
     for (const token of tokens) {
       const item = document.createElement("li");
-      const label = document.createElement("span");
-      label.textContent = `${token.name} · ${new Date(token.created_at_ms).toLocaleString()} `;
+      const label = document.createElement("div");
+      label.className = "token-details";
+      const name = document.createElement("strong");
+      name.textContent = token.name;
+      const created = document.createElement("time");
+      const date = new Date(token.created_at_ms);
+      created.dateTime = date.toISOString();
+      created.textContent = `Created ${date.toLocaleDateString(undefined, {year: "numeric", month: "short", day: "numeric"})} · ${date.toLocaleTimeString(undefined, {hour: "2-digit", minute: "2-digit"})}`;
+      label.append(name, created);
       const revoke = document.createElement("button");
       revoke.type = "button"; revoke.textContent = "Revoke";
       revoke.addEventListener("click", async () => {
@@ -111,8 +118,13 @@ async function loadAuth() {
         try { await authRequest(`tokens/${encodeURIComponent(token.id)}/revoke`, {}); await loadAuth(); }
         catch (error) { tokenStatus.textContent = error.message; revoke.disabled = false; }
       });
-      const scope = document.createElement("span");
-      scope.textContent = `${token.destinations.map(value => value.toUpperCase()).join(" + ")} · `;
+      const scope = document.createElement("div");
+      scope.className = "token-scopes";
+      for (const destination of token.destinations) {
+        const badge = document.createElement("span");
+        badge.textContent = destination.toUpperCase();
+        scope.append(badge);
+      }
       item.append(label, scope, revoke); list.append(item);
     }
   }

@@ -318,20 +318,39 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .settings-page label:has(input[type="password"]),
 #token-form > label { display: grid; gap: .4rem; color: var(--muted); font-size: .85rem; }
 .settings-page input[type="password"],
-#token-form input, #token-value {
+#token-form input[name="name"], #token-value {
   display: block; width: 100%; box-sizing: border-box; padding: .7rem .8rem;
   background: #0a0e0c; color: #f2f5ef; border: 1px solid var(--panel-edge);
   border-radius: .5rem; font: inherit;
 }
 .settings-page input:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
-#token-form { display: flex; gap: .75rem; align-items: end; flex-wrap: wrap; }
-#token-form > label { flex: 1 1 12rem; }
+#token-form { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 1rem; align-items: end; margin-top: 1.25rem; }
+#token-form > label { min-width: 0; }
+#token-form fieldset { margin: 0; min-width: 0; }
+#token-form legend { color: var(--muted); margin-bottom: .4rem; }
+.token-destinations { display: flex; gap: .4rem; }
+.token-destinations label { display: inline-flex; align-items: center; gap: .45rem; min-height: 2.65rem; padding: .55rem .65rem; border: 1px solid var(--panel-edge); border-radius: .5rem; font-size: .85rem; cursor: pointer; }
+.token-destinations label:has(:checked) { border-color: #71944f; background: #b7ef7a0c; }
+#token-form input[type="checkbox"] { width: 1rem; height: 1rem; margin: 0; accent-color: var(--green); flex-shrink: 0; }
+#token-create { min-height: 2.65rem; white-space: nowrap; }
 #password-form > button, #new-token > button { margin: .3rem .25rem .3rem 0; }
 #password-disable { background: #301c19; color: var(--red); }
 #auth-logout, #token-dismiss, #token-list button { background: #273229; color: #f2f5ef; }
-#token-list { list-style: none; padding: 0; }
-#token-list li { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .8rem 0; border-bottom: 1px solid var(--panel-edge); }
-#token-list span { overflow-wrap: anywhere; min-width: 0; font-size: .85rem; }
+#token-list { list-style: none; padding: 0; margin: 1.5rem 0 0; }
+#token-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 1.25rem; padding: 1rem 0; border-top: 1px solid var(--panel-edge); }
+.token-details { display: grid; gap: .3rem; min-width: 0; }
+.token-details strong { font-size: .9rem; font-weight: 600; overflow-wrap: anywhere; }
+.token-details time { color: var(--muted); font-size: .75rem; }
+.token-scopes { display: flex; gap: .35rem; }
+.token-scopes span { font-size: .68rem; font-weight: 600; letter-spacing: .04em; padding: .25rem .5rem; border: 1px solid var(--panel-edge); border-radius: .35rem; color: var(--muted); }
+#token-status:empty { display: none; }
+@media (max-width: 600px) {
+  #token-form { grid-template-columns: minmax(0, 1fr) auto; }
+  #token-form > label { grid-column: 1 / -1; }
+  #token-list li { grid-template-columns: minmax(0, 1fr) auto; gap: .65rem 1rem; }
+  .token-scopes { grid-column: 1; }
+  #token-list button { grid-column: 2; grid-row: 1 / 3; }
+}
 #login-form > button { margin-top: 1rem; }
 
 .preview-overlay-tools { align-items: flex-end; }

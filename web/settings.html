@@ -46,8 +46,10 @@
           <label>Client name <input name="name" required maxlength="80" placeholder="Stream Deck"></label>
           <fieldset>
             <legend>Destinations</legend>
-            <label><input type="checkbox" name="api" checked> API</label>
-            <label><input type="checkbox" name="mcp"> MCP</label>
+            <div class="token-destinations">
+              <label><input type="checkbox" name="api" checked> API</label>
+              <label><input type="checkbox" name="mcp"> MCP</label>
+            </div>
           </fieldset>
           <button id="token-create" type="submit" disabled>Create token</button>
         </form>
