@@ -64,6 +64,8 @@ let faceTrackingPending = false;
 let handsTrackingPending = false;
 let imageSettingError = null;
 let portraitPending = false;
+let portraitSwitchRevision = null;
+let portraitSwitchPolling = false;
 let selectedPortraitId = null;
 let currentPortraitId = null;
 const portraitChoose = $("#liveportrait-choose");
@@ -751,7 +753,7 @@ function renderOutputMode(videoEffects) {
     input.disabled = outputModePending || (cameraOnly4k() && input.value !== "camera");
     input.checked = input.value === identity;
   }
-  portraitChoose.disabled = portraitPending || !daemonRestartAvailable || !socketConnected;
+  portraitChoose.disabled = portraitPending || !socketConnected;
   skeletonToggle.disabled = identity !== "camera";
   const status = outputModeError
     ? "Change failed"
@@ -1112,7 +1114,7 @@ portraitChoose.addEventListener("click", async () => {
       card.append(image, name);
       if (portrait.selected) {
         const badge = document.createElement("small");
-        badge.textContent = "Current avatar";
+        badge.textContent = "Selected avatar";
         card.append(badge);
       }
       image.addEventListener("error", () => {
@@ -1155,18 +1157,56 @@ $("#liveportrait-form").addEventListener("submit", async (event) => {
       const payload = await response.json().catch(() => ({}));
       throw new Error(payload.error || `Avatar selection failed (${response.status})`);
     }
-    portraitSave.textContent = "Saved. Reconnecting…";
-    // The existing daemon-instance observer reloads after the supervised restart.
-    void checkDaemonInstance();
+    const selection = await response.json();
+    portraitSwitchRevision = selection.revision;
+    const status = $("#liveportrait-switch-status");
+    status.hidden = false;
+    status.textContent = "Preparing avatar…";
+    portraitDialog.close();
+    void pollPortraitSwitch();
   } catch (error) {
+    portraitError.textContent = error instanceof Error ? error.message : String(error);
+    portraitError.hidden = false;
+  } finally {
     portraitPending = false;
     portraitSave.disabled = portraitCancel.disabled = false;
     portraitGallery.inert = false;
     portraitSave.textContent = "Use this avatar";
-    portraitError.textContent = error instanceof Error ? error.message : String(error);
-    portraitError.hidden = false;
   }
 });
+
+async function pollPortraitSwitch() {
+  if (portraitSwitchRevision == null || portraitSwitchPolling) return;
+  const revision = portraitSwitchRevision;
+  portraitSwitchPolling = true;
+  try {
+    const response = await fetch("/api/v1/video/identity", { cache: "no-store" });
+    if (!response.ok) return;
+    const payload = await response.json();
+    if (portraitSwitchRevision !== revision) return;
+    const portrait = payload.liveportrait;
+    if (!portrait) return;
+    const status = $("#liveportrait-switch-status");
+    if (portrait.revision !== revision) {
+      status.textContent = "Avatar selection changed.";
+      portraitSwitchRevision = null;
+    } else if (portrait.error) {
+      status.textContent = `The previous avatar is still active: ${portrait.error}`;
+      portraitSwitchRevision = null;
+    } else if (payload.identity !== "liveportrait") {
+      status.textContent = "Avatar selected. It will load when LivePortrait is active.";
+      portraitSwitchRevision = null;
+    } else if (portrait.active_revision === revision) {
+      status.textContent = "Avatar changed.";
+      portraitSwitchRevision = null;
+    }
+  } catch {
+    // A transient status request failure must not interrupt the media streams.
+  } finally {
+    portraitSwitchPolling = false;
+  }
+}
+setInterval(pollPortraitSwitch, 500);
 
 for (const input of outputModeInputs) {
   input.addEventListener("change", () => {

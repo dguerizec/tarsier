@@ -3,7 +3,9 @@ from __future__ import annotations
 import gc
 from collections import OrderedDict
 from contextlib import nullcontext
+from dataclasses import dataclass
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 import cv2
@@ -153,8 +155,17 @@ def transfer_motion(
     return source["scale"] * (source["kp"] @ rotation + expression) + source["t"]
 
 
+@dataclass(frozen=True)
+class PreparedPortrait:
+    image_bgr: np.ndarray
+    info: dict[str, torch.Tensor]
+    rotation: torch.Tensor
+    keypoints: torch.Tensor
+    features: torch.Tensor
+
+
 class ComicAvatarEngine:
-    """Minimal LivePortrait inference core for one persistent portrait source."""
+    """LivePortrait inference with shared weights and replaceable source features."""
 
     def __init__(self, source_image: Path, model_dir: Path, *, compile_models: bool) -> None:
         if not torch.cuda.is_available():
@@ -199,23 +210,30 @@ class ComicAvatarEngine:
             self._warping = torch.compile(self._warping, mode="max-autotune")
             self._generator = torch.compile(self._generator, mode="max-autotune")
 
+        self._inference_lock = Lock()
+        self.source = self.prepare_source(source_image)
+        self._driving_initial_info: dict[str, torch.Tensor] | None = None
+        self._driving_initial_rotation: torch.Tensor | None = None
+        self._motion_stabilizer = MotionStabilizer()
+
+    def prepare_source(self, source_image: Path) -> PreparedPortrait:
+        """Prepare only source features; the read-only neural weights stay loaded."""
         source_bgr = cv2.imread(str(source_image), cv2.IMREAD_COLOR)
         if source_bgr is None:
             raise RuntimeError(f"cannot read avatar source image: {source_image}")
         source_rgb = cv2.cvtColor(center_square(source_bgr), cv2.COLOR_BGR2RGB)
-        source_tensor = self._prepare(source_rgb)
-        self._source_info = self._keypoint_info(source_tensor)
-        self._source_rotation = rotation_matrix(
-            self._source_info["pitch"],
-            self._source_info["yaw"],
-            self._source_info["roll"],
-        )
-        self._source_keypoints = self._transform_keypoints(self._source_info)
-        with torch.inference_mode(), self._autocast():
-            self._source_features = self._appearance(source_tensor).float()
-        self._driving_initial_info: dict[str, torch.Tensor] | None = None
-        self._driving_initial_rotation: torch.Tensor | None = None
-        self._motion_stabilizer = MotionStabilizer()
+        # CUDA graph capture cannot overlap another thread's neural calls.
+        # Decode outside the lock; serialize only the short shared-model work.
+        with self._inference_lock:
+            source_tensor = self._prepare(source_rgb)
+            info = self._keypoint_info(source_tensor)
+            rotation = rotation_matrix(info["pitch"], info["yaw"], info["roll"])
+            keypoints = self._transform_keypoints(info)
+            with torch.inference_mode(), self._autocast():
+                features = self._appearance(source_tensor).float()
+            if self._device.type == "cuda":
+                torch.cuda.current_stream(self._device).synchronize()
+            return PreparedPortrait(source_bgr, info, rotation, keypoints, features)
 
     def _load_model(self, model: torch.nn.Module, path: Path) -> torch.nn.Module:
         model.load_state_dict(torch.load(path, map_location="cpu"))
@@ -253,7 +271,13 @@ class ComicAvatarEngine:
         transformed[..., :2] += info["t"][:, None, :2]
         return transformed
 
-    def render(self, driving_bgr: np.ndarray) -> np.ndarray:
+    def render(
+        self, driving_bgr: np.ndarray, source: PreparedPortrait | None = None
+    ) -> np.ndarray:
+        with self._inference_lock:
+            return self._render_frame(driving_bgr, self.source if source is None else source)
+
+    def _render_frame(self, driving_bgr: np.ndarray, source: PreparedPortrait) -> np.ndarray:
         driving_rgb = cv2.cvtColor(driving_bgr, cv2.COLOR_BGR2RGB)
         driving_info = self._motion_stabilizer.update(
             self._keypoint_info(self._prepare(driving_rgb))
@@ -267,17 +291,17 @@ class ComicAvatarEngine:
 
         initial = self._driving_initial_info
         driven = transfer_motion(
-            self._source_info,
-            self._source_rotation,
+            source.info,
+            source.rotation,
             driving_info,
             initial,
             self._driving_initial_rotation,
         )
 
-        features = torch.cat([self._source_keypoints.reshape(1, -1), driven.reshape(1, -1)], dim=1)
+        features = torch.cat([source.keypoints.reshape(1, -1), driven.reshape(1, -1)], dim=1)
         with torch.inference_mode():
             delta = self._stitching(features)
-        keypoint_count = self._source_keypoints.shape[1]
+        keypoint_count = source.keypoints.shape[1]
         driven = driven.clone()
         driven += delta[..., : 3 * keypoint_count].reshape(1, keypoint_count, 3)
         driven[..., :2] += delta[..., 3 * keypoint_count :].reshape(1, 1, 2)
@@ -286,8 +310,8 @@ class ComicAvatarEngine:
             torch.compiler.cudagraph_mark_step_begin()
         with torch.inference_mode(), self._autocast():
             warped = self._warping(
-                self._source_features,
-                kp_source=self._source_keypoints,
+                source.features,
+                kp_source=source.keypoints,
                 kp_driving=driven,
             )
             output = self._generator(feature=warped["out"])
@@ -301,10 +325,7 @@ class ComicAvatarEngine:
         self._warping = None
         self._generator = None
         self._stitching = None
-        self._source_features = None
-        self._source_info = None
-        self._source_rotation = None
-        self._source_keypoints = None
+        self.source = None
         self._driving_initial_info = None
         self._driving_initial_rotation = None
         self._motion_stabilizer = None

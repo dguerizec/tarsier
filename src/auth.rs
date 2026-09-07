@@ -191,6 +191,7 @@ impl Auth {
             let hash = digest(token);
             if hash == self.worker_hash {
                 return (path == "/api/v1/video/identity" && method == "GET")
+                    || (path == "/api/v1/video/liveportrait/status" && method == "POST")
                     || matches!(
                         path,
                         "/api/v1/perception/input.mjpeg"
@@ -1033,6 +1034,8 @@ mod tests {
                 .allowed(&headers, "/api/v1/video/identity", "POST")
                 .await
         );
+        assert!(fixture.auth.allowed(&headers, "/api/v1/video/liveportrait/status", "POST").await);
+        assert!(!fixture.auth.allowed(&headers, "/api/v1/video/liveportrait/source", "POST").await);
         assert!(!fixture.auth.allowed(&headers, "/api/v1/state", "GET").await);
         assert!(
             !fixture

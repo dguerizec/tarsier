@@ -56,6 +56,8 @@ struct ApiState {
     daemon_restart: Option<DaemonRestart>,
     user_settings: Option<UserSettingsStore>,
     audio_settings_control: Arc<Mutex<()>>,
+    portrait_selection_control: Arc<Mutex<()>>,
+    liveportrait: Arc<Mutex<crate::avatar_source::LivePortraitState>>,
     shutdown: watch::Receiver<bool>,
 }
 
@@ -138,6 +140,9 @@ pub fn router_with_controls(
     let mut hands_tracking = HandsTrackingController::default();
     hands_tracking.set_enabled(options.hands_tracking_enabled);
     let auth = options.auth.clone();
+    let liveportrait = Arc::new(Mutex::new(crate::avatar_source::LivePortraitState::new(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(&config.avatar.source_image),
+    )));
     let state = ApiState {
         auth: options.auth,
         recorder: options.recorder,
@@ -157,6 +162,8 @@ pub fn router_with_controls(
         daemon_restart: options.daemon_restart,
         user_settings: options.user_settings,
         audio_settings_control: Arc::new(Mutex::new(())),
+        portrait_selection_control: Arc::new(Mutex::new(())),
+        liveportrait,
         video_applications: crate::video_clients::Monitor::default(),
         shutdown,
     };
@@ -168,6 +175,7 @@ pub fn router_with_controls(
             get(liveportrait_sources).post(set_liveportrait_source),
         )
         .route("/api/v1/video/liveportrait/source/{id}", get(liveportrait_thumbnail))
+        .route("/api/v1/video/liveportrait/status", get(liveportrait_status).post(report_liveportrait_error))
         .route("/assets/logo.svg", get(logo_svg))
         .route("/assets/favicon.svg", get(favicon_svg))
         .route("/assets/settings.js", get(settings_js))
@@ -350,7 +358,7 @@ async fn portrait_catalog(state: &ApiState) -> anyhow::Result<Vec<crate::avatar_
     if let Some(settings) = &state.user_settings {
         directories.push(settings.portrait_directory());
     }
-    let current = root.join(&state.config.avatar.source_image);
+    let current = state.liveportrait.lock().await.source.clone();
     tokio::task::spawn_blocking(move || crate::avatar_source::catalog(&directories, &current))
         .await?
 }
@@ -396,7 +404,7 @@ async fn set_liveportrait_source(
     State(state): State<ApiState>,
     Json(selection): Json<PortraitSelection>,
 ) -> Response {
-    let _video = state.video_output_control.lock().await;
+    let _selection = state.portrait_selection_control.lock().await;
     if !state.config.avatar.enabled {
         return (
             StatusCode::CONFLICT,
@@ -404,15 +412,12 @@ async fn set_liveportrait_source(
         )
             .into_response();
     }
-    if state.recorder.status().await.active {
+    let Some(settings) = &state.user_settings else {
         return (
             StatusCode::CONFLICT,
-            Json(json!({"error": "Stop recording before changing the portrait"})),
+            Json(json!({"error": "Portrait changes require persistent settings"})),
         )
             .into_response();
-    }
-    let (Some(restart), Some(settings)) = (&state.daemon_restart, &state.user_settings) else {
-        return (StatusCode::CONFLICT, Json(json!({"error": "Portrait changes require a supervised daemon and persistent settings"}))).into_response();
     };
     let portraits = match portrait_catalog(&state).await {
         Ok(portraits) => portraits,
@@ -441,17 +446,36 @@ async fn set_liveportrait_source(
         )
             .into_response();
     }
-    if let Err(error) = settings.set_liveportrait_source(path).await {
+    if let Err(error) = settings.set_liveportrait_source(path.clone()).await {
         return user_settings_error(error);
     }
-    if let Err(error) = restart.request().await {
-        return (
-            StatusCode::CONFLICT,
-            Json(json!({"error": format!("Portrait saved; restart Tarsier to apply it: {error}")})),
-        )
-            .into_response();
+    let mut portrait = state.liveportrait.lock().await;
+    portrait.select(path);
+    (StatusCode::ACCEPTED, Json(portrait.clone())).into_response()
+}
+
+async fn liveportrait_status(
+    State(state): State<ApiState>,
+) -> Json<crate::avatar_source::LivePortraitState> {
+    Json(state.liveportrait.lock().await.clone())
+}
+
+#[derive(Deserialize)]
+struct PortraitError {
+    revision: u64,
+    error: String,
+}
+
+async fn report_liveportrait_error(
+    State(state): State<ApiState>,
+    Json(error): Json<PortraitError>,
+) -> StatusCode {
+    let mut portrait = state.liveportrait.lock().await;
+    if portrait.revision != error.revision || portrait.active_revision == error.revision {
+        return StatusCode::CONFLICT;
     }
-    (StatusCode::ACCEPTED, Json(json!({"restarting": true}))).into_response()
+    portrait.error = Some(error.error.chars().take(500).collect());
+    StatusCode::NO_CONTENT
 }
 
 async fn device_settings(State(state): State<ApiState>) -> Response {
@@ -916,6 +940,7 @@ struct IdentityRequest {
 
 #[derive(Serialize)]
 struct IdentityResponse {
+    liveportrait: crate::avatar_source::LivePortraitState,
     identity: VideoIdentity,
     background_enabled: bool,
 }
@@ -2292,6 +2317,7 @@ async fn set_transform(
 async fn current_identity(State(state): State<ApiState>) -> Json<IdentityResponse> {
     let effects = state.runtime.state().await.video_effects;
     Json(IdentityResponse {
+        liveportrait: state.liveportrait.lock().await.clone(),
         identity: video_identity(effects.output_mode, effects.avatar_engine),
         background_enabled: effects.background_enabled,
     })
@@ -2485,6 +2511,33 @@ async fn avatar_frame(State(state): State<ApiState>, headers: HeaderMap, body: B
             Json(json!({"error": "avatar frame does not match the selected video identity"})),
         )
             .into_response();
+    }
+    if engine == AvatarEngine::Liveportrait {
+        let revision = if headers.contains_key("x-tarsier-avatar-source-revision") {
+            match required_u64_header(&headers, "x-tarsier-avatar-source-revision") {
+                Ok(value) => value,
+                Err(error) => return unprocessable_entity(error),
+            }
+        } else {
+            0
+        };
+        let mut portrait = state.liveportrait.lock().await;
+        if revision != portrait.active_revision
+            && unix_ms().saturating_sub(captured_at_ms) > crate::effects::AVATAR_MAX_AGE_MS
+        {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({"error": "new portrait frame is not fresh yet"})),
+            )
+                .into_response();
+        }
+        if !portrait.accept_frame(revision) {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({"error": "obsolete portrait revision"})),
+            )
+                .into_response();
+        }
     }
     let frame_id = avatar.frame_id;
     let published_at_ms = avatar.published_at_ms;
@@ -4679,7 +4732,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn portrait_selection_requires_supervision() {
+    async fn portrait_selection_requires_persistent_settings() {
         let mut config = Config::default();
         config.avatar.enabled = true;
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -4697,7 +4750,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn portrait_gallery_selects_existing_file_and_requests_restart() {
+    async fn portrait_gallery_selects_existing_file_without_restart() {
         let mut config = Config::default();
         config.avatar.enabled = true;
         let directory =
@@ -4709,10 +4762,12 @@ mod tests {
             .unwrap();
         let (restart_tx, mut restart_rx) = oneshot::channel();
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let runtime = Runtime::new();
+        let preview = PreviewHub::new();
         let app = router_with_controls(
             config,
-            Runtime::new(),
-            PreviewHub::new(),
+            runtime.clone(),
+            preview.clone(),
             None,
             ApiOptions {
                 user_settings: Some(settings),
@@ -4767,6 +4822,22 @@ mod tests {
         assert!(restart_rx.try_recv().is_err());
         assert!(!path.exists());
         let response = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/video/identity")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"identity":"liveportrait"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        preview
+            .effects()
+            .publish_avatar(AvatarFrame::new(9, unix_ms(), 2, 1, vec![9; 8]).unwrap());
+        let runtime_before_selection = serde_json::to_value(runtime.state().await).unwrap();
+        let response = app
+            .clone()
             .oneshot(
                 Request::post("/api/v1/video/liveportrait/source")
                     .header("content-type", "application/json")
@@ -4776,11 +4847,72 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::ACCEPTED);
-        restart_rx.await.unwrap();
+        assert_eq!(preview.effects().latest_avatar().unwrap().frame_id, 9);
+        assert_eq!(
+            serde_json::to_value(runtime.state().await).unwrap(),
+            runtime_before_selection
+        );
+        assert!(matches!(
+            restart_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/video/identity")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let identity: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(identity["identity"], "liveportrait");
+        assert_eq!(identity["liveportrait"]["revision"], 1);
+        assert_eq!(identity["liveportrait"]["active_revision"], 0);
+        let mut expected = 0;
+        for (revision, value, age, status) in [
+            (0, 10, 0, StatusCode::NO_CONTENT),
+            (1, 15, 1000, StatusCode::CONFLICT),
+            (1, 20, 0, StatusCode::NO_CONTENT),
+            (0, 30, 0, StatusCode::CONFLICT),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post("/api/v1/avatar/frame")
+                        .header("x-tarsier-avatar-engine", "liveportrait")
+                        .header("x-tarsier-avatar-source-revision", revision.to_string())
+                        .header("x-tarsier-frame-id", (value as u64).to_string())
+                        .header(
+                            "x-tarsier-captured-at-ms",
+                            unix_ms().saturating_sub(age).to_string(),
+                        )
+                        .header("x-tarsier-avatar-width", "2")
+                        .header("x-tarsier-avatar-height", "1")
+                        .body(Body::from(vec![value; 8]))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), status);
+            if status == StatusCode::NO_CONTENT {
+                expected = value;
+            }
+            let mut output = [255; 8];
+            assert!(preview.effects().apply_output(&mut output, 2, 1, unix_ms()));
+            assert_eq!(output, [expected; 8]);
+        }
+        assert!(matches!(
+            restart_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
         let (_, restored) = UserSettingsStore::load(path, fallback.clone())
             .await
             .unwrap();
-        assert_eq!(restored.video_identity, fallback.video_identity);
+        assert_eq!(restored.video_identity, VideoIdentity::Liveportrait);
         assert_eq!(
             restored.liveportrait_source.unwrap(),
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

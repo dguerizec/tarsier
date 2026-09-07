@@ -18,8 +18,9 @@ Set `[avatar].source_image` to another path to use a custom portrait. Existing
 explicit values, including `assets/avatars/liveportrait-source.png`, are preserved;
 there is no automatic migration or replacement of personal images. The folder
 icon on the LivePortrait card can save a UI override outside the repository,
-beside the user settings. That explicit UI choice takes precedence on subsequent
-starts; it does not overwrite the configured source file. Other PNGs
+in the user settings. The running worker prepares the selected source while the
+previous avatar stays visible, then switches on its first accepted frame. The
+choice also takes precedence on subsequent starts; it does not overwrite images. Other PNGs
 in this directory and `portrait/current/` remain ignored by Git.
 
 The local LivePortrait implementation reads the image as BGR with OpenCV, takes

@@ -47,6 +47,42 @@ pub fn normalize(bytes: &[u8]) -> Result<Vec<u8>> {
 }
 
 #[derive(Clone, serde::Serialize)]
+pub struct LivePortraitState {
+    pub source: PathBuf,
+    pub revision: u64,
+    pub active_revision: u64,
+    pub error: Option<String>,
+}
+
+impl LivePortraitState {
+    pub fn new(source: PathBuf) -> Self {
+        Self {
+            source,
+            revision: 0,
+            active_revision: 0,
+            error: None,
+        }
+    }
+
+    pub fn select(&mut self, source: PathBuf) {
+        self.source = source;
+        self.revision += 1;
+        self.error = None;
+    }
+
+    /// Keep accepting the old portrait until the first complete new frame arrives.
+    pub fn accept_frame(&mut self, revision: u64) -> bool {
+        if revision == self.revision {
+            self.active_revision = revision;
+            self.error = None;
+            true
+        } else {
+            revision == self.active_revision
+        }
+    }
+}
+
+#[derive(Clone, serde::Serialize)]
 pub struct Portrait {
     pub id: String,
     pub name: String,
@@ -120,6 +156,23 @@ pub fn thumbnail(path: &Path) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn revision_gate_keeps_old_frames_until_new_frame_and_rejects_obsolete_work() {
+        let mut state = LivePortraitState::new("old.png".into());
+        state.select("first.png".into());
+        assert!(state.accept_frame(0));
+        state.select("latest.png".into());
+        assert!(!state.accept_frame(1));
+        assert!(state.accept_frame(0));
+        state.error = Some("failed preparation".into());
+        assert!(state.accept_frame(0));
+        assert!(state.error.is_some());
+        assert!(state.accept_frame(2));
+        assert!(state.error.is_none());
+        assert!(!state.accept_frame(0));
+        assert_eq!(state.active_revision, 2);
+    }
 
     #[test]
     fn catalog_filters_deduplicates_and_marks_current_portrait() {
