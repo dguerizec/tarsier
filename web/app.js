@@ -735,7 +735,7 @@ function backgroundState(videoEffects) {
 
 function renderOutputMode(videoEffects) {
   const configuredIdentity = videoEffects.output_mode === "comic-avatar"
-    ? (videoEffects.avatar_engine || "stylized-3d")
+    ? (videoEffects.avatar_engine || "liveportrait")
     : videoEffects.output_mode === "depth-map" ? "depth-map"
     : "camera";
   const identity = outputModeDraft || configuredIdentity;
@@ -760,7 +760,7 @@ function renderOutputMode(videoEffects) {
     : outputModePending ? "Switching…"
     : identity === "camera" ? "Real camera"
     : identity === "depth-map" ? (depthFresh ? "Relative depth active" : "Privacy fallback · waiting for depth")
-    : avatarFresh ? (identity === "portrait3d" ? "Personal 3D active" : identity === "stylized-3d" ? "Stylized 3D active" : "LivePortrait active")
+    : avatarFresh ? (identity === "portrait3d" ? "Personal 3D active" : "LivePortrait active")
     : `Privacy fallback · waiting for ${identity !== "liveportrait" ? "3D renderer" : "LivePortrait"}`;
   $("#output-status").textContent = status;
   $("#output-error").hidden = !outputModeError;

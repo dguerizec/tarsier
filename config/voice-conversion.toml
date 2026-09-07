@@ -32,7 +32,6 @@ device = "/dev/null"
 
 [avatar]
 enabled = true
-profile = "assets/avatars/stylized-3d.json"
 portrait_model = ".voice-conversion/assets/portrait"
 source_image = ".voice-conversion/assets/liveportrait-source.png"
 fps = 30

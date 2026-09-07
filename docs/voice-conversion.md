@@ -117,7 +117,7 @@ checks their presence and isolates TorchInductor/ Triton caches under the
 experimental state directory. Compilation is disabled for predictable first use.
 
 After enabling the worker, live checks confirmed fresh depth frames and avatar
-frames for Stylized 3D, Personal 3D, and LivePortrait. LivePortrait continued
+frames for Personal 3D and LivePortrait. LivePortrait continued
 publishing with a latest-frame age of 69 ms at the final check; this is frame
 freshness, not an end-to-end latency benchmark. The preview was restored to
 Camera after validation. Main remained inactive. RVC voice conversion is enabled separately with its audio control.

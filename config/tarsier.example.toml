@@ -49,8 +49,7 @@ face_release_ms = 500
 
 [avatar]
 enabled = true
-engine = "stylized-3d"
-profile = "assets/avatars/stylized-3d.json"
+engine = "liveportrait"
 # Optional versioned runtime export for the Personal 3D identity.
 portrait_model = "assets/avatars/portrait/current"
 # Bundled fictional portrait for LivePortrait; set a custom local path to override.

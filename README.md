@@ -240,7 +240,7 @@ fresh generated frame, never an intermediate real-camera frame. A malformed or
 unsupported settings file prevents startup instead of falling back to Camera.
 
 The **Video identity** selector switches the complete final stream among
-**Camera**, **Depth map**, **Stylized 3D**, and **LivePortrait**. Neural engines
+**Camera**, **Depth map**, **Personal 3D**, and **LivePortrait**. Neural engines
 load on demand and release their GPU resources when another identity is
 selected. Depth map runs Depth Anything V2 Small against the same raw camera
 branch as perception. Its source values are retained as a two-dimensional
@@ -249,12 +249,7 @@ but they are not distances in metres. A slowly stabilized percentile range is
 used only for the false-color video, so display contrast changes do not alter
 the machine-readable values available from `GET /api/v1/depth/frame`.
 
-A dedicated MediaPipe face tracker drives head rotation, eye blinks, jaw
-opening, smiles, and eyebrow motion for Stylized 3D. The local OpenGL renderer
-draws a cel-shaded head and bust in a simple virtual room at the output
-resolution. Its colors are editable in
-`assets/avatars/stylized-3d.json`; no camera pixels are used in the final
-avatar frame. Selecting an alternate identity replaces the whole image in both
+Selecting an alternate identity replaces the whole image in both
 the web preview and `/dev/video42`. Personal 3D (`portrait3d`) loads a local scanned portrait and supplies a synchronized
 alpha silhouette to the background stage. Green screen and Pixel Party can
 replace its backdrop; Off and Blur use a neutral synthetic background. Other
@@ -536,7 +531,7 @@ requests must be same-origin. Login attempts are throttled to one per second.
 | `POST` | `/api/v1/camera/tracking` | Enable or disable built-in tracking |
 | `POST` | `/api/v1/camera/face-tracking` | Enable or disable Tarsier face tracking |
 | `POST` | `/api/v1/camera/hands-tracking` | Enable or disable slow two-hand framing with one-hand zoom freeze |
-| `GET`, `POST` | `/api/v1/video/identity` | Read or select `camera`, `depth-map`, `stylized-3d`, `portrait3d`, or `liveportrait` |
+| `GET`, `POST` | `/api/v1/video/identity` | Read or select `camera`, `depth-map`, `portrait3d`, or `liveportrait` |
 | `POST` | `/api/v1/video/output-mode` | Compatibility selector for the underlying output mode |
 | `POST` | `/api/v1/video/background` | Enable one final-output background effect with `{"enabled": bool, "effect": string}`; accepted effects are `green-screen`, `blur`, and `pixel-party` |
 | `POST` | `/api/v1/video/green-screen` | Compatibility control that selects and enables or disables Green screen |
@@ -750,13 +745,6 @@ The first vertical slice was validated on 2026-09-05 with an OBSBOT Tiny 2
   including MediaPipe crop, 16:9 composition, and local publication, sustained
   approximately 7-8 generated FPS while Tarsier held those frames in its 30 FPS
   output;
-- the stylized 3D path was exercised end to end on the synthetic pipeline: the
-  supervised worker selected the OpenGL-only dependency group, MediaPipe
-  produced facial controls, the renderer published complete 1280x720 BGRx
-  frames, and the daemon returned the virtual scene from its snapshot route;
-- the stylized 3D worker sustained 30.0 generated FPS end to end on the RTX
-  3070; a 150-frame recorded driving sequence was tracked on every frame and
-  sustained 36.1 FPS at 1280x720 including MediaPipe, rendering, and encoding;
 - Depth Anything V2 Small ran locally on the RTX 3070 in 14.7 ms for a
   640x360 captured camera frame using a 252-pixel-high model input; a separate
   synthetic daemon accepted and retained the 921,600-byte finite `float32`
@@ -842,7 +830,7 @@ run before unattended use.
   long-duration use plus broader clothing,
   motion-speed, distance, and lighting conditions still need validation;
 - avatar routing and its stale-frame privacy fallback have synthetic
-  end-to-end coverage; the stylized 3D renderer has visual pose coverage, but
+  end-to-end coverage, but
   sustained physical-camera use, expression calibration, occlusions, and
   broader aesthetic review still need testing;
 - monocular depth is relative inverse depth, not calibrated metric distance;
@@ -877,7 +865,7 @@ run before unattended use.
   control surface.
 
 The next focused increments are physical-camera expression calibration,
-stylized-avatar refinement, extended telemetry, and USB recovery soak testing.
+extended telemetry, and USB recovery soak testing.
 Speech, robotics, ROS, cloud video processing, and a large gesture vocabulary
 remain outside the first version.
 

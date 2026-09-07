@@ -3,8 +3,8 @@ import json
 import numpy as np
 import pytest
 
+from tarsier_perception.avatar_motion import AvatarMotion
 from tarsier_perception.portrait3d import MORPHS, Portrait3DAvatarEngine, load_asset
-from tarsier_perception.stylized3d import AvatarMotion
 
 
 @pytest.fixture
@@ -82,7 +82,7 @@ def test_personal_pose_preserves_profile_angles_and_rotation_order(portrait):
 
     import cv2
 
-    from tarsier_perception.stylized3d import motion_from_mediapipe
+    from tarsier_perception.avatar_motion import motion_from_mediapipe
 
     # MediaPipe camera axes: X right, Y up, Z toward the viewer.
     source_rotation = cv2.Rodrigues(np.array([0.35, -1.1, 0.2]))[0]
@@ -91,9 +91,8 @@ def test_personal_pose_preserves_profile_angles_and_rotation_order(portrait):
         face_blendshapes=[[]],
         facial_transformation_matrixes=[source_rotation],
     )
-    motion = motion_from_mediapipe(result, limit_pose=False)
+    motion = motion_from_mediapipe(result)
     assert abs(motion.yaw) > 0.65
-    assert abs(motion_from_mediapipe(result).yaw) == 0.65
     pytest.importorskip("moderngl")
     with Portrait3DAvatarEngine(portrait, 160, 90) as engine:
         engine.render(motion)

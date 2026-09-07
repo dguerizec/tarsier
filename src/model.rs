@@ -76,10 +76,8 @@ pub enum VideoOutputMode {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum AvatarEngine {
-    #[default]
-    #[serde(rename = "stylized-3d")]
-    Stylized3d,
     Portrait3d,
+    #[default]
     Liveportrait,
 }
 
@@ -88,8 +86,6 @@ pub enum AvatarEngine {
 pub enum VideoIdentity {
     #[default]
     Camera,
-    #[serde(rename = "stylized-3d")]
-    Stylized3d,
     Portrait3d,
     Liveportrait,
     DepthMap,
