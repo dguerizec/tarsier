@@ -57,7 +57,11 @@ still determine whether the virtual microphone publishes audio.
 
 The initial profile used synthetic video and shared capture from main's virtual
 microphone, with experimental output blocked. After the user requested stopping
-main, this profile was extended to physical inputs. V4L2 loopback output remains disabled. Perception, background segmentation,
+main, this profile was extended to physical inputs. At the user's request, V4L2
+loopback output is now enabled on the existing
+`/dev/video42` (Tarsier Camera), allowing recordings and camera use in other apps.
+Main must remain stopped while this worktree uses that shared virtual device.
+Perception, background segmentation,
 depth, and all three avatar engines are enabled. The current main binary attempts to
 reserve newly created sources; keep main stopped while this experiment runs.
 
@@ -78,8 +82,9 @@ voice when conversion is enabled.
 
 UI timing is daemon capture-to-publication delay, excluding audio hardware and
 application buffering. Total microphone-to-ear latency and audiovisual
-synchronization remain unmeasured. Video loopback is still disabled in this
-profile; the visual processing worker and preview can run during voice trials.
+synchronization remain unmeasured. Video loopback is enabled on `/dev/video42`;
+the visual processing worker,
+preview, virtual camera and recordings can run during voice trials.
 
 ## Device selection validation
 

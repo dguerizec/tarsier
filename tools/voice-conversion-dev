@@ -25,7 +25,9 @@ assert c['audio'] == dict(reserve_inputs=False, voice_worker=['tools/voice-rvc']
     virtual_source='tarsier_voice_conversion', virtual_output_enabled=True, set_default_source=False)
 main_state = subprocess.check_output(['systemctl', '--user', 'show', 'tarsier.service', '-p', 'ActiveState', '--value'], text=True).strip()
 assert main_state in ('inactive', 'failed'), 'Stop main before starting the physical-device experiment'
-assert c['video']['source'] == 'test' and not c['video']['loopback_enabled']
+assert c['video']['source'] == 'test' and c['video']['loopback_enabled']
+assert c['video']['output_device'] == '/dev/video42'
+assert pathlib.Path('/sys/class/video4linux/video42/name').read_text().strip() == 'Tarsier Camera'
 assert c['camera']['adapter'] == 'mock'
 assert c['perception']['enabled'] and c['perception']['supervise_worker']
 assert c['perception']['source'] == 'preview' and c['perception']['worker_project'] == 'worker'
@@ -38,7 +40,7 @@ if p.exists():
 with socket.socket() as sock:
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind(('127.0.0.1', 8743))
-print('Isolation preflight passed: main stopped, shared capture, selected camera, port 8743', flush=True)
+print('Isolation preflight passed: main stopped, shared capture, selected camera, virtual camera /dev/video42, port 8743', flush=True)
 PY
     exec "$CARGO_TARGET_DIR/debug/tarsier" serve --config config/voice-conversion.toml ;;
   *) echo 'Usage: tools/voice-conversion-dev {build|check|serve}' >&2; exit 2 ;;

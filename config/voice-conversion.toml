@@ -13,8 +13,8 @@ set_default_source = false
 [video]
 source = "test"
 input_device = "/dev/null"
-output_device = "/dev/null"
-loopback_enabled = false
+output_device = "/dev/video42"
+loopback_enabled = true
 width = 1280
 height = 720
 fps = 30
