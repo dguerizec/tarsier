@@ -3,4 +3,4 @@ set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 exec "$root/voice/.venv/bin/python" "$root/voice/worker.py" \
   --upstream "$root/.voice-conversion/rvc-upstream" \
-  --model "$root/.voice-conversion/voice-model/Shigure.pth" "$@"
+  --model "$root/.voice-conversion/voice-model/FrenchWoman.pth" "$@"

@@ -65,8 +65,9 @@ reserve newly created sources; keep main stopped while this experiment runs.
 
 RVC is now integrated between automatic gain and final output mute. Install it
 with `tools/voice-setup`, then use the Voice conversion control in Audio → Output.
-The demo voice is Shigure Tokina, trained on Japanese speech; French accent and
-speech quality still need listening tests. See [the voice bridge documentation](../voice/README.md)
+The default demo voice is French Woman by DantSu, replacing the initial Japanese
+Shigure Tokina trial after reported accent and background artifacts. Speech
+quality still needs comparative listening tests. See [the voice bridge documentation](../voice/README.md)
 for attribution, pinned assets, protocol, measured inference time, and limits.
 
 The voice worker has a separate environment from perception. It opens no audio

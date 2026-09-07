@@ -23,5 +23,12 @@
     "url": "https://huggingface.co/yasyune/Shigure_Tokina_RVC/resolve/66bc71bea94e00f9a858dfdd07a604d17ec0dba0/Shigure_Tokina/Shigure.pth",
     "path": ".voice-conversion/voice-model/Shigure.pth",
     "sha256": "26cffa69599bdc403c9677b7351b5e62c673d6cca751b3d3e515a02236e19ba3"
+  },
+  {
+    "url": "https://github.com/DantSu/RVC-french-woman-model/releases/download/0.0.1/French-Woman-RVC.zip",
+    "path": ".voice-conversion/voice-model/FrenchWoman.pth",
+    "sha256": "f67d7d54a09fdd4ad65437dbbebd6c52a1e0d9e9215aec5ee1bbfb8789c077b9",
+    "archive_sha256": "2089c451549df6d1fa9d3349d44757e83006f9cbf29c236dea190727eae764f3",
+    "member": "Beatrice-Harvest.pth"
   }
 ]
