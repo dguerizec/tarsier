@@ -92,8 +92,9 @@ five-second interval, to limit selector-2 traffic.
 The public power control coordinates capture and extension-unit traffic rather
 than sending an isolated vendor command. To switch off, Tarsier first stops
 face-tracking movement, releases the active GStreamer pipeline and its physical
-capture descriptor, and only then sends the sleep frame. Telemetry polling is
-suspended after that write succeeds, so it cannot accidentally wake the camera.
+capture descriptor, and only then sends the sleep frame. While asleep, only
+passive selector-6 `GET_CUR` status reads continue; pose, gesture, image-control,
+and LED traffic are suspended.
 The perception supervisor intentionally stops its worker while frames are
 paused. The daemon, API, and embedded UI remain active. To switch on, Tarsier
 sends the wake frame, waits 100 ms for the device, rebuilds the managed video
@@ -101,8 +102,15 @@ pipeline, and starts a fresh perception worker. A failed sleep write restarts
 capture as a rollback.
 
 Other camera controls are rejected while the adapter records the device as
-powered off. Power state in the public API therefore represents the last
-successful daemon-owned transition, not an inferred sensor or USB state.
+powered off. With periodic readback enabled, selector-6 byte `0x09` reconciles
+physical head-up/head-down changes with the API and capture pipeline. Device
+status `1` means running; `3` (sleep) and `4` (privacy) mean off. Unknown values
+and failed reads preserve the previous state. Reads remain serialized by the
+camera owner and do not issue a wake command. A 250 ms daemon monitor applies
+observed changes through the same capture, recording, and tracking cleanup as
+the power endpoint, without repeating hardware power writes. Status polling
+waits at least one second after a daemon power command for firmware settling.
+With polling disabled, power state still reflects only daemon commands.
 
 ## Selector-6 camera status
 
@@ -459,9 +467,10 @@ the next measured sample arrives.
 ## Boundaries and uncertainty
 
 - These values are validated only for the device and firmware above.
-- The libdev-derived selector-6 byte at offset `0x02` reported sleep after one
-  successful live wake/capture cycle, so Tarsier does not use it as independent
-  power confirmation. Public power state records the successful command path.
+- The earlier power experiment read reserved byte `0x02`. The SDK's packed
+  Tiny 2 status structure places `dev_status` at `0x09`; its UVC implementation
+  copies the selector-6 block directly without remapping. Power readback uses
+  this corrected offset.
 - Tarsier does not link, load, bundle, or redistribute a proprietary SDK.
 - The adapter does not yet discover compatible firmware capabilities.
 - Image controls other than HDR and zoom, tracking-mode selection, and firmware

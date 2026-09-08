@@ -822,6 +822,11 @@ impl<T: XuTransport> Worker<T> {
         if enabled {
             std::thread::sleep(Duration::from_millis(100));
         }
+        // Let the firmware settle before reconciling its status with this command.
+        if let Some(poller) = &mut self.telemetry {
+            poller.status.next_due =
+                Instant::now() + poller.status.interval.max(Duration::from_secs(1));
+        }
         Ok(())
     }
 
@@ -913,15 +918,14 @@ impl<T: XuTransport> Worker<T> {
     }
 
     fn poll_telemetry_if_due(&mut self) -> bool {
-        if !self.powered_on.load(Ordering::Relaxed) {
-            return false;
-        }
         let now = Instant::now();
-        let Some(kind) = self
-            .telemetry
-            .as_ref()
-            .and_then(|poller| poller.next_kind(now))
-        else {
+        let Some(kind) = self.telemetry.as_ref().and_then(|poller| {
+            if self.powered_on.load(Ordering::Relaxed) {
+                poller.next_kind(now)
+            } else {
+                poller.status.due(now).then_some(TelemetryKind::Status)
+            }
+        }) else {
             return false;
         };
 
@@ -997,6 +1001,19 @@ impl<T: XuTransport> Worker<T> {
         let status = protocol::decode_camera_status(&status)?;
         if status.hdr.is_some() {
             self.hdr_state = status.hdr;
+        }
+        if let Some(enabled) = status.powered_on {
+            let previous = self.powered_on.swap(enabled, Ordering::Relaxed);
+            if previous != enabled {
+                // A physical sleep cancels the firmware movement. Do not send
+                // another motor command to a sleeping device.
+                self.pan_tilt_direction = (0, 0);
+                self.pan_tilt_speed_fraction = 0.0;
+                self.pan_tilt_deadline = None;
+                if let Some(led) = &mut self.led {
+                    led.invalidate(Instant::now());
+                }
+            }
         }
         Ok(status)
     }
@@ -1423,6 +1440,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn physical_power_changes_are_polled_passively_while_asleep() {
+        let (_tx, rx) = sync_channel(1);
+        let (updates, mut received) = tokio_mpsc::unbounded_channel();
+        let mut worker = Worker::new(RecordingTransport::default(), rx, Duration::ZERO)
+            .with_telemetry(Some(Duration::from_secs(1)), updates);
+        worker.pan_tilt_direction = (1, 0);
+        worker.pan_tilt_deadline = Some(Instant::now() + PAN_TILT_LEASE);
+        worker.transport.device_status = 3;
+        worker.query_status().unwrap();
+        assert!(!worker.powered_on.load(Ordering::Relaxed));
+        assert_eq!(worker.pan_tilt_direction, (0, 0));
+        assert!(worker.pan_tilt_deadline.is_none());
+        assert!(worker.execute(Command::Recenter).is_err());
+
+        for status in [3, 0, 4, 1] {
+            worker.transport.device_status = status;
+            let poller = worker.telemetry.as_mut().unwrap();
+            poller.gimbal.next_due = Instant::now();
+            poller.status.next_due = Instant::now();
+            assert!(worker.poll_telemetry_if_due());
+            assert!(matches!(
+                received.try_recv().unwrap(),
+                TelemetryUpdate::Status(_)
+            ));
+            assert_eq!(worker.powered_on.load(Ordering::Relaxed), status == 1);
+        }
+        assert!(worker.transport.writes.is_empty());
+        assert!(worker.transport.pan_tilt_speed_units.is_empty());
+    }
+
+    #[test]
     fn led_initializes_once_and_reapplies_after_sleep() {
         let (_tx, rx) = sync_channel(1);
         let mut worker =
@@ -1497,6 +1545,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingTransport {
         fail_led_once: bool,
+        device_status: u8,
         writes: Vec<(u8, [u8; FRAME_SIZE])>,
         zoom_units: Vec<i32>,
         pan_tilt_speed_units: Vec<(i32, i32)>,
@@ -1538,6 +1587,7 @@ mod tests {
 
         fn get(&mut self, selector: u8, data: &mut [u8]) -> Result<()> {
             assert_eq!(selector, TRACKING_SELECTOR);
+            data[0x09] = self.device_status;
             data[0x04] = 23;
             data[0x06] = 1;
             data[0x07] = u8::from(self.face_priority_auto_exposure);
