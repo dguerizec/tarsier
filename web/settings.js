@@ -243,3 +243,78 @@ devicesForm.addEventListener('submit', async event => {
   } catch (error) { setDevicesPending(false); devicesStatus.textContent = error.message; }
 });
 loadDevices().catch(error => { devicesStatus.textContent = error.message; });
+
+
+const muteMediaForm = document.querySelector('#mute-media-form');
+const muteMediaFile = document.querySelector('#mute-media-file');
+const muteMediaSave = document.querySelector('#mute-media-save');
+const muteMediaRemove = document.querySelector('#mute-media-remove');
+const muteMediaStatus = document.querySelector('#mute-media-status');
+let muteMediaState = null;
+let muteMediaPending = false;
+let muteMediaRevision = null;
+function renderMuteMedia() {
+  muteMediaFile.disabled = muteMediaPending || !muteMediaState?.can_apply;
+  muteMediaSave.disabled = muteMediaFile.disabled || !muteMediaFile.files.length;
+  const selection = muteMediaState?.media.selection;
+  muteMediaRemove.disabled = muteMediaFile.disabled || !selection;
+  document.querySelector('#mute-media-name').textContent = selection
+    ? `${selection.name} · ${selection.kind === 'video' ? 'Video loops without audio' : 'Image'}` : 'Black output';
+  if (muteMediaRevision !== (selection?.filename ?? null)) {
+    muteMediaRevision = selection?.filename ?? null;
+    const image = document.querySelector('#mute-media-image');
+    const video = document.querySelector('#mute-media-video');
+    video.pause();
+    image.removeAttribute('src');
+    video.removeAttribute('src');
+    image.hidden = !selection || selection.kind !== 'image';
+    video.hidden = !selection || selection.kind !== 'video';
+    document.querySelector('#mute-media-preview').hidden = !selection;
+    if (selection) {
+      (selection.kind === 'image' ? image : video).src = `/api/v1/settings/video-mute/media?v=${encodeURIComponent(selection.filename)}`;
+    }
+    video.load();
+  }
+}
+async function loadMuteMedia() {
+  const response = await fetch('/api/v1/settings/video-mute', {cache: 'no-store'});
+  if (!response.ok) throw new Error('Could not load video mute replacement');
+  muteMediaState = await response.json();
+  renderMuteMedia();
+  if (muteMediaState.media.error) muteMediaStatus.textContent = `Using black output: ${muteMediaState.media.error}`;
+}
+muteMediaFile.addEventListener('change', renderMuteMedia);
+muteMediaForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  const file = muteMediaFile.files[0];
+  if (muteMediaPending || !file) return;
+  if (file.size > 100 * 1024 * 1024) { muteMediaStatus.textContent = 'Choose a file up to 100 MB.'; return; }
+  muteMediaPending = true;
+  renderMuteMedia();
+  muteMediaStatus.textContent = 'Uploading and checking media…';
+  try {
+    const response = await fetch(`/api/v1/settings/video-mute?name=${encodeURIComponent(file.name)}`, {
+      method: 'POST', headers: {'Content-Type': 'application/octet-stream'}, body: file,
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Could not upload replacement');
+    muteMediaState = result;
+    muteMediaFile.value = '';
+    muteMediaStatus.textContent = 'Saved. This media will be shown whenever video output is muted.';
+  } catch (error) { muteMediaStatus.textContent = error.message; }
+  finally { muteMediaPending = false; renderMuteMedia(); }
+});
+muteMediaRemove.addEventListener('click', async () => {
+  if (muteMediaPending) return;
+  muteMediaPending = true;
+  renderMuteMedia();
+  try {
+    const response = await fetch('/api/v1/settings/video-mute', {method: 'DELETE'});
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Could not remove replacement');
+    muteMediaState = result;
+    muteMediaStatus.textContent = 'Saved. Muted video output will be black.';
+  } catch (error) { muteMediaStatus.textContent = error.message; }
+  finally { muteMediaPending = false; renderMuteMedia(); }
+});
+loadMuteMedia().catch(error => { muteMediaStatus.textContent = error.message; });

@@ -13,6 +13,26 @@
       <a class="settings-link" href="/">Back to preview</a>
     </header>
     <main class="settings-page">
+      <section class="panel" aria-labelledby="mute-media-heading">
+        <h2 id="mute-media-heading">Video mute replacement</h2>
+        <p>Choose an image or a silent looping video to show when video output is muted. Your local preview stays live. Without a replacement, the output is black.</p>
+        <form id="mute-media-form">
+          <label for="mute-media-file">Image or video</label>
+          <input id="mute-media-file" type="file" accept="image/png,image/jpeg,video/mp4,video/webm,.png,.jpg,.jpeg,.mp4,.webm" disabled>
+          <p>PNG, JPEG, MP4 or WebM · Up to 100 MB. The media fits inside the frame with black borders when needed.</p>
+          <div class="mute-media-preview" id="mute-media-preview" hidden>
+            <img id="mute-media-image" alt="Video mute replacement" hidden>
+            <video id="mute-media-video" controls muted loop playsinline preload="metadata" aria-label="Video mute replacement preview" hidden></video>
+          </div>
+          <p id="mute-media-name">Loading replacement…</p>
+          <div class="controls">
+            <button id="mute-media-save" type="submit" disabled>Upload and use</button>
+            <button id="mute-media-remove" type="button" class="secondary" disabled>Use black output</button>
+          </div>
+          <p id="mute-media-status" role="status" aria-live="polite"></p>
+        </form>
+      </section>
+
       <section class="panel" aria-labelledby="devices-heading">
         <h2 id="devices-heading">Camera and microphones</h2>
         <form id="devices-form">

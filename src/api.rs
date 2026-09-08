@@ -53,6 +53,7 @@ struct ApiState {
     face_tracking: Arc<Mutex<FaceTrackingController>>,
     hands_tracking: Arc<Mutex<HandsTrackingController>>,
     video_output_control: Arc<Mutex<()>>,
+    mute_media_control: Arc<Mutex<()>>,
     daemon_restart: Option<DaemonRestart>,
     user_settings: Option<UserSettingsStore>,
     audio_settings_control: Arc<Mutex<()>>,
@@ -209,6 +210,7 @@ pub fn router_with_controls(
         face_tracking: Arc::new(Mutex::new(face_tracking)),
         hands_tracking: Arc::new(Mutex::new(hands_tracking)),
         video_output_control: Arc::new(Mutex::new(())),
+        mute_media_control: Arc::new(Mutex::new(())),
         daemon_restart: options.daemon_restart,
         user_settings: options.user_settings,
         audio_settings_control: Arc::new(Mutex::new(())),
@@ -350,6 +352,14 @@ pub fn router_with_controls(
             "/api/v1/video/output",
             get(video_output).post(set_video_output),
         )
+        .route(
+            "/api/v1/settings/video-mute",
+            get(mute_media_settings)
+                .post(upload_mute_media)
+                .delete(remove_mute_media)
+                .layer(DefaultBodyLimit::max(crate::mute_media::MAX_UPLOAD_BYTES)),
+        )
+        .route("/api/v1/settings/video-mute/media", get(mute_media_file))
         .route("/api/v1/video/resolution", post(set_resolution))
         .route("/api/v1/video/background", post(set_background))
         .route(
@@ -2534,6 +2544,111 @@ async fn set_resolution(
         return (StatusCode::CONFLICT, Json(json!({"error": error}))).into_response();
     }
     (StatusCode::ACCEPTED, Json(json!({"restarting": true}))).into_response()
+}
+
+async fn mute_media_settings(State(state): State<ApiState>) -> Response {
+    Json(json!({"can_apply": state.user_settings.is_some(), "media": state.preview.replacement_info()})).into_response()
+}
+
+#[derive(Deserialize)]
+struct MuteMediaUpload {
+    name: String,
+}
+
+async fn upload_mute_media(
+    State(state): State<ApiState>,
+    Query(query): Query<MuteMediaUpload>,
+    body: Bytes,
+) -> Response {
+    let _guard = state.mute_media_control.lock().await;
+    let Some(settings) = &state.user_settings else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "Persistent settings are unavailable"})),
+        )
+            .into_response();
+    };
+    let directory = settings.mute_media_directory();
+    let destination = directory.clone();
+    let (width, height) = (state.config.video.width, state.config.video.height);
+    let prepared = tokio::task::spawn_blocking(move || {
+        crate::mute_media::upload(&destination, &query.name, &body, width, height)
+    })
+    .await;
+    let (selection, media) = match prepared {
+        Ok(Ok(prepared)) => prepared,
+        Ok(Err(error)) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": error.to_string()})),
+            )
+                .into_response();
+        }
+        Err(error) => return command_error(error.into()),
+    };
+    let previous = state.preview.replacement_info().selection;
+    if let Err(error) = settings.set_video_mute_media(Some(selection.clone())).await {
+        drop(media);
+        if previous.as_ref().map(|old| &old.filename) != Some(&selection.filename) {
+            if let Ok(path) = selection.path(&directory) {
+                let _ = tokio::fs::remove_file(path).await;
+            }
+        }
+        return user_settings_error(error);
+    }
+    state
+        .preview
+        .set_replacement(Some(selection.clone()), Some(media), None);
+    if let Some(old) = previous.filter(|old| old.filename != selection.filename) {
+        if let Ok(path) = old.path(&directory) {
+            let _ = tokio::fs::remove_file(path).await;
+        }
+    }
+    mute_media_settings(State(state.clone())).await
+}
+
+async fn remove_mute_media(State(state): State<ApiState>) -> Response {
+    let _guard = state.mute_media_control.lock().await;
+    let Some(settings) = &state.user_settings else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "Persistent settings are unavailable"})),
+        )
+            .into_response();
+    };
+    if let Err(error) = settings.set_video_mute_media(None).await {
+        return user_settings_error(error);
+    }
+    let previous = state.preview.replacement_info().selection;
+    state.preview.set_replacement(None, None, None);
+    if let Some(old) = previous {
+        if let Ok(path) = old.path(&settings.mute_media_directory()) {
+            let _ = tokio::fs::remove_file(path).await;
+        }
+    }
+    mute_media_settings(State(state.clone())).await
+}
+
+async fn mute_media_file(
+    State(state): State<ApiState>,
+    request: axum::extract::Request,
+) -> Response {
+    let Some(settings) = &state.user_settings else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let Some(selection) = state.preview.replacement_info().selection else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let Ok(path) = selection.path(&settings.mute_media_directory()) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    match tower_http::services::ServeFile::new(path)
+        .try_call(request)
+        .await
+    {
+        Ok(response) => response.map(Body::new),
+        Err(error) => command_error(error.into()),
+    }
 }
 
 #[derive(Deserialize, Serialize)]
@@ -5705,6 +5820,101 @@ mod tests {
         );
         assert!(!directory.join("portraits").exists());
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn mute_media_upload_persists_serves_ranges_and_rejects_invalid_replacements() {
+        let config = Config::default();
+        let path = std::env::temp_dir().join(format!(
+            "tarsier-mute-upload-{}-{}/settings.json",
+            std::process::id(),
+            unix_ms()
+        ));
+        let fallback = UserSettings::from_config(&config);
+        let (settings, _) = UserSettingsStore::load(path.clone(), fallback.clone())
+            .await
+            .unwrap();
+        let preview = PreviewHub::new();
+        preview.set_output_muted(true);
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = router_with_controls(
+            config,
+            Runtime::new(),
+            preview.clone(),
+            None,
+            ApiOptions {
+                user_settings: Some(settings),
+                ..ApiOptions::default()
+            },
+            shutdown_rx,
+        );
+        let mut image = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(2, 1, image::Rgba([255, 0, 0, 255]))
+            .write_to(&mut image, image::ImageFormat::Png)
+            .unwrap();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/settings/video-mute?name=away.png")
+                    .body(Body::from(image.into_inner()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let selected = preview.replacement_info().selection.unwrap();
+        let (_, restored) = UserSettingsStore::load(path.clone(), fallback.clone())
+            .await
+            .unwrap();
+        assert_eq!(restored.video_mute_media.as_ref(), Some(&selected));
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/settings/video-mute/media")
+                    .header("range", "bytes=0-7")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            &to_bytes(response.into_body(), 8).await.unwrap()[..],
+            b"\x89PNG\r\n\x1a\n"
+        );
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/settings/video-mute?name=bad.mp4")
+                    .body(Body::from("invalid"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(preview.replacement_info().selection, Some(selected.clone()));
+        let response = app
+            .oneshot(
+                Request::delete("/api/v1/settings/video-mute")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(preview.replacement_info().selection.is_none());
+        assert!(preview.output_muted());
+        assert!(
+            !selected
+                .path(&path.parent().unwrap().join("mute-media"))
+                .unwrap()
+                .exists()
+        );
+        let (_, restored) = UserSettingsStore::load(path.clone(), fallback)
+            .await
+            .unwrap();
+        assert!(restored.video_mute_media.is_none());
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[tokio::test]
