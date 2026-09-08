@@ -234,7 +234,7 @@ impl VirtualVideoOutput {
     ) -> Result<Self> {
         let pipeline = gst::parse::launch(&format!(
             "appsrc name=frames is-live=true format=time block=false max-buffers=2 leaky-type=downstream ! \
-             video/x-raw,format=BGRx,width={},height={},framerate={}/1 ! videoconvert ! \
+             video/x-raw,format=BGRx,width={},height={},framerate={}/1,interlace-mode=progressive ! videoconvert ! \
              video/x-raw,format=YUY2 ! {sink}",
             config.width, config.height, config.fps
         ))?.downcast::<gst::Pipeline>().map_err(|_| anyhow::anyhow!("invalid virtual video pipeline"))?;
