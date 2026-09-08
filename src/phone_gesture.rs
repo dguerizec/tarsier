@@ -1,4 +1,4 @@
-//! Experimental, image-plane phone pose detection. No microphone side effects.
+//! Estimated 3D hand shape with image-plane mouth proximity. No microphone side effects.
 use serde::{Deserialize, Serialize};
 
 use crate::model::{Landmark, PerceptionObservation};
@@ -301,6 +301,71 @@ mod tests {
     }
 
     #[test]
+    fn phone_gesture_preserves_3d_shape_during_backward_and_sideways_tilt() {
+        for aspect in [1.0_f32, 16.0 / 9.0, 9.0 / 16.0] {
+            for sideways in [false, true] {
+                let mut detector = detector();
+                let mut starts = 0;
+                for (index, degrees) in [0.0_f32, 20.0, 40.0, 60.0, 75.0, 85.0]
+                    .into_iter()
+                    .enumerate()
+                {
+                    let at = 1000 + index as u64 * 100;
+                    let mut observation = phone_fixture(at);
+                    let angle = degrees.to_radians();
+                    // Rotate around the pinky tip at the mouth, keeping the face fixed.
+                    for p in &mut observation.hand_landmarks {
+                        let component = if sideways { &mut p.x } else { &mut p.y };
+                        let offset = *component - 0.5;
+                        *component = 0.5 + offset * angle.cos();
+                        p.z = offset * angle.sin();
+                    }
+                    let wrist_depth = observation.hand_landmarks[0].z;
+                    observation.image_width = (aspect * 10000.0) as u32;
+                    observation.image_height = 10000;
+                    for p in &mut observation.face_landmarks {
+                        p.x /= aspect;
+                        p.z = -10.0; // Independent face depth must not affect mouth proximity.
+                    }
+                    for p in &mut observation.hand_landmarks {
+                        p.x /= aspect;
+                        p.z = (p.z - wrist_depth) / aspect;
+                    }
+                    assert!(
+                        measure(&observation, 0.35, None).phone_shape,
+                        "{aspect} {sideways} {degrees}"
+                    );
+                    if detector.observe(&observation, at) == Some(PhoneChange::Started) {
+                        starts += 1;
+                    }
+                    if index >= 3 {
+                        assert!(detector.state.active);
+                    }
+                    if index == 5 {
+                        let thumb = &observation.hand_landmarks[4];
+                        let pinky = &observation.hand_landmarks[20];
+                        let projected = ((thumb.x - pinky.x) * aspect).hypot(thumb.y - pinky.y);
+                        let spatial = projected.hypot((thumb.z - pinky.z) * aspect);
+                        assert!(spatial > projected * 1.05);
+                    }
+                }
+                assert_eq!(starts, 1);
+            }
+        }
+    }
+
+    #[test]
+    fn phone_gesture_thumb_pinky_spread_uses_depth_not_only_image_distance() {
+        let mut observation = phone_fixture(1000);
+        observation.hand_landmarks[4].x = 0.515;
+        observation.hand_landmarks[4].y = 0.505;
+        assert!(!measure(&observation, 0.35, None).phone_shape);
+        // Identical xy projection, but tips separated along the camera axis.
+        observation.hand_landmarks[4].z = 0.25;
+        assert!(measure(&observation, 0.35, None).phone_shape);
+    }
+
+    #[test]
     fn phone_gesture_rejects_each_wrong_finger_and_distant_phone_pose() {
         for base in [5, 9, 13] {
             let mut observation = phone_fixture(1000);
@@ -524,6 +589,18 @@ struct Point {
     x: f32,
     y: f32,
 }
+
+#[derive(Clone, Copy)]
+struct HandPoint {
+    image: Point,
+    z: f32,
+}
+
+impl HandPoint {
+    fn distance(self, other: Self) -> f32 {
+        self.image.distance(other.image).hypot(self.z - other.z)
+    }
+}
 impl Point {
     fn distance(self, other: Self) -> f32 {
         (self.x - other.x).hypot(self.y - other.y)
@@ -588,12 +665,21 @@ fn measure(
     };
     result.reason = "phone_shape_missing";
     for hand in observation.hand_landmarks.chunks_exact(21) {
-        let points: Vec<_> = hand.iter().map(point).collect();
+        // The worker supplies x and z in source-width units, y in source-height
+        // units. Convert both x and z to height units before measuring 3D shape.
+        // Hand depth is local to this hand; never compare it with face depth.
+        let points: Vec<_> = hand
+            .iter()
+            .map(|landmark| HandPoint {
+                image: point(landmark),
+                z: landmark.z * aspect,
+            })
+            .collect();
         let palm = points[0].distance(points[9]);
         if palm < 0.005 {
             continue;
         }
-        // End-to-end / articulated length is invariant under scale and in-plane rotation.
+        // Estimated 3D lengths retain finger shape when its image projection shrinks.
         let straightness = |indices: [usize; 4]| {
             let length: f32 = indices
                 .windows(2)
@@ -618,6 +704,7 @@ fn measure(
         // separation from the index; require less extension than for the pinky.
         let shape = straightness([1, 2, 3, 4]) >= 0.72
             && points[4].distance(points[5]) > palm * 0.45
+            && points[4].distance(points[20]) > palm * 1.5
             && extended(17)
             && curled(5)
             && curled(9)
@@ -625,10 +712,10 @@ fn measure(
         if !shape {
             continue;
         }
-        let distance = points[20].distance(mouth) / face_width;
+        let distance = points[20].image.distance(mouth) / face_width;
         // Filter continuity before ranking distance: a second, closer hand must
         // not hide the hand that is already holding the gesture.
-        if previous_wrist.is_some_and(|wrist| wrist.distance(points[0]) > palm * 1.5) {
+        if previous_wrist.is_some_and(|wrist| wrist.distance(points[0].image) > palm * 1.5) {
             if !result.phone_shape {
                 result.phone_shape = true;
                 result.distance = Some(distance);
@@ -647,7 +734,7 @@ fn measure(
         } else {
             "pinky_too_far"
         };
-        result.wrist = Some(points[0]);
+        result.wrist = Some(points[0].image);
         if result.near_mouth {
             break;
         }
