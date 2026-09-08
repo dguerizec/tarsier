@@ -360,6 +360,7 @@ pub fn router_with_controls(
                 .layer(DefaultBodyLimit::max(crate::mute_media::MAX_UPLOAD_BYTES)),
         )
         .route("/api/v1/settings/video-mute/media", get(mute_media_file))
+        .route("/api/v1/settings/video-mute/default", post(restore_default_mute_media))
         .route("/api/v1/video/resolution", post(set_resolution))
         .route("/api/v1/video/background", post(set_background))
         .route(
@@ -2607,6 +2608,14 @@ async fn upload_mute_media(
     mute_media_settings(State(state.clone())).await
 }
 
+async fn restore_default_mute_media(State(state): State<ApiState>) -> Response {
+    upload_mute_media(
+        State(state),
+        Query(MuteMediaUpload { name: "Tarsier".into() }),
+        Bytes::from_static(crate::mute_media::DEFAULT_IMAGE),
+    ).await
+}
+
 async fn remove_mute_media(State(state): State<ApiState>) -> Response {
     let _guard = state.mute_media_control.lock().await;
     let Some(settings) = &state.user_settings else {
@@ -2639,6 +2648,12 @@ async fn mute_media_file(
     let Some(selection) = state.preview.replacement_info().selection else {
         return StatusCode::NOT_FOUND.into_response();
     };
+    if Some(&selection) == crate::mute_media::default_selection().as_ref() {
+        return (
+            [(header::CONTENT_TYPE, "image/png")],
+            crate::mute_media::DEFAULT_IMAGE,
+        ).into_response();
+    }
     let Ok(path) = selection.path(&settings.mute_media_directory()) else {
         return StatusCode::NOT_FOUND.into_response();
     };
@@ -5894,6 +5909,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(preview.replacement_info().selection, Some(selected.clone()));
         let response = app
+            .clone()
             .oneshot(
                 Request::delete("/api/v1/settings/video-mute")
                     .body(Body::empty())
@@ -5914,6 +5930,18 @@ mod tests {
             .await
             .unwrap();
         assert!(restored.video_mute_media.is_none());
+        let response = app.clone().oneshot(
+            Request::post("/api/v1/settings/video-mute/default")
+                .body(Body::empty()).unwrap()
+        ).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(preview.replacement_info().selection, crate::mute_media::default_selection());
+        let response = app.oneshot(
+            Request::get("/api/v1/settings/video-mute/media")
+                .body(Body::empty()).unwrap()
+        ).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(&to_bytes(response.into_body(), 1024 * 1024).await.unwrap()[..], crate::mute_media::DEFAULT_IMAGE);
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 

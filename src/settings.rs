@@ -99,7 +99,7 @@ impl AudioSettings {
 pub struct UserSettings {
     #[serde(default)]
     pub video_output_muted: bool,
-    #[serde(default)]
+    #[serde(default = "crate::mute_media::default_selection")]
     pub video_mute_media: Option<crate::mute_media::Selection>,
     #[serde(default)]
     pub liveportrait_source: Option<PathBuf>,
@@ -132,7 +132,7 @@ impl UserSettings {
     pub fn from_config(config: &Config) -> Self {
         Self {
             video_output_muted: false,
-            video_mute_media: None,
+            video_mute_media: crate::mute_media::default_selection(),
             liveportrait_source: None,
             camera_device: None,
             audio_reserve_inputs: None,

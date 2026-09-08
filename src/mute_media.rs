@@ -11,6 +11,16 @@ use image::{ImageDecoder, ImageReader};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+pub const DEFAULT_IMAGE: &[u8] = include_bytes!("../web/mute-default.png");
+
+pub fn default_selection() -> Option<Selection> {
+    Some(Selection {
+        filename: format!("{:x}.png", Sha256::digest(DEFAULT_IMAGE)),
+        name: "Tarsier".into(),
+        kind: Kind::Image,
+    })
+}
+
 pub const MAX_UPLOAD_BYTES: usize = 100 * 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -70,7 +80,12 @@ impl Media {
         let path = selection.path(directory)?;
         let content = match selection.kind {
             Kind::Image => {
-                let mut reader = ImageReader::open(path)?.with_guessed_format()?;
+                let bytes = if Some(selection) == default_selection().as_ref() {
+                    DEFAULT_IMAGE.to_vec()
+                } else {
+                    fs::read(path)?
+                };
+                let mut reader = ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;
                 let mut limits = image::Limits::default();
                 limits.max_image_width = Some(8192);
                 limits.max_image_height = Some(8192);
@@ -243,6 +258,16 @@ mod tests {
         io::Cursor,
         time::{Duration, Instant},
     };
+
+    #[test]
+    fn default_mute_image_is_available_without_a_local_file() {
+        let selected = default_selection().unwrap();
+        let mut media = Media::open(&selected, Path::new("/nonexistent/tarsier"), 640, 360).unwrap();
+        let frame = media.frame(true).unwrap().unwrap();
+        assert_eq!(frame.size(), 640 * 360 * 4);
+        assert!(frame.map_readable().unwrap().as_slice().iter().any(|v| *v > 128));
+        assert!(media.frame(false).unwrap().is_none());
+    }
 
     #[test]
     fn image_replacement_fits_without_cropping_and_reloads() {
