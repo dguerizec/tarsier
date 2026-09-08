@@ -248,6 +248,7 @@ loadDevices().catch(error => { devicesStatus.textContent = error.message; });
 const muteMediaForm = document.querySelector('#mute-media-form');
 const muteMediaFile = document.querySelector('#mute-media-file');
 const muteMediaSave = document.querySelector('#mute-media-save');
+const muteMediaDefault = document.querySelector('#mute-media-default');
 const muteMediaRemove = document.querySelector('#mute-media-remove');
 const muteMediaStatus = document.querySelector('#mute-media-status');
 let muteMediaState = null;
@@ -257,6 +258,7 @@ function renderMuteMedia() {
   muteMediaFile.disabled = muteMediaPending || !muteMediaState?.can_apply;
   muteMediaSave.disabled = muteMediaFile.disabled || !muteMediaFile.files.length;
   const selection = muteMediaState?.media.selection;
+  muteMediaDefault.disabled = muteMediaFile.disabled;
   muteMediaRemove.disabled = muteMediaFile.disabled || !selection;
   document.querySelector('#mute-media-name').textContent = selection
     ? `${selection.name} · ${selection.kind === 'video' ? 'Video loops without audio' : 'Image'}` : 'Black output';
@@ -304,17 +306,19 @@ muteMediaForm.addEventListener('submit', async event => {
   } catch (error) { muteMediaStatus.textContent = error.message; }
   finally { muteMediaPending = false; renderMuteMedia(); }
 });
-muteMediaRemove.addEventListener('click', async () => {
+async function selectBuiltinMuteMedia(useDefault) {
   if (muteMediaPending) return;
   muteMediaPending = true;
   renderMuteMedia();
   try {
-    const response = await fetch('/api/v1/settings/video-mute', {method: 'DELETE'});
+    const response = await fetch(`/api/v1/settings/video-mute${useDefault ? '/default' : ''}`, {method: useDefault ? 'POST' : 'DELETE'});
     const result = await response.json();
-    if (!response.ok) throw new Error(result.error || 'Could not remove replacement');
+    if (!response.ok) throw new Error(result.error || 'Could not change replacement');
     muteMediaState = result;
-    muteMediaStatus.textContent = 'Saved. Muted video output will be black.';
+    muteMediaStatus.textContent = useDefault ? 'Saved. Muted video output will show the Tarsier image.' : 'Saved. Muted video output will be black.';
   } catch (error) { muteMediaStatus.textContent = error.message; }
   finally { muteMediaPending = false; renderMuteMedia(); }
-});
+}
+muteMediaRemove.addEventListener('click', () => selectBuiltinMuteMedia(false));
+muteMediaDefault.addEventListener('click', () => selectBuiltinMuteMedia(true));
 loadMuteMedia().catch(error => { muteMediaStatus.textContent = error.message; });

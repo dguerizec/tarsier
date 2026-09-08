@@ -211,9 +211,10 @@ background fragments. Turning the background effect off releases the depth
 model unless the Depth map identity is selected.
 
 The video button beside the microphone mute button masks the virtual camera
-output while keeping capture and the local preview active. In **Settings →
+output while keeping capture and the local preview active. New settings use a
+built-in Tarsier logo image by default. In **Settings →
 Video mute replacement**, upload a PNG/JPEG image or MP4/WebM video (up to
-100 MB), or choose **Use black output**. Replacements fit inside the output
+100 MB), restore **Use Tarsier image**, or choose **Use black output**. Replacements fit inside the output
 frame without cropping or distortion. Videos loop without audio, pause when
 output is unmuted, and restart on the next mute. The selected file and mute
 state are saved locally across daemon restarts and camera power cycles.
