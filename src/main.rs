@@ -14,6 +14,7 @@ mod media_metadata;
 mod model;
 mod mute_media;
 mod perception;
+mod phone_gesture;
 mod pipeline;
 mod recording;
 mod runtime;

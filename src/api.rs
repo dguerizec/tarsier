@@ -29,6 +29,7 @@ use crate::{
         CameraImageControl, FaceTrackingState, FaceTrackingTarget, HandsTrackingState, Landmark,
         PerceptionObservation, ScenarioActivation, VideoIdentity, VideoOutputMode, unix_ms,
     },
+    phone_gesture::{PhoneChange, PhoneGestureDetector, PhoneGestureState},
     pipeline::{PerceptionFrame, PreviewHub, VideoPipelineControl},
     runtime::Runtime,
     scenario::{FacePresenceStabilizer, OpenPalmStabilizer, PresenceChange},
@@ -45,6 +46,7 @@ struct ApiState {
     runtime: Runtime,
     stabilizer: Arc<Mutex<OpenPalmStabilizer>>,
     face_presence: Arc<Mutex<FacePresenceStabilizer>>,
+    phone_gesture: Arc<Mutex<PhoneGestureDetector>>,
     preview: PreviewHub,
     camera: Arc<tokio::sync::RwLock<Option<CameraHandle>>>,
     pipeline: Option<VideoPipelineControl>,
@@ -200,6 +202,9 @@ pub fn router_with_controls(
         audio: options.audio,
         stabilizer: Arc::new(Mutex::new(OpenPalmStabilizer::new(&config.perception))),
         face_presence: Arc::new(Mutex::new(FacePresenceStabilizer::new(&config.perception))),
+        phone_gesture: Arc::new(Mutex::new(PhoneGestureDetector::new(
+            config.perception.phone_near_mouth.clone(),
+        ))),
         config,
         runtime,
         preview,
@@ -220,6 +225,7 @@ pub fn router_with_controls(
         shutdown,
     };
     spawn_camera_power_monitor(state.clone());
+    spawn_phone_gesture_monitor(state.clone());
     spawn_video_connection_monitor(state.clone());
     let router = Router::new()
         .route("/", get(index))
@@ -938,6 +944,65 @@ struct TrackingRequest {
 #[derive(Deserialize)]
 struct CameraPowerRequest {
     enabled: bool,
+}
+
+async fn publish_phone_gesture(
+    state: &ApiState,
+    snapshot: &PhoneGestureState,
+    change: Option<PhoneChange>,
+) {
+    state
+        .runtime
+        .update(|runtime| runtime.perception.phone_near_mouth = snapshot.clone())
+        .await;
+    if let Some(change) = change {
+        let kind = match change {
+            PhoneChange::Started => "gesture.phone_near_mouth.started",
+            PhoneChange::Ended => "gesture.phone_near_mouth.ended",
+        };
+        let event = state
+            .runtime
+            .emit(kind, "perception", None, json!(snapshot))
+            .await;
+        for scenario in state
+            .config
+            .scenarios
+            .iter()
+            .filter(|scenario| scenario.enabled && scenario.event == kind)
+        {
+            activate_scenario(state, scenario, event.sequence).await;
+        }
+    }
+}
+
+fn spawn_phone_gesture_monitor(state: ApiState) {
+    tokio::spawn(async move {
+        let mut shutdown = state.shutdown.clone();
+        let mut tick = tokio::time::interval(std::time::Duration::from_millis(50));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            let stopping = tokio::select! {
+                changed = shutdown.changed() => changed.is_err() || *shutdown.borrow(),
+                _ = tick.tick() => false,
+            };
+            // Serialize observation, timeout, runtime publication and events together.
+            let mut detector = state.phone_gesture.lock().await;
+            let before = detector.state.clone();
+            let change = if stopping {
+                detector.reset("shutdown")
+            } else if !state.runtime.state().await.perception.worker_connected {
+                detector.reset("worker_offline")
+            } else {
+                detector.expire(unix_ms())
+            };
+            if detector.state != before || change.is_some() {
+                publish_phone_gesture(&state, &detector.state, change).await;
+            }
+            if stopping {
+                break;
+            }
+        }
+    });
 }
 
 fn spawn_video_connection_monitor(state: ApiState) {
@@ -3467,6 +3532,12 @@ async fn perception_observation(
             runtime.perception.latency_ms = observation.latency_ms;
         })
         .await;
+
+    {
+        let mut detector = state.phone_gesture.lock().await;
+        let change = detector.observe(&observation, unix_ms());
+        publish_phone_gesture(&state, &detector.state, change).await;
+    }
 
     let tracking_landmarks = if observation.face_detected {
         observation.face_landmarks.as_slice()
@@ -7431,6 +7502,86 @@ mod tests {
         assert_eq!(events[0].data["direction"], "left");
         assert_eq!(events[1].kind, "camera.nudge.stopped");
         assert_eq!(events[1].data["direction"], "left");
+    }
+
+    #[tokio::test]
+    async fn phone_gesture_api_emits_edges_and_releases_when_observations_stop() {
+        for termination in ["timeout", "worker_offline", "shutdown"] {
+            check_phone_gesture_api_edges(termination).await;
+        }
+    }
+
+    async fn check_phone_gesture_api_edges(termination: &str) {
+        let mut config = Config::default();
+        config.perception.phone_near_mouth.dwell_ms = 40;
+        config.perception.phone_near_mouth.release_ms = 150;
+        config.scenarios.push(ScenarioConfig {
+            id: "phone-test".into(),
+            enabled: true,
+            event: "gesture.phone_near_mouth.started".into(),
+            action: "demo.phone".into(),
+        });
+        let runtime = Runtime::new();
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = router(
+            config,
+            runtime.clone(),
+            PreviewHub::new(),
+            None,
+            shutdown_rx,
+        );
+        for _ in 0..4 {
+            let observation = crate::phone_gesture::phone_fixture(unix_ms());
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post("/api/v1/perception/observations")
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::to_vec(&observation).unwrap()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NO_CONTENT);
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        assert!(runtime.state().await.perception.phone_near_mouth.active);
+        assert_eq!(
+            runtime.state().await.last_scenario.unwrap().action,
+            "demo.phone"
+        );
+        if termination == "worker_offline" {
+            runtime
+                .update(|state| state.perception.worker_connected = false)
+                .await;
+        } else if termination == "shutdown" {
+            shutdown_tx.send(true).unwrap();
+        }
+        // The watchdog must release even when no further HTTP request arrives.
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if !runtime.state().await.perception.phone_near_mouth.active {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .unwrap();
+        if termination != "shutdown" {
+            shutdown_tx.send(true).unwrap();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+        let events: Vec<_> = runtime
+            .recent_events()
+            .await
+            .into_iter()
+            .filter(|event| event.kind.starts_with("gesture.phone_near_mouth."))
+            .collect();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].kind, "gesture.phone_near_mouth.started");
+        assert_eq!(events[1].kind, "gesture.phone_near_mouth.ended");
+        assert_eq!(events[0].confidence, None);
     }
 
     #[tokio::test]
