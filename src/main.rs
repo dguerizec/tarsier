@@ -193,6 +193,7 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
         .retain(|source| config.audio.allows(source));
     let runtime = Runtime::new();
     let preview = PreviewHub::new();
+    preview.set_output_muted(user_settings.video_output_muted);
     let output_mode = user_settings.output_mode();
     let avatar_engine = user_settings
         .avatar_engine()
@@ -208,6 +209,7 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
     runtime
         .update(|state| {
             user_settings.audio.apply(state);
+            state.pipeline.output_muted = user_settings.video_output_muted;
             state.audio_virtual.output_id = config.audio.virtual_source.clone();
             state.video_effects.transform = user_settings.video_transform;
             state.video_effects.output_mode = output_mode;

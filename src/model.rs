@@ -355,6 +355,8 @@ impl BuiltInGestureState {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct PipelineState {
+    #[serde(default)]
+    pub output_muted: bool,
     pub enabled: bool,
     pub running: bool,
     pub source: String,

@@ -346,6 +346,10 @@ pub fn router_with_controls(
             "/api/v1/video/recordings/{filename}/open",
             post(open_saved_recording),
         )
+        .route(
+            "/api/v1/video/output",
+            get(video_output).post(set_video_output),
+        )
         .route("/api/v1/video/resolution", post(set_resolution))
         .route("/api/v1/video/background", post(set_background))
         .route(
@@ -2530,6 +2534,39 @@ async fn set_resolution(
         return (StatusCode::CONFLICT, Json(json!({"error": error}))).into_response();
     }
     (StatusCode::ACCEPTED, Json(json!({"restarting": true}))).into_response()
+}
+
+#[derive(Deserialize, Serialize)]
+struct VideoOutputRequest {
+    muted: bool,
+}
+
+async fn video_output(State(state): State<ApiState>) -> Json<VideoOutputRequest> {
+    Json(VideoOutputRequest {
+        muted: state.preview.output_muted(),
+    })
+}
+
+async fn set_video_output(
+    State(state): State<ApiState>,
+    Json(request): Json<VideoOutputRequest>,
+) -> Response {
+    let _guard = state.video_output_control.lock().await;
+    if let Some(settings) = &state.user_settings
+        && let Err(error) = settings.set_video_output_muted(request.muted).await
+    {
+        return user_settings_error(error);
+    }
+    state.preview.set_output_muted(request.muted);
+    state
+        .runtime
+        .update(|runtime| runtime.pipeline.output_muted = request.muted)
+        .await;
+    state
+        .runtime
+        .emit("video.output", "api", None, json!({"muted": request.muted}))
+        .await;
+    Json(request).into_response()
 }
 
 async fn current_transform(
@@ -5668,6 +5705,64 @@ mod tests {
         );
         assert!(!directory.join("portraits").exists());
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn video_output_mute_persists_without_changing_capture_or_camera() {
+        let config = Config::default();
+        let path = std::env::temp_dir().join(format!(
+            "tarsier-video-mute-{}-{}/settings.json",
+            std::process::id(),
+            unix_ms()
+        ));
+        let fallback = UserSettings::from_config(&config);
+        let (settings, _) = UserSettingsStore::load(path.clone(), fallback.clone())
+            .await
+            .unwrap();
+        let runtime = Runtime::new();
+        runtime
+            .update(|state| {
+                state.pipeline.running = true;
+                state.pipeline.enabled = true;
+                state.camera.powered_on = Some(true);
+            })
+            .await;
+        let preview = PreviewHub::new();
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = router_with_controls(
+            config,
+            runtime.clone(),
+            preview.clone(),
+            None,
+            ApiOptions {
+                user_settings: Some(settings),
+                ..ApiOptions::default()
+            },
+            shutdown_rx,
+        );
+        for muted in [true, false, true] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post("/api/v1/video/output")
+                        .header("content-type", "application/json")
+                        .body(Body::from(json!({"muted": muted}).to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(preview.output_muted(), muted);
+            let state = runtime.state().await;
+            assert_eq!(state.pipeline.output_muted, muted);
+            assert!(state.pipeline.running && state.pipeline.enabled);
+            assert_eq!(state.camera.powered_on, Some(true));
+            let (_, restored) = UserSettingsStore::load(path.clone(), fallback.clone())
+                .await
+                .unwrap();
+            assert_eq!(restored.video_output_muted, muted);
+        }
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[tokio::test]

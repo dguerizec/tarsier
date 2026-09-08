@@ -210,6 +210,11 @@ likelihood sharpens uncertain boundary pixels and rejects differently distanced
 background fragments. Turning the background effect off releases the depth
 model unless the Depth map identity is selected.
 
+The video button beside the microphone mute button masks the virtual camera
+output with black frames while keeping capture and the local preview active.
+The mute state is saved across daemon restarts and camera power cycles.
+Tarsier recordings follow this muted output; preview photos remain unchanged.
+
 Scroll over the preview or pinch with two fingers to zoom from x1 to x4.
 One-finger dragging still pans and tilts; pinching stops that movement.
 The zoom slider applies x1-to-x4 changes continuously while coalescing obsolete

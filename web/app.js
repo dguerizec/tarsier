@@ -1,6 +1,6 @@
 import { installPreviewDrag, sourcePanTiltDirection } from "/assets/preview-drag.js";
 import { syncAudioCapture } from "/assets/audio.js";
-import { createElement, FolderOpen, FlipHorizontal2, Bone, Power, ChevronDown, ScanFace, Hand, ZoomIn } from "/assets/lucide.js";
+import { createElement, FolderOpen, FlipHorizontal2, Bone, Power, Video, VideoOff, ChevronDown, ScanFace, Hand, ZoomIn } from "/assets/lucide.js";
 
 const $ = (selector) => document.querySelector(selector);
 const cameraPanel = $("#camera-panel");
@@ -17,6 +17,50 @@ cameraPanel.addEventListener("toggle", () => {
     // Folding remains available when browser storage cannot be written.
   }
 });
+const videoMute = $("#preview-video-mute");
+let videoMutePending = false;
+let videoMuteDraft = null;
+
+function renderVideoOutput() {
+  const muted = videoMuteDraft ?? state?.pipeline.output_muted === true;
+  if (videoMute.dataset.muted !== String(muted)) {
+    videoMute.replaceChildren(createElement(muted ? VideoOff : Video, { width: 15, height: 15, "aria-hidden": "true", focusable: "false" }));
+    videoMute.dataset.muted = String(muted);
+  }
+  videoMute.setAttribute("aria-pressed", String(muted));
+  videoMute.setAttribute("aria-busy", String(videoMutePending));
+  videoMute.disabled = videoMutePending || !socketConnected;
+  videoMute.title = muted ? "Unmute video output" : "Mute video output · keep preview active";
+  videoMute.setAttribute("aria-label", videoMute.title);
+  $("#video-output-muted").hidden = !muted && state?.pipeline.output_muted !== true;
+  $("#video-output-muted").textContent = videoMutePending ? "Updating video output…" : "Video output muted";
+}
+
+videoMute.addEventListener("click", async () => {
+  if (videoMutePending || !state) return;
+  videoMuteDraft = !state.pipeline.output_muted;
+  videoMutePending = true;
+  const errorElement = $("#video-output-error");
+  errorElement.hidden = true;
+  renderVideoOutput();
+  try {
+    const response = await fetch("/api/v1/video/output", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ muted: videoMuteDraft }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Could not change video output");
+    state.pipeline.output_muted = payload.muted;
+  } catch (error) {
+    errorElement.textContent = error.message;
+    errorElement.hidden = false;
+  } finally {
+    videoMutePending = false;
+    videoMuteDraft = null;
+    renderVideoOutput();
+  }
+});
+
 const connection = $("#connection");
 const daemonRestartDialog = $("#daemon-restart-dialog");
 const daemonRestartForm = $("#daemon-restart-form");
@@ -825,6 +869,7 @@ function renderBackground(videoEffects) {
 function render(next) {
   observeDaemon(next.started_at_ms);
   state = next;
+  renderVideoOutput();
   syncAudioCapture(next.audio_capture_sources || [], next.audio_virtual, next.audio_reservations, next.audio_released_sources, next.audio_busy_sources, next.audio_output_applications, next.audio_gain, next.audio_voice);
   if (next.last_photo) renderSavedPhoto(next.last_photo);
   renderVideoTransform();
@@ -1790,6 +1835,7 @@ for (const [button, icon] of [[$("#preview-mirror"), FlipHorizontal2], [skeleton
 }
 $("#preview-mirror").addEventListener("click", () => setPreviewMirror(!previewMirrorEnabled));
 setPreviewMirror(previewMirrorEnabled);
+renderVideoOutput();
 
 buildImageSettingsUi();
 setInterval(() => state && render(state), 500);
