@@ -272,9 +272,7 @@ impl VirtualVideoOutput {
                     while running.load(Ordering::Relaxed) {
                         let muted = preview.output_muted();
                         let replacement = preview.replacement_frame(muted);
-                        let mut frame = if muted {
-                            replacement.unwrap_or_else(|| black.clone())
-                        } else if capture_enabled.load(Ordering::Relaxed) {
+                        let mut recording_frame = if capture_enabled.load(Ordering::Relaxed) {
                             preview
                                 .virtual_frame
                                 .lock()
@@ -286,14 +284,26 @@ impl VirtualVideoOutput {
                         } else {
                             black.clone()
                         };
-                        let buffer = frame.make_mut();
+                        let buffer = recording_frame.make_mut();
                         buffer.set_pts(gst::ClockTime::from_nseconds(
                             started.elapsed().as_nanos() as u64
                         ));
                         buffer.set_dts(None);
                         buffer
                             .set_duration(gst::ClockTime::from_nseconds(period.as_nanos() as u64));
-                        preview.recording_tx.send_replace(Some(frame.clone()));
+                        // Record processed capture independently of the conference output mute.
+                        let mut frame = if muted {
+                            replacement.unwrap_or_else(|| black.clone())
+                        } else {
+                            recording_frame.clone()
+                        };
+                        let pts = recording_frame.pts();
+                        let duration = recording_frame.duration();
+                        let output_buffer = frame.make_mut();
+                        output_buffer.set_pts(pts);
+                        output_buffer.set_dts(None);
+                        output_buffer.set_duration(duration);
+                        preview.recording_tx.send_replace(Some(recording_frame));
                         let push_error = source.push_buffer(frame).err();
                         let bus_error = bus.pop_filtered(&[gst::MessageType::Error]);
                         if push_error.is_some() || bus_error.is_some() {
@@ -1297,49 +1307,47 @@ mod tests {
         let preview = PreviewHub::new();
         preview.set_replacement(Some(selection), Some(media), None);
         preview.set_output_muted(true);
+        let captured = gst::Buffer::from_slice([0, 255, 0, 0].repeat(16));
+        *preview.virtual_frame.lock().unwrap() = Some((Instant::now(), captured));
         let mut frames = preview.subscribe_recording();
-        let _output = VirtualVideoOutput::start(
+        let enabled = Arc::new(AtomicBool::new(true));
+        let output = VirtualVideoOutput::start(
             &config,
             preview.clone(),
-            Arc::new(AtomicBool::new(false)),
+            enabled.clone(),
             Runtime::new(),
-            "fakesink sync=false",
-        )
-        .unwrap();
-        tokio::time::timeout(Duration::from_secs(2), frames.changed())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            frames
-                .borrow_and_update()
-                .as_ref()
-                .unwrap()
-                .map_readable()
-                .unwrap()
-                .as_slice(),
-            [0, 0, 255, 0].repeat(16)
-        );
-        preview.set_replacement(None, None, None);
+            "appsink name=consumer max-buffers=1 drop=true sync=false",
+        ).unwrap();
+        let consumer = output.pipeline.by_name("consumer").unwrap()
+            .downcast::<gst_app::AppSink>().unwrap();
+        let read_output = || {
+            consumer.try_pull_sample(gst::ClockTime::from_seconds(1)).unwrap()
+                .buffer().unwrap().map_readable().unwrap().as_slice().to_vec()
+        };
+        let replacement_pixels = read_output();
+        // YUY2 conversion can round differently across GStreamer versions.
+        assert!(replacement_pixels.chunks_exact(4).all(|pixel|
+            (60..=100).contains(&pixel[0]) && (70..=110).contains(&pixel[1])
+                && (60..=100).contains(&pixel[2]) && pixel[3] >= 220
+        ), "unexpected replacement pixels: {replacement_pixels:?}");
+        frames.changed().await.unwrap();
+        assert_eq!(frames.borrow_and_update().as_ref().unwrap().map_readable().unwrap().as_slice(), [0, 255, 0, 0].repeat(16));
+        // Stopped capture records black, even while a replacement remains on the output.
+        enabled.store(false, Ordering::Relaxed);
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 frames.changed().await.unwrap();
-                if frames
-                    .borrow_and_update()
-                    .as_ref()
-                    .unwrap()
-                    .map_readable()
-                    .unwrap()
-                    .as_slice()
-                    .iter()
-                    .all(|byte| *byte == 0)
-                {
+                if frames.borrow_and_update().as_ref().unwrap().map_readable().unwrap().as_slice().iter().all(|byte| *byte == 0) {
                     break;
                 }
             }
-        })
-        .await
-        .unwrap();
+        }).await.unwrap();
+        assert_eq!(read_output(), replacement_pixels);
+        preview.set_replacement(None, None, None);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !read_output().chunks_exact(4).all(|pixel| pixel == [16, 128, 16, 128]) {
+            assert!(Instant::now() < deadline);
+        }
         std::fs::remove_dir_all(directory).unwrap();
     }
 
@@ -1388,7 +1396,7 @@ mod tests {
             }
         })
         .await
-        .expect("recording must receive the same privacy black as virtual output");
+        .expect("recording must receive black when capture is disabled");
     }
 
     #[test]
