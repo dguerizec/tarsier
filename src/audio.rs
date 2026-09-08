@@ -297,13 +297,13 @@ fn connected_applications(graph: &[serde_json::Value], source: &str) -> SourceAp
 }
 
 #[derive(Clone)]
-struct Frame {
-    captured: Instant,
-    pcm: Arc<Vec<u8>>,
+pub(crate) struct Frame {
+    pub(crate) captured: Instant,
+    pub(crate) pcm: Arc<Vec<u8>>,
 }
 
 #[derive(Clone)]
-enum Packet {
+pub(crate) enum Packet {
     Audio(Frame),
     Error(String),
 }
@@ -317,6 +317,16 @@ pub struct AudioHub {
 }
 
 impl AudioHub {
+    /// Subscribe to the shared raw capture without opening a second device reader.
+    pub(crate) fn subscribe_raw(&self, source: &str) -> broadcast::Receiver<Packet> {
+        self.channel(source).subscribe()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn publish_test_audio(&self, source: &str, packet: Packet) {
+        let _ = self.channel(source).send(packet);
+    }
+
     pub fn reservation_config(&self) -> crate::config::AudioConfig {
         let mut config = self.config.clone();
         if let Some((enabled, preferences)) = self.reservation_policy.lock().unwrap().as_ref() {

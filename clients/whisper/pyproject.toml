@@ -1,0 +1,34 @@
+[project]
+name = "tarsier-whisper"
+version = "0.1.0"
+description = "Local live transcription client for Tarsier audio subscriptions"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "faster-whisper>=1.2,<2",
+    "numpy>=2,<3",
+    "scipy>=1.15,<2",
+    "websockets>=15,<17",
+]
+
+[project.scripts]
+tarsier-whisper = "tarsier_whisper:main"
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "ruff>=0.13,<1"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tarsier_whisper"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
