@@ -587,6 +587,16 @@ voiceFile.onchange = async () => {
   } catch (error) { voiceImportStatus.textContent = error.message; }
   finally { voiceImportPending = false; voiceFile.value = ''; renderVoice(); }
 };
+const voiceFold = document.querySelector('#voice-fold');
+voiceFold.prepend(createElement(ChevronDown, { width: 18, height: 18, 'aria-hidden': 'true', focusable: 'false' }));
+function foldVoice(folded) {
+  document.querySelector('#voice-settings').hidden = folded;
+  voiceFold.setAttribute('aria-expanded', String(!folded));
+  voiceFold.title = folded ? 'Show voice conversion settings' : 'Hide voice conversion settings';
+  try { localStorage.setItem('tarsier.voice.folded', String(folded)); } catch {}
+}
+try { foldVoice(localStorage.getItem('tarsier.voice.folded') === 'true'); } catch {}
+voiceFold.onclick = () => foldVoice(voiceFold.getAttribute('aria-expanded') === 'true');
 const voiceToggle = document.querySelector('#voice-toggle');
 const voicePitch = document.querySelector('#voice-pitch');
 const voiceStatus = document.querySelector('#voice-status');
