@@ -1367,6 +1367,13 @@ async function syncPanTiltMotion() {
 
 previewDrag = installPreviewDrag(preview, {
   canControl: canDragPreview,
+  getZoom() {
+    const camera = state?.camera || {};
+    const autoZoom = camera.face_tracking?.auto_zoom;
+    return zoomDraft ?? (autoZoom?.enabled ? autoZoom.zoom_magnification : null)
+      ?? camera.zoom_magnification ?? 1;
+  },
+  onZoom: queueManualZoom,
   onDirection(direction) {
     if (activeDirection() === direction) return;
     heldDirections = [];
@@ -1625,6 +1632,11 @@ function scheduleZoom() {
 
 async function sendQueuedZoom() {
   if (zoomPending || queuedZoom == null) return;
+  if (!state || !cameraControlsAvailable(state.camera)) {
+    queuedZoom = null;
+    zoomDraft = null;
+    return;
+  }
   const value = queuedZoom;
   queuedZoom = null;
   zoomPending = true;
@@ -1650,19 +1662,17 @@ async function sendQueuedZoom() {
   }
 }
 
-zoomSlider.addEventListener("input", () => {
-  zoomDraft = Number(zoomSlider.value);
+function queueManualZoom(value) {
+  if (!state || !cameraControlsAvailable(state.camera) || !Number.isFinite(value)) return;
+  zoomDraft = Math.max(1, Math.min(4, value));
+  zoomSlider.value = String(zoomDraft);
   queuedZoom = zoomDraft;
-  if (state) render(state);
+  render(state);
   scheduleZoom();
-});
-zoomReset.addEventListener("click", () => {
-  zoomSlider.value = "1";
-  zoomDraft = 1;
-  queuedZoom = 1;
-  if (state) render(state);
-  scheduleZoom();
-});
+}
+
+zoomSlider.addEventListener("input", () => queueManualZoom(Number(zoomSlider.value)));
+zoomReset.addEventListener("click", () => queueManualZoom(1));
 
 autoZoomToggle.addEventListener("click", async () => {
   if (autoZoomPending || !state || !cameraControlsAvailable(state.camera)

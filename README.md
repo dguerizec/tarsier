@@ -209,6 +209,9 @@ semantic mask still decides what is a person; a temporally smoothed depth
 likelihood sharpens uncertain boundary pixels and rejects differently distanced
 background fragments. Turning the background effect off releases the depth
 model unless the Depth map identity is selected.
+
+Scroll over the preview or pinch with two fingers to zoom from x1 to x4.
+One-finger dragging still pans and tilts; pinching stops that movement.
 The zoom slider applies x1-to-x4 changes continuously while coalescing obsolete
 intermediate positions. With Face tracking active, the **Auto zoom** switch next
 to the face-tracking and pan/tilt controls captures the face's current on-screen
