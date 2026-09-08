@@ -374,6 +374,9 @@ impl BuiltInGestureState {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct PipelineState {
+    /// Buffers are held without streaming while capture is stopped.
+    #[serde(default)]
+    pub camera_reserved: bool,
     #[serde(default)]
     pub output_muted: bool,
     pub enabled: bool,

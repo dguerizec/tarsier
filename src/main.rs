@@ -15,6 +15,7 @@ mod model;
 mod mute_media;
 mod perception;
 mod pipeline;
+mod pipeline_reservation;
 mod recording;
 mod runtime;
 mod scenario;

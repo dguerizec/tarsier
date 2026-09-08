@@ -1200,6 +1200,20 @@ manual controls remain visible but disabled while their automatic mode is active
 The generic controller does not send OBSBOT extension-unit commands. Hardware
 sleep, motor control and firmware features remain specific to the OBSBOT adapter.
 
+For a standard webcam, the power button stops capture with a buffer reservation:
+GStreamer enters READY (no streaming or frame processing), keeps the camera fd
+open, and Tarsier allocates V4L2 MMAP buffers without starting the stream. This
+requests driver ownership rather than relying on an open fd alone. The UI reports
+whether reservation succeeded; unsupported drivers produce an error, not a false
+"reserved" status. Resume releases those idle buffers and restarts capture on the
+same open source, leaving virtual video muted until explicitly unmuted. The virtual
+output remains available. Switching sources or exiting Tarsier releases ownership.
+The perception supervisor stops the entire worker process group (launcher and
+Python child) while capture is off, and starts a fresh worker on resume.
+Driver ownership is reacquired during the READY transition, so this is not an OS
+security boundary against a competing process racing that transition; verify the
+target driver's behavior with another capture application.
+
 Every manual camera change mutes virtual video output before replacing capture.
 The output stays muted even if switching fails and the previous source is restored.
 Check framing in the local preview and unmute explicitly. There is no automatic

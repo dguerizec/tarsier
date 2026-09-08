@@ -248,7 +248,7 @@ const attitudeLabel = (source) => ({
   simulated: "Simulated",
 }[source] || "No attitude sample");
 const magnification = (value) => `×${Number(value).toFixed(1)}`;
-const cameraIsPowered = (camera) => camera.powered_on !== false;
+const cameraIsPowered = (camera) => camera.capabilities?.power ? camera.powered_on !== false : state?.pipeline.enabled === true;
 const cameraControlsAvailable = (camera) => camera.available && cameraIsPowered(camera) && !cameraPowerPending;
 
 function buildImageSettingsUi() {
@@ -763,7 +763,8 @@ function renderPanTilt(camera) {
 }
 
 function renderCameraPower(camera) {
-  const poweredOn = cameraPowerDraft ?? camera.powered_on === true;
+  const hardwarePower = camera.capabilities?.power === true;
+  const poweredOn = cameraPowerDraft ?? (hardwarePower ? camera.powered_on === true : state?.pipeline.enabled === true);
   cameraPowerToggle.setAttribute("aria-pressed", String(poweredOn));
   cameraPowerToggle.classList.toggle("status-on", poweredOn);
   cameraPowerToggle.classList.toggle("status-off", !poweredOn);
@@ -772,9 +773,12 @@ function renderCameraPower(camera) {
     ? "Power · failed"
     : cameraPowerPending ? (poweredOn ? "Power · waking…" : "Power · sleeping…")
     : !camera.available ? "Power · unavailable"
+    : !hardwarePower ? (poweredOn ? "Capture · on" : state?.pipeline.camera_reserved ? "Capture · off, reserved" : "Capture · off, not reserved")
     : camera.powered_on == null ? "Power · unknown"
     : poweredOn ? "Power · on" : "Power · off";
-  const powerAction = poweredOn ? "Put the physical camera to sleep" : "Wake the physical camera";
+  const powerAction = hardwarePower
+    ? poweredOn ? "Put the physical camera to sleep" : "Wake the physical camera"
+    : poweredOn ? "Stop capture and reserve the camera" : "Resume capture (video stays muted)";
   cameraPowerToggle.title = `${powerStatus} · ${powerAction}`;
   cameraPowerToggle.setAttribute("aria-label", cameraPowerToggle.title);
   cameraPowerToggle.setAttribute("aria-busy", String(cameraPowerPending));
@@ -913,7 +917,7 @@ function render(next) {
   renderBackground(next.video_effects);
   $("#pipeline-summary").textContent = pipeline.running
     ? ` · ${pipeline.fps.toFixed(1)} fps · ${pipeline.frame_count} frames`
-    : camera.powered_on === false ? "Camera off"
+    : !cameraIsPowered(camera) ? "Camera off"
     : pipeline.error || "Pipeline stopped";
   $("#video-resolution").textContent = pipeline.width ? `${pipeline.width}×${pipeline.height}` : "Resolution";
   for (const button of document.querySelectorAll("[data-resolution]")) {
@@ -1304,7 +1308,11 @@ async function setCameraPower(enabled) {
       const payload = await response.json().catch(() => ({}));
       throw new Error(payload.error || `Camera power change failed (${response.status})`);
     }
-    state.camera.powered_on = enabled;
+    if (state.camera.capabilities?.power) state.camera.powered_on = enabled;
+    else {
+      state.pipeline.camera_reserved = !enabled;
+      state.pipeline.output_muted = true;
+    }
     state.camera.power_error = null;
     state.pipeline.enabled = enabled;
     state.pipeline.running = enabled;
@@ -1318,7 +1326,7 @@ async function setCameraPower(enabled) {
 }
 
 cameraPowerToggle.addEventListener("click", () => {
-  if (state) void setCameraPower(state.camera.powered_on !== true);
+  if (state) void setCameraPower(!cameraIsPowered(state.camera));
 });
 
 for (const input of backgroundEffectInputs) {

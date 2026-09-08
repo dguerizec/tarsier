@@ -29,3 +29,27 @@ test("camera sections follow capabilities across source changes and outages", ()
   show({ capabilities: {} });
   assert.ok(sections.every(section => section.hidden));
 });
+
+test("standard camera power follows capture reservation, not vendor power", () => {
+  const source = readFileSync(new URL("./app.js", import.meta.url), "utf8");
+  const render = source.slice(source.indexOf("function renderCameraPower("), source.indexOf("function backgroundState("));
+  const button = { setAttribute() {}, classList: { toggle() {} } };
+  const state = { pipeline: { enabled: true, camera_reserved: false } };
+  const context = vm.createContext({ state, cameraPowerToggle: button,
+    cameraPowerDraft: null, cameraPowerPending: false, cameraPowerError: null });
+  vm.runInContext(render, context);
+  const camera = { available: true, powered_on: null, capabilities: { power: false } };
+  context.renderCameraPower(camera);
+  assert.match(button.title, /Stop capture and reserve/);
+  assert.equal(button.disabled, false);
+  state.pipeline.enabled = false;
+  state.pipeline.camera_reserved = true;
+  context.renderCameraPower(camera);
+  assert.match(button.title, /off, reserved/);
+  assert.match(button.title, /video stays muted/);
+  state.pipeline.camera_reserved = false;
+  context.renderCameraPower(camera);
+  assert.match(button.title, /not reserved/);
+  const html = readFileSync(new URL("./index.html", import.meta.url), "utf8");
+  assert.doesNotMatch(html.match(/<button id="camera-power-toggle"[^>]*>/)[0], /data-camera-capability|\bhidden\b/);
+});
