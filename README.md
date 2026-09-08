@@ -211,7 +211,13 @@ background fragments. Turning the background effect off releases the depth
 model unless the Depth map identity is selected.
 
 The video button beside the microphone mute button masks the virtual camera
-output while keeping capture and the local preview active. New settings use a
+output while keeping capture and the local preview active. The virtual camera
+starts muted and stays muted while no application is confirmed connected.
+After connecting a conference application, unmute manually when ready.
+Disconnecting the last client mutes the output again; reconnecting never
+unmutes it. Idle checks run every 250 ms. This pre-mutes ordinary new sessions,
+but an extremely fast disconnect/reconnect can still occur between checks.
+Recording remains available while the virtual camera is idle and muted. New settings use a
 built-in Tarsier logo image by default. In **Settings →
 Video → Video mute replacement**, upload a PNG/JPEG image or MP4/WebM video (up to
 100 MB), restore **Use Tarsier image**, or choose **Use black output**. Replacements fit inside the output

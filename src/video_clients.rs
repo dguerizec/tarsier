@@ -31,6 +31,12 @@ pub struct Snapshot {
     pub applications: Vec<Application>,
 }
 
+impl Snapshot {
+    pub fn connected(&self) -> bool {
+        self.available && (self.capture_active == Some(true) || !self.applications.is_empty())
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct Monitor(Arc<Mutex<Option<(Instant, String, Snapshot)>>>);
 
@@ -311,5 +317,25 @@ mod tests {
         assert_eq!(snapshot.applications.len(), 1);
         assert_eq!(snapshot.applications[0].pid, 20);
         assert_eq!(snapshot.applications[0].name, "Test reader");
+    }
+}
+
+#[cfg(test)]
+mod connection_tests {
+    use super::*;
+
+    #[test]
+    fn only_confirmed_clients_allow_manual_unmute() {
+        let mut snapshot = Snapshot { available: true, partial: true, capture_active: None, applications: vec![] };
+        assert!(!snapshot.connected());
+        snapshot.capture_active = Some(false);
+        assert!(!snapshot.connected());
+        snapshot.capture_active = Some(true);
+        assert!(snapshot.connected());
+        snapshot.capture_active = Some(false);
+        snapshot.applications.push(Application { pid: 42, name: "Conference".into(), binary: None });
+        assert!(snapshot.connected());
+        snapshot.applications.clear();
+        assert!(!snapshot.connected());
     }
 }

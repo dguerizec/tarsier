@@ -220,6 +220,7 @@ pub fn router_with_controls(
         shutdown,
     };
     spawn_camera_power_monitor(state.clone());
+    spawn_video_connection_monitor(state.clone());
     let router = Router::new()
         .route("/", get(index))
         .route("/settings", get(settings_page))
@@ -937,6 +938,41 @@ struct TrackingRequest {
 #[derive(Deserialize)]
 struct CameraPowerRequest {
     enabled: bool,
+}
+
+fn spawn_video_connection_monitor(state: ApiState) {
+    if state.pipeline.is_none() || !state.config.video.loopback_enabled {
+        return;
+    }
+    tokio::spawn(async move {
+        let mut shutdown = state.shutdown.clone();
+        let mut tick = tokio::time::interval(std::time::Duration::from_millis(250));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() { break; }
+                }
+                _ = tick.tick() => {
+                    let _guard = state.video_output_control.lock().await;
+                    let connected = state.video_applications.fresh_applications(
+                        state.config.video.output_device.clone(),
+                    ).await.is_ok_and(|snapshot| snapshot.connected());
+                    if connected || state.preview.output_muted() { continue; }
+                    // Apply mute before persistence so a storage error cannot leave output live.
+                    state.preview.set_output_muted(true);
+                    state.runtime.update(|runtime| runtime.pipeline.output_muted = true).await;
+                    if let Some(settings) = &state.user_settings {
+                        if let Err(error) = settings.set_video_output_muted(true).await {
+                            tracing::warn!(%error, "could not persist automatic video mute");
+                        }
+                    }
+                    state.runtime.emit("video.output", "video-connection", None,
+                        json!({"muted": true, "reason": "no_confirmed_application"})).await;
+                }
+            }
+        }
+    });
 }
 
 fn spawn_camera_power_monitor(state: ApiState) {
@@ -2764,6 +2800,14 @@ async fn set_video_output(
     Json(request): Json<VideoOutputRequest>,
 ) -> Response {
     let _guard = state.video_output_control.lock().await;
+    if !request.muted && state.config.video.loopback_enabled {
+        let connected = state.video_applications.fresh_applications(
+            state.config.video.output_device.clone(),
+        ).await.is_ok_and(|snapshot| snapshot.connected());
+        if !connected {
+            return (StatusCode::CONFLICT, Json(json!({"error": "Connect an application to the virtual camera before unmuting video."}))).into_response();
+        }
+    }
     if let Some(settings) = &state.user_settings
         && let Err(error) = settings.set_video_output_muted(request.muted).await
     {
@@ -6044,8 +6088,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn video_output_rejects_unmute_without_a_confirmed_client() {
+        let mut config = Config::default();
+        config.video.loopback_enabled = true;
+        config.video.output_device = "/nonexistent/tarsier-output-test".into();
+        let preview = PreviewHub::new();
+        preview.set_output_muted(true);
+        let (_shutdown, receiver) = watch::channel(false);
+        let app = router(config, Runtime::new(), preview.clone(), None, receiver);
+        let response = app.oneshot(
+            Request::post("/api/v1/video/output")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"muted":false}"#)).unwrap()
+        ).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(preview.output_muted());
+    }
+
+    #[tokio::test]
     async fn video_output_mute_persists_without_changing_capture_or_camera() {
-        let config = Config::default();
+        let mut config = Config::default();
+        config.video.loopback_enabled = false;
         let path = std::env::temp_dir().join(format!(
             "tarsier-video-mute-{}-{}/settings.json",
             std::process::id(),
