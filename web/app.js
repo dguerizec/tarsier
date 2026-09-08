@@ -594,6 +594,8 @@ function renderZoom(camera) {
     ?? camera.zoom_magnification ?? null;
   if (zoomDraft == null && current != null) zoomSlider.value = String(current);
   const displayed = zoomDraft ?? current;
+  $("#preview-zoom").textContent = camera.available && cameraIsPowered(camera) && displayed != null
+    ? `Zoom ${magnification(displayed)}` : "Zoom —";
   $("#zoom-value").textContent = zoomPending
     ? `Applying ${magnification(displayed)}`
     : displayed == null ? "Unknown" : magnification(displayed);
