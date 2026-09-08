@@ -270,8 +270,6 @@ impl VirtualVideoOutput {
                     let started = Instant::now();
                     let mut deadline = started;
                     while running.load(Ordering::Relaxed) {
-                        let muted = preview.output_muted();
-                        let replacement = preview.replacement_frame(muted);
                         let mut recording_frame = if capture_enabled.load(Ordering::Relaxed) {
                             preview
                                 .virtual_frame
@@ -284,6 +282,10 @@ impl VirtualVideoOutput {
                         } else {
                             black.clone()
                         };
+                        // Read mute after acquiring the frame: a source switch must
+                        // never pair its new image with a pre-switch unmuted state.
+                        let muted = preview.output_muted();
+                        let replacement = preview.replacement_frame(muted);
                         let buffer = recording_frame.make_mut();
                         buffer.set_pts(gst::ClockTime::from_nseconds(
                             started.elapsed().as_nanos() as u64

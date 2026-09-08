@@ -165,6 +165,7 @@ const imageSettingGroups = [
       { control: "contrast", label: "Contrast", kind: "integer", help: "Difference between dark and light tones." },
       { control: "saturation", label: "Saturation", kind: "integer", help: "Color intensity." },
       { control: "hue", label: "Hue", kind: "integer", help: "Overall color shift." },
+      { control: "gamma", label: "Gamma", kind: "integer", help: "Mid-tone brightness." },
       { control: "sharpness", label: "Sharpness", kind: "integer", help: "Digital edge enhancement." },
       { control: "power-line-frequency", label: "Anti-flicker", kind: "menu", help: "Match the local mains frequency." },
     ],
@@ -302,6 +303,9 @@ function imageSettingState(camera, control) {
 }
 
 function imageSettingMode(camera, control) {
+  if (!camera.capabilities?.tracking) {
+    return { active: imageSettingState(camera, control)?.active === true, reason: null };
+  }
   const value = (dependency) => imageSettingState(camera, dependency)?.value ?? null;
   if (["exposure-time-absolute", "gain"].includes(control)) {
     return value("auto-exposure") === 1
@@ -344,11 +348,9 @@ function renderImageSettings(camera) {
     .map((control) => control.sample_at_ms)
     .filter(Number.isFinite);
   const newestSample = samples.length ? Math.max(...samples) : null;
-  const unavailable = settings.controls.filter((control) => !control.available).length;
   $("#image-settings-readback").textContent = pendingImageSettings.size > 0
     ? `Applying ${pendingImageSettings.size} change${pendingImageSettings.size === 1 ? "" : "s"}…`
     : newestSample == null ? "Awaiting camera readback"
-    : unavailable > 0 ? `Readback ${age(newestSample)} · ${unavailable} unavailable`
     : `Readback ${age(newestSample)}`;
 
   const error = imageSettingError || settings.error;
@@ -358,6 +360,7 @@ function renderImageSettings(camera) {
   for (const definition of imageSettingDefinitions) {
     const controlState = imageSettingState(camera, definition.control);
     const row = document.querySelector(`[data-image-setting-row="${definition.control}"]`);
+    row.hidden = controlState?.available !== true;
     const output = document.querySelector(`[data-image-setting-value="${definition.control}"]`);
     const help = document.querySelector(`[data-image-setting-help="${definition.control}"]`);
     const pending = pendingImageSettings.has(definition.control);
@@ -415,6 +418,9 @@ function renderImageSettings(camera) {
       });
     }
   }
+  imageSettingsGroups.querySelectorAll("[data-image-settings-group]").forEach(group => {
+    group.hidden = ![...group.querySelectorAll("[data-image-setting-row]")].some(row => !row.hidden);
+  });
 }
 
 function syncDaemonRestartControl() {
@@ -422,6 +428,15 @@ function syncDaemonRestartControl() {
   connection.title = daemonRestartAvailable
     ? "Restart the supervised Tarsier daemon"
     : "Daemon restart is unavailable without service supervision";
+}
+
+function renderCameraCapabilities(camera) {
+  document.querySelectorAll("[data-camera-capability]").forEach(element => {
+    element.hidden = !element.dataset.cameraCapability.split(",").some(key => camera.capabilities?.[key] === true);
+  });
+  $("#camera-name").textContent = camera.name || "Camera";
+  preview.title = camera.capabilities?.pan_tilt
+    ? "Drag to pan and tilt; scroll or pinch to zoom" : "Camera preview";
 }
 
 const daemonMonitor = createDaemonMonitor({
@@ -712,7 +727,7 @@ function activeDirection() {
 }
 
 function canDragPreview() {
-  return socketConnected && state?.pipeline.running && !videoTransformPending
+  return socketConnected && state?.camera.capabilities?.pan_tilt && state?.pipeline.running && !videoTransformPending
     && !faceTrackingPending && !handsTrackingPending && !trackingPending
     && cameraControlsAvailable(state?.camera || {});
 }
@@ -849,6 +864,13 @@ function renderBackground(videoEffects) {
 
 function render(next) {
   daemonMonitor.observe(next.started_at_ms);
+  if (state?.camera.device_id !== next.camera.device_id) {
+    for (const timer of imageSettingTimers.values()) clearTimeout(timer);
+    imageSettingTimers.clear();
+    imageSettingDrafts.clear();
+    imageSettingError = null;
+    zoomDraft = null;
+  }
   state = next;
   renderVideoOutput();
   syncAudioCapture(next.audio_capture_sources || [], next.audio_virtual, next.audio_reservations, next.audio_released_sources, next.audio_busy_sources, next.audio_output_applications, next.audio_gain, next.audio_voice);
@@ -886,6 +908,7 @@ function render(next) {
   renderPanTilt(camera);
   renderBuiltInGestures(camera);
   renderCameraPower(camera);
+  renderCameraCapabilities(camera);
   renderOutputMode(next.video_effects);
   renderBackground(next.video_effects);
   $("#pipeline-summary").textContent = pipeline.running
@@ -1329,6 +1352,7 @@ function clearHeldDirections() {
 }
 
 function holdDirection(direction) {
+  if (!state?.camera.capabilities?.pan_tilt) return;
   if (videoTransformPending || faceTrackingPending || handsTrackingPending || trackingPending
     || !cameraControlsAvailable(state?.camera || {})) return;
   const previous = activeDirection();
@@ -1446,6 +1470,7 @@ function blocksArrowControl(target) {
 
 document.addEventListener("keydown", (event) => {
   const direction = arrowDirections[event.key];
+  if (!state?.camera.capabilities?.pan_tilt) return;
   if (!direction || event.altKey || event.ctrlKey || event.metaKey || blocksArrowControl(event.target)
     || faceTrackingPending || handsTrackingPending || trackingPending
     || !cameraControlsAvailable(state?.camera || {})) return;
@@ -1537,6 +1562,7 @@ function scheduleImageSetting(control) {
 async function sendImageSetting(control) {
   if (pendingImageSettings.has(control) || !imageSettingDrafts.has(control)) return;
   const value = imageSettingDrafts.get(control);
+  const deviceId = state?.camera.device_id;
   pendingImageSettings.add(control);
   imageSettingError = null;
   if (state) render(state);
@@ -1550,6 +1576,7 @@ async function sendImageSetting(control) {
     if (!response.ok) {
       throw new Error(payload.error || `Image setting failed (${response.status})`);
     }
+    if (state?.camera.device_id !== deviceId) return;
     const readback = imageSettingState(state?.camera || {}, control);
     if (readback && Number.isInteger(payload.value)) {
       readback.value = payload.value;

@@ -79,6 +79,7 @@ pub fn apply_camera(config: &mut crate::config::Config, id: &str) {
         config.video.input_device = id.into();
         config.camera.control_device = id.into();
         // Only the supported OBSBOT model receives vendor-specific commands.
+        // Other physical cameras still expose their standard V4L2 image controls.
         config.camera.adapter = if cameras()
             .unwrap_or_default()
             .iter()
@@ -86,7 +87,7 @@ pub fn apply_camera(config: &mut crate::config::Config, id: &str) {
         {
             CameraAdapter::ObsbotTiny2
         } else {
-            CameraAdapter::Disabled
+            CameraAdapter::V4l2
         };
     }
 }

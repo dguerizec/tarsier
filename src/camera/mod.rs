@@ -393,8 +393,43 @@ impl CameraHandle {
 }
 
 pub async fn start(config: CameraConfig, runtime: Runtime) -> Result<Option<CameraHandle>> {
+    let name = crate::devices::cameras()
+        .unwrap_or_default()
+        .into_iter()
+        .find(|camera| camera.id == config.control_device)
+        .map(|camera| camera.name);
     runtime
-        .update(|state| state.camera.adapter = adapter_name(config.adapter).into())
+        .update(|state| {
+            state.camera.adapter = adapter_name(config.adapter).into();
+            state.camera.name = if config.adapter == CameraAdapter::Mock {
+                Some("Synthetic video".into())
+            } else {
+                name
+            };
+            state.camera.device_id = matches!(
+                config.adapter,
+                CameraAdapter::V4l2 | CameraAdapter::ObsbotTiny2
+            )
+            .then(|| config.control_device.clone());
+            state.camera.capabilities = if matches!(
+                config.adapter,
+                CameraAdapter::Mock | CameraAdapter::ObsbotTiny2
+            ) {
+                crate::model::CameraCapabilities {
+                    power: true,
+                    absolute_position: true,
+                    pan_tilt: true,
+                    motor_telemetry: true,
+                    tracking: true,
+                    hdr: true,
+                    zoom: true,
+                    image_settings: true,
+                    built_in_gestures: true,
+                }
+            } else {
+                Default::default()
+            };
+        })
         .await;
     match config.adapter {
         CameraAdapter::Disabled => Ok(None),
@@ -418,6 +453,21 @@ pub async fn start(config: CameraConfig, runtime: Runtime) -> Result<Option<Came
                     state.camera.sample_at_ms = Some(now);
                 })
                 .await;
+            Ok(Some(handle))
+        }
+        CameraAdapter::V4l2 => {
+            let mut transport = LinuxUvcTransport::open(&config.control_device, config.xu_unit)?;
+            let controls = transport.image_controls();
+            let (handle, telemetry_rx) = spawn_worker(transport, &config, None);
+            runtime
+                .update(|state| {
+                    state.camera.available = true;
+                    state.camera.capabilities.image_settings = controls.iter().any(|c| c.available);
+                    state.camera.image_settings.controls = controls;
+                    state.camera.powered_on = None;
+                })
+                .await;
+            *handle.telemetry.lock().await = Some(spawn_telemetry_updates(telemetry_rx, runtime));
             Ok(Some(handle))
         }
         CameraAdapter::ObsbotTiny2 => {
@@ -474,16 +524,20 @@ fn spawn_worker<T: XuTransport + 'static>(
     let powered_on = Arc::new(AtomicBool::new(true));
     let worker_powered_on = Arc::clone(&powered_on);
     let interval = Duration::from_millis(config.minimum_command_interval_ms);
+    let standard_only = config.adapter == CameraAdapter::V4l2;
     let poll_interval =
         (config.poll_interval_ms > 0).then(|| Duration::from_millis(config.poll_interval_ms));
     std::thread::Builder::new()
         .name("tarsier-camera-owner".into())
         .spawn(move || {
-            Worker::new(transport, rx, interval)
-                .with_led_control()
+            let mut worker = Worker::new(transport, rx, interval)
                 .with_power_state(worker_powered_on)
-                .with_telemetry(poll_interval, telemetry_tx)
-                .run()
+                .with_telemetry(poll_interval, telemetry_tx);
+            worker.standard_only = standard_only;
+            if !standard_only {
+                worker = worker.with_led_control();
+            }
+            worker.run()
         })
         .expect("failed to spawn camera owner thread");
     (
@@ -503,6 +557,7 @@ fn spawn_worker<T: XuTransport + 'static>(
 }
 
 struct Worker<T> {
+    standard_only: bool,
     led: Option<led::Led>,
     transport: T,
     rx: Receiver<Request>,
@@ -521,6 +576,7 @@ struct Worker<T> {
 impl<T: XuTransport> Worker<T> {
     fn new(transport: T, rx: Receiver<Request>, minimum_interval: Duration) -> Self {
         Self {
+            standard_only: false,
             led: None,
             transport,
             rx,
@@ -637,6 +693,16 @@ impl<T: XuTransport> Worker<T> {
     }
 
     fn execute(&mut self, command: Command) -> Result<CommandOutcome> {
+        let standard_command = match &command {
+            Command::Shutdown | Command::McpActivity | Command::Led { .. } => true,
+            Command::ImageControl { control, .. } => {
+                *control != CameraImageControl::FacePriorityAutoExposure
+            }
+            _ => false,
+        };
+        if self.standard_only && !standard_command {
+            bail!("this hardware command is not supported by the active camera");
+        }
         if !matches!(command, Command::Power { .. } | Command::Shutdown)
             && !self.powered_on.load(Ordering::Relaxed)
         {
@@ -750,7 +816,7 @@ impl<T: XuTransport> Worker<T> {
         for dependency in image_control_dependencies(control) {
             controls.push(self.transport.image_control(*dependency));
         }
-        if control == CameraImageControl::AutoExposure {
+        if !self.standard_only && control == CameraImageControl::AutoExposure {
             let status = self.query_status()?;
             controls.push(face_priority_auto_exposure_control(
                 status.face_priority_auto_exposure,
@@ -785,7 +851,9 @@ impl<T: XuTransport> Worker<T> {
             return Ok(());
         };
         let state = self.transport.image_control(dependency);
-        if !state.available || state.value != Some(required_value) {
+        if (state.available && state.value != Some(required_value))
+            || (!state.available && !self.standard_only)
+        {
             bail!(message);
         }
         Ok(())
@@ -920,6 +988,12 @@ impl<T: XuTransport> Worker<T> {
     fn poll_telemetry_if_due(&mut self) -> bool {
         let now = Instant::now();
         let Some(kind) = self.telemetry.as_ref().and_then(|poller| {
+            if self.standard_only {
+                return poller
+                    .image_settings
+                    .due(now)
+                    .then_some(TelemetryKind::ImageSettings);
+            }
             if self.powered_on.load(Ordering::Relaxed) {
                 poller.next_kind(now)
             } else {
@@ -1386,10 +1460,11 @@ fn spawn_telemetry_updates(
                                     .value(CameraImageControl::AutoExposure),
                                 Some(value) if value != 1
                             );
-                            state
-                                .camera
-                                .image_settings
-                                .upsert(face_priority_auto_exposure_control(face_priority, active));
+                            if state.camera.capabilities.tracking {
+                                state.camera.image_settings.upsert(
+                                    face_priority_auto_exposure_control(face_priority, active),
+                                );
+                            }
                             state.camera.image_settings.error = None;
                         })
                         .await;
@@ -1430,6 +1505,7 @@ fn spawn_telemetry_updates(
 fn adapter_name(adapter: CameraAdapter) -> &'static str {
     match adapter {
         CameraAdapter::ObsbotTiny2 => "obsbot-tiny-2",
+        CameraAdapter::V4l2 => "v4l2",
         CameraAdapter::Mock => "mock",
         CameraAdapter::Disabled => "disabled",
     }
@@ -1438,6 +1514,60 @@ fn adapter_name(adapter: CameraAdapter) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires TARSIER_TEST_CAMERA pointing to a local V4L2 webcam"]
+    async fn standard_camera_hardware_readback() {
+        let runtime = Runtime::new();
+        let config = CameraConfig {
+            adapter: CameraAdapter::V4l2,
+            control_device: std::env::var("TARSIER_TEST_CAMERA").unwrap(),
+            ..Default::default()
+        };
+        let camera = start(config, runtime.clone()).await.unwrap().unwrap();
+        let state = runtime.state().await.camera;
+        assert!(state.available);
+        assert!(state.capabilities.image_settings);
+        assert!(!state.capabilities.power);
+        assert!(!state.capabilities.pan_tilt);
+        let brightness = state.image_settings.value(CameraImageControl::Brightness).unwrap();
+        // Write the already selected value, leaving the user's image unchanged.
+        let result = camera.set_image_control(CameraImageControl::Brightness, brightness).await;
+        camera.shutdown().await.unwrap();
+        let controls = result.unwrap();
+        assert!(controls.iter().any(|c| c.control == CameraImageControl::Brightness && c.value == Some(brightness)));
+    }
+
+    #[test]
+    fn standard_camera_exposure_never_uses_vendor_commands() {
+        let (_tx, rx) = sync_channel(1);
+        let mut worker = Worker::new(RecordingTransport::default(), rx, Duration::ZERO);
+        worker.standard_only = true;
+        worker
+            .execute(Command::ImageControl {
+                control: CameraImageControl::AutoExposure,
+                value: 1,
+            })
+            .unwrap();
+        assert_eq!(
+            worker.transport.image_control_values,
+            vec![(CameraImageControl::AutoExposure, 1)]
+        );
+        for command in [
+            Command::Recenter,
+            Command::Power { enabled: false },
+            Command::Hdr { enabled: true },
+            Command::Tracking { enabled: true },
+            Command::ImageControl {
+                control: CameraImageControl::FacePriorityAutoExposure,
+                value: 1,
+            },
+            Command::Zoom { magnification: 2.0 },
+        ] {
+            assert!(worker.execute(command).is_err());
+        }
+        assert!(worker.transport.writes.is_empty());
+    }
 
     #[test]
     fn physical_power_changes_are_polled_passively_while_asleep() {

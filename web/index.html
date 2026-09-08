@@ -20,7 +20,7 @@
       <nav class="header-actions" aria-label="Main navigation">
         <a href="/settings" class="settings-link">Settings</a>
         <button id="connection" class="status status-off" type="button" aria-haspopup="dialog" disabled>Connecting</button>
-        <button id="camera-power-toggle" class="status status-off" type="button" aria-pressed="false" aria-label="Camera power loading" title="Camera power loading" disabled></button>
+        <button id="camera-power-toggle" data-camera-capability="power" hidden class="status status-off" type="button" aria-pressed="false" aria-label="Camera power loading" title="Camera power loading" disabled></button>
       </nav>
     </header>
 
@@ -90,8 +90,8 @@
           <canvas id="landmark-overlay" aria-hidden="true"></canvas>
           <div id="preview-placeholder">Waiting for video</div>
           <span id="video-output-muted" class="video-output-muted" hidden>Video output muted</span>
-          <span id="preview-zoom" class="preview-zoom" aria-label="Preview zoom level">Zoom —</span>
-          <div class="tracking-mode-controls" role="group" aria-label="Camera tracking">
+          <span id="preview-zoom" data-camera-capability="zoom" hidden class="preview-zoom" aria-label="Preview zoom level">Zoom —</span>
+          <div class="tracking-mode-controls" data-camera-capability="pan_tilt" hidden role="group" aria-label="Camera tracking">
             <button id="face-tracking-toggle" class="secondary compact" type="button" aria-pressed="false" aria-label="Face tracking" title="Face tracking"></button>
             <button id="hands-tracking-toggle" class="secondary compact" type="button" aria-pressed="false" aria-label="Hands tracking" title="Hands tracking"></button>
             <button id="auto-zoom-toggle" class="secondary compact" type="button" aria-pressed="false" aria-label="Auto zoom" title="Auto zoom" disabled></button>
@@ -135,7 +135,7 @@
           </div>
         </section>
 
-        <div class="pan-tilt-bar">
+        <div class="pan-tilt-bar" data-camera-capability="pan_tilt" hidden>
           <div class="pan-tilt-copy">
             <strong>Pan / tilt</strong>
             <span id="pan-tilt-status">Hold a button or use the arrow keys</span>
@@ -255,32 +255,32 @@
       <aside class="camera-sidebar" aria-label="Camera and perception">
         <details id="camera-panel" class="telemetry panel" open>
           <summary class="panel-title camera-heading">
-            <h2>Camera</h2>
+            <h2 id="camera-name">Camera</h2>
             <div class="camera-heading-actions">
-              <span id="camera-age">No sample</span>
+              <span id="camera-age" data-camera-capability="motor_telemetry" hidden>No sample</span>
             </div>
           </summary>
-          <div class="metrics">
+          <div class="metrics" data-camera-capability="motor_telemetry" hidden>
             <article><span>Motor yaw</span><strong id="yaw">—</strong></article>
             <article><span>Motor pitch</span><strong id="pitch">—</strong></article>
             <article><span>Motor roll</span><strong id="roll">—</strong></article>
             <article><span>Camera tracking</span><strong id="tracking">—</strong></article>
           </div>
-          <div class="telemetry-details">
+          <div class="telemetry-details" data-camera-capability="motor_telemetry" hidden>
             <span>Euler <strong id="camera-euler">—</strong></span>
             <span>Velocity <strong id="camera-velocity">—</strong></span>
           </div>
-          <div class="controls">
+          <div class="controls" data-camera-capability="absolute_position" hidden>
             <button data-action="recenter">Recenter</button>
           </div>
-          <div id="presets" class="controls preset-controls"></div>
-          <div class="camera-subsection">
+          <div id="presets" class="controls preset-controls" data-camera-capability="absolute_position" hidden></div>
+          <div class="camera-subsection" data-camera-capability="tracking,hdr" hidden>
             <div class="subsection-title">
               <h3>Camera features</h3>
               <span>Camera firmware</span>
             </div>
             <div class="feature-controls">
-              <div class="feature-control">
+              <div class="feature-control" data-camera-capability="tracking" hidden>
                 <span>Camera tracking</span>
                 <strong id="tracking-feature-state">Unknown</strong>
                 <div class="segmented-control" role="group" aria-label="Camera tracking">
@@ -288,7 +288,7 @@
                   <button class="secondary compact" type="button" data-camera-feature="tracking" data-camera-enabled="false">Off</button>
                 </div>
               </div>
-              <div class="feature-control">
+              <div class="feature-control" data-camera-capability="hdr" hidden>
                 <span>HDR</span>
                 <strong id="hdr-feature-state">Unknown</strong>
                 <div class="segmented-control" role="group" aria-label="HDR imaging">
@@ -298,7 +298,7 @@
               </div>
             </div>
           </div>
-          <div class="camera-subsection manual-zoom">
+          <div class="camera-subsection manual-zoom" data-camera-capability="zoom" hidden>
             <div class="subsection-title">
               <h3>Zoom</h3>
               <output id="zoom-value" for="zoom-slider">Unknown</output>
@@ -310,7 +310,7 @@
             <div class="zoom-scale" aria-hidden="true"><span>×1</span><span>×4</span></div>
             <p id="zoom-help" class="control-hint">Manual changes become the new framing while auto zoom is on. <span id="auto-zoom-readback">Auto zoom needs face tracking.</span> <span id="zoom-readback">Awaiting camera readback.</span></p>
           </div>
-          <div class="camera-subsection image-settings">
+          <div class="camera-subsection image-settings" data-camera-capability="image_settings" hidden>
             <div class="subsection-title">
               <h3>Image settings</h3>
               <span id="image-settings-readback">Awaiting camera readback</span>
@@ -318,7 +318,7 @@
             <div id="image-settings-groups" class="image-settings-groups"></div>
             <p id="image-settings-error" class="error" role="alert" hidden></p>
           </div>
-          <div class="camera-subsection">
+          <div class="camera-subsection" data-camera-capability="built_in_gestures" hidden>
             <div class="subsection-title">
               <h3>Built-in gestures</h3>
               <span id="gesture-readback">Awaiting camera readback</span>

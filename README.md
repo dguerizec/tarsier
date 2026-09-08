@@ -1192,3 +1192,15 @@ is black during the transition and audio continues. Use **Synthetic video** to
 exercise switching with a single physical camera. Switching disables local tracking
 and is rejected during recording. A failed switch attempts to restore the previous
 camera. Saving reservation preferences alone is allowed during recording.
+
+Physical webcams use the generic `v4l2` controller for standard image settings.
+The Camera panel shows the active camera name and supported controls (including
+gamma); unsupported controls and motor/firmware sections are hidden. Supported
+manual controls remain visible but disabled while their automatic mode is active.
+The generic controller does not send OBSBOT extension-unit commands. Hardware
+sleep, motor control and firmware features remain specific to the OBSBOT adapter.
+
+Every manual camera change mutes virtual video output before replacing capture.
+The output stays muted even if switching fails and the previous source is restored.
+Check framing in the local preview and unmute explicitly. There is no automatic
+fallback or simultaneous capture of multiple cameras.

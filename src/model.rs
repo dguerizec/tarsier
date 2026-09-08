@@ -136,9 +136,13 @@ pub enum CameraAttitudeSource {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct CameraState {
     pub available: bool,
+    pub device_id: Option<String>,
+    pub name: Option<String>,
     pub powered_on: Option<bool>,
     pub power_error: Option<String>,
     pub adapter: String,
+    #[serde(default)]
+    pub capabilities: CameraCapabilities,
     pub serial: Option<String>,
     pub tracking: Option<bool>,
     pub tracking_sample_at_ms: Option<u64>,
@@ -169,6 +173,19 @@ pub struct CameraState {
     pub error: Option<String>,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct CameraCapabilities {
+    pub power: bool,
+    pub absolute_position: bool,
+    pub pan_tilt: bool,
+    pub motor_telemetry: bool,
+    pub tracking: bool,
+    pub hdr: bool,
+    pub zoom: bool,
+    pub image_settings: bool,
+    pub built_in_gestures: bool,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum CameraImageControl {
@@ -176,6 +193,7 @@ pub enum CameraImageControl {
     Contrast,
     Saturation,
     Hue,
+    Gamma,
     Gain,
     BacklightCompensation,
     PowerLineFrequency,
@@ -193,11 +211,12 @@ pub enum CameraImageControl {
 }
 
 impl CameraImageControl {
-    pub const STANDARD: [Self; 17] = [
+    pub const STANDARD: [Self; 18] = [
         Self::Brightness,
         Self::Contrast,
         Self::Saturation,
         Self::Hue,
+        Self::Gamma,
         Self::Gain,
         Self::BacklightCompensation,
         Self::PowerLineFrequency,
