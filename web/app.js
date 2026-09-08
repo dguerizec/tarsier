@@ -165,6 +165,7 @@ const imageSettingGroups = [
       { control: "contrast", label: "Contrast", kind: "integer", help: "Difference between dark and light tones." },
       { control: "saturation", label: "Saturation", kind: "integer", help: "Color intensity." },
       { control: "hue", label: "Hue", kind: "integer", help: "Overall color shift." },
+      { control: "gamma", label: "Gamma", kind: "integer", help: "Mid-tone brightness." },
       { control: "sharpness", label: "Sharpness", kind: "integer", help: "Digital edge enhancement." },
       { control: "power-line-frequency", label: "Anti-flicker", kind: "menu", help: "Match the local mains frequency." },
     ],
@@ -247,7 +248,7 @@ const attitudeLabel = (source) => ({
   simulated: "Simulated",
 }[source] || "No attitude sample");
 const magnification = (value) => `×${Number(value).toFixed(1)}`;
-const cameraIsPowered = (camera) => camera.powered_on !== false;
+const cameraIsPowered = (camera) => camera.capabilities?.power ? camera.powered_on !== false : state?.pipeline.enabled === true;
 const cameraControlsAvailable = (camera) => camera.available && cameraIsPowered(camera) && !cameraPowerPending;
 
 function buildImageSettingsUi() {
@@ -302,6 +303,9 @@ function imageSettingState(camera, control) {
 }
 
 function imageSettingMode(camera, control) {
+  if (!camera.capabilities?.tracking) {
+    return { active: imageSettingState(camera, control)?.active === true, reason: null };
+  }
   const value = (dependency) => imageSettingState(camera, dependency)?.value ?? null;
   if (["exposure-time-absolute", "gain"].includes(control)) {
     return value("auto-exposure") === 1
@@ -344,11 +348,9 @@ function renderImageSettings(camera) {
     .map((control) => control.sample_at_ms)
     .filter(Number.isFinite);
   const newestSample = samples.length ? Math.max(...samples) : null;
-  const unavailable = settings.controls.filter((control) => !control.available).length;
   $("#image-settings-readback").textContent = pendingImageSettings.size > 0
     ? `Applying ${pendingImageSettings.size} change${pendingImageSettings.size === 1 ? "" : "s"}…`
     : newestSample == null ? "Awaiting camera readback"
-    : unavailable > 0 ? `Readback ${age(newestSample)} · ${unavailable} unavailable`
     : `Readback ${age(newestSample)}`;
 
   const error = camera.available ? imageSettingError || settings.error : null;
@@ -358,6 +360,7 @@ function renderImageSettings(camera) {
   for (const definition of imageSettingDefinitions) {
     const controlState = imageSettingState(camera, definition.control);
     const row = document.querySelector(`[data-image-setting-row="${definition.control}"]`);
+    row.hidden = controlState?.available !== true;
     const output = document.querySelector(`[data-image-setting-value="${definition.control}"]`);
     const help = document.querySelector(`[data-image-setting-help="${definition.control}"]`);
     const pending = pendingImageSettings.has(definition.control);
@@ -415,6 +418,9 @@ function renderImageSettings(camera) {
       });
     }
   }
+  imageSettingsGroups.querySelectorAll("[data-image-settings-group]").forEach(group => {
+    group.hidden = ![...group.querySelectorAll("[data-image-setting-row]")].some(row => !row.hidden);
+  });
 }
 
 function syncDaemonRestartControl() {
@@ -422,6 +428,15 @@ function syncDaemonRestartControl() {
   connection.title = daemonRestartAvailable
     ? "Restart the supervised Tarsier daemon"
     : "Daemon restart is unavailable without service supervision";
+}
+
+function renderCameraCapabilities(camera) {
+  document.querySelectorAll("[data-camera-capability]").forEach(element => {
+    element.hidden = !element.dataset.cameraCapability.split(",").some(key => camera.capabilities?.[key] === true);
+  });
+  $("#camera-name").textContent = camera.name || "Camera";
+  preview.title = camera.capabilities?.pan_tilt
+    ? "Drag to pan and tilt; scroll or pinch to zoom" : "Camera preview";
 }
 
 const daemonMonitor = createDaemonMonitor({
@@ -713,7 +728,7 @@ function activeDirection() {
 }
 
 function canDragPreview() {
-  return socketConnected && state?.pipeline.running && !videoTransformPending
+  return socketConnected && state?.camera.capabilities?.pan_tilt && state?.pipeline.running && !videoTransformPending
     && !faceTrackingPending && !handsTrackingPending && !trackingPending
     && cameraControlsAvailable(state?.camera || {});
 }
@@ -749,7 +764,8 @@ function renderPanTilt(camera) {
 }
 
 function renderCameraPower(camera) {
-  const poweredOn = cameraPowerDraft ?? camera.powered_on === true;
+  const hardwarePower = camera.capabilities?.power === true;
+  const poweredOn = cameraPowerDraft ?? (hardwarePower ? camera.powered_on === true : state?.pipeline.enabled === true);
   cameraPowerToggle.setAttribute("aria-pressed", String(poweredOn));
   cameraPowerToggle.classList.toggle("status-on", poweredOn);
   cameraPowerToggle.classList.toggle("status-off", !poweredOn);
@@ -758,9 +774,12 @@ function renderCameraPower(camera) {
     ? "Power · failed"
     : cameraPowerPending ? (poweredOn ? "Power · waking…" : "Power · sleeping…")
     : !camera.available ? "Power · unavailable"
+    : !hardwarePower ? (poweredOn ? "Capture · on" : state?.pipeline.camera_reserved ? "Capture · off, reserved" : "Capture · off, not reserved")
     : camera.powered_on == null ? "Power · unknown"
     : poweredOn ? "Power · on" : "Power · off";
-  const powerAction = poweredOn ? "Put the physical camera to sleep" : "Wake the physical camera";
+  const powerAction = hardwarePower
+    ? poweredOn ? "Put the physical camera to sleep" : "Wake the physical camera"
+    : poweredOn ? "Stop capture and reserve the camera" : "Resume capture (video stays muted)";
   cameraPowerToggle.title = `${powerStatus} · ${powerAction}`;
   cameraPowerToggle.setAttribute("aria-label", cameraPowerToggle.title);
   cameraPowerToggle.setAttribute("aria-busy", String(cameraPowerPending));
@@ -850,6 +869,13 @@ function renderBackground(videoEffects) {
 
 function render(next) {
   daemonMonitor.observe(next.started_at_ms);
+  if (state?.camera.device_id !== next.camera.device_id) {
+    for (const timer of imageSettingTimers.values()) clearTimeout(timer);
+    imageSettingTimers.clear();
+    imageSettingDrafts.clear();
+    imageSettingError = null;
+    zoomDraft = null;
+  }
   state = next;
   renderVideoOutput();
   syncAudioCapture(next.audio_capture_sources || [], next.audio_virtual, next.audio_reservations, next.audio_released_sources, next.audio_busy_sources, next.audio_output_applications, next.audio_gain, next.audio_voice);
@@ -887,17 +913,18 @@ function render(next) {
   renderPanTilt(camera);
   renderBuiltInGestures(camera);
   renderCameraPower(camera);
+  renderCameraCapabilities(camera);
   renderOutputMode(next.video_effects);
   renderBackground(next.video_effects);
   const cameraMissing = !camera.available && camera.adapter === "obsbot-tiny-2";
   const previewStatus = cameraMissing ? "Camera disconnected · reconnect the USB cable"
-    : camera.powered_on === false ? "Camera off"
+    : !cameraIsPowered(camera) ? "Camera off"
     : pipeline.error ? "Video unavailable · check the camera connection"
     : "Waiting for video";
   $("#preview-placeholder").textContent = previewStatus;
   $("#pipeline-summary").textContent = pipeline.running
     ? ` · ${pipeline.fps.toFixed(1)} fps · ${pipeline.frame_count} frames`
-    : ` · ${cameraMissing ? "Camera disconnected" : camera.powered_on === false ? "Camera off" : pipeline.error ? "Video unavailable" : "Pipeline stopped"}`;
+    : ` · ${cameraMissing ? "Camera disconnected" : !cameraIsPowered(camera) ? "Camera off" : pipeline.error ? "Video unavailable" : "Pipeline stopped"}`;
   $("#video-resolution").textContent = pipeline.width ? `${pipeline.width}×${pipeline.height}` : "Resolution";
   for (const button of document.querySelectorAll("[data-resolution]")) {
     button.disabled = resolutionPending || recordingState?.active || !socketConnected || !daemonRestartAvailable;
@@ -1309,7 +1336,11 @@ async function setCameraPower(enabled) {
       const payload = await response.json().catch(() => ({}));
       throw new Error(payload.error || `Camera power change failed (${response.status})`);
     }
-    state.camera.powered_on = enabled;
+    if (state.camera.capabilities?.power) state.camera.powered_on = enabled;
+    else {
+      state.pipeline.camera_reserved = !enabled;
+      state.pipeline.output_muted = true;
+    }
     state.camera.power_error = null;
     state.pipeline.enabled = enabled;
     state.pipeline.running = enabled;
@@ -1323,7 +1354,7 @@ async function setCameraPower(enabled) {
 }
 
 cameraPowerToggle.addEventListener("click", () => {
-  if (state) void setCameraPower(state.camera.powered_on !== true);
+  if (state) void setCameraPower(!cameraIsPowered(state.camera));
 });
 
 for (const input of backgroundEffectInputs) {
@@ -1357,6 +1388,7 @@ function clearHeldDirections() {
 }
 
 function holdDirection(direction) {
+  if (!state?.camera.capabilities?.pan_tilt) return;
   if (videoTransformPending || faceTrackingPending || handsTrackingPending || trackingPending
     || !cameraControlsAvailable(state?.camera || {})) return;
   const previous = activeDirection();
@@ -1474,6 +1506,7 @@ function blocksArrowControl(target) {
 
 document.addEventListener("keydown", (event) => {
   const direction = arrowDirections[event.key];
+  if (!state?.camera.capabilities?.pan_tilt) return;
   if (!direction || event.altKey || event.ctrlKey || event.metaKey || blocksArrowControl(event.target)
     || faceTrackingPending || handsTrackingPending || trackingPending
     || !cameraControlsAvailable(state?.camera || {})) return;
@@ -1565,6 +1598,7 @@ function scheduleImageSetting(control) {
 async function sendImageSetting(control) {
   if (pendingImageSettings.has(control) || !imageSettingDrafts.has(control)) return;
   const value = imageSettingDrafts.get(control);
+  const deviceId = state?.camera.device_id;
   pendingImageSettings.add(control);
   imageSettingError = null;
   if (state) render(state);
@@ -1578,6 +1612,7 @@ async function sendImageSetting(control) {
     if (!response.ok) {
       throw new Error(payload.error || `Image setting failed (${response.status})`);
     }
+    if (state?.camera.device_id !== deviceId) return;
     const readback = imageSettingState(state?.camera || {}, control);
     if (readback && Number.isInteger(payload.value)) {
       readback.value = payload.value;

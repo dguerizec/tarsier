@@ -83,6 +83,10 @@ async fn supervise(
             continue;
         }
         let mut command = Command::new("uv");
+        // uv owns a Python child. Stop the entire private group on capture off,
+        // otherwise a fast resume can leave two inference workers consuming it.
+        #[cfg(unix)]
+        command.process_group(0);
         command
             .env("TARSIER_API_TOKEN", &worker_token)
             .args(worker_arguments(
@@ -133,14 +137,12 @@ async fn supervise(
                 match outcome {
                     WorkerOutcome::Exited(message) => mark_worker_offline(&runtime, message).await,
                     WorkerOutcome::PipelineStopped => {
-                        let _ = child.kill().await;
-                        let _ = child.wait().await;
+                        stop_worker(&mut child).await;
                         mark_worker_paused(&runtime).await;
                         continue;
                     }
                     WorkerOutcome::Shutdown => {
-                        let _ = child.kill().await;
-                        let _ = child.wait().await;
+                        stop_worker(&mut child).await;
                         runtime
                             .update(|state| state.perception.worker_connected = false)
                             .await;
@@ -174,6 +176,17 @@ async fn wait_for_pipeline_stop(states: &mut watch::Receiver<crate::model::Runti
             break;
         }
     }
+}
+
+async fn stop_worker(child: &mut tokio::process::Child) {
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        // SAFETY: this unreaped child was started as leader of its own process
+        // group. A negative pid targets only that worker and its descendants.
+        unsafe { nix::libc::kill(-(pid as i32), nix::libc::SIGKILL) };
+    }
+    let _ = child.kill().await;
+    let _ = child.wait().await;
 }
 
 async fn mark_worker_paused(runtime: &Runtime) {
@@ -353,6 +366,31 @@ fn close_inherited_file_descriptors(_: &mut Command) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn stopping_worker_also_stops_its_python_style_child() {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        let mut child = Command::new("sh")
+            .args(["-c", "sleep 30 & echo $!; wait"])
+            .process_group(0)
+            .stdout(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn().unwrap();
+        let mut line = String::new();
+        BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).await.unwrap();
+        let descendant: u32 = line.trim().parse().unwrap();
+        stop_worker(&mut child).await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let status = std::fs::read_to_string(format!("/proc/{descendant}/stat"));
+                if status.is_err() || status.unwrap().split_whitespace().nth(2) == Some("Z") {
+                    break;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        }).await.expect("worker descendant must stop with its launcher");
+    }
 
     #[tokio::test]
     async fn pipeline_stop_pauses_the_worker_without_recording_a_failure() {

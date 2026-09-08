@@ -16,6 +16,7 @@ mod mute_media;
 mod perception;
 mod phone_gesture;
 mod pipeline;
+mod pipeline_reservation;
 mod recording;
 mod runtime;
 mod scenario;

@@ -697,6 +697,17 @@ async fn set_device_settings(
         )
             .into_response();
     }
+    if camera_changed {
+        // Fail closed before retiring capture, including a failed switch/rollback.
+        state.preview.set_output_muted(true);
+        state
+            .runtime
+            .update(|runtime| runtime.pipeline.output_muted = true)
+            .await;
+        if let Err(error) = settings.set_video_output_muted(true).await {
+            return user_settings_error(error);
+        }
+    }
     if let Err(error) = settings
         .set_devices(request.camera.clone(), request.input_reservations.clone())
         .await
@@ -741,9 +752,14 @@ async fn switch_camera(state: &ApiState, source: &str, enabled: bool) -> anyhow:
     pipeline.select_source(source).await?;
     let mut config = state.config.clone();
     crate::devices::apply_camera(&mut config, source);
+    // Selecting a webcam opens its muted local preview even if the previous
+    // motorized camera was asleep; webcams have no hardware wake control.
+    let enabled = enabled || config.camera.adapter == crate::config::CameraAdapter::V4l2;
     let camera = crate::camera::start(config.camera, state.runtime.clone()).await?;
     if !enabled {
-        if let Some(camera) = &camera {
+        if let Some(camera) = &camera
+            && state.runtime.state().await.camera.capabilities.power
+        {
             camera.set_powered_on(false).await?;
         }
         state
@@ -1064,6 +1080,7 @@ fn spawn_camera_power_monitor(state: ApiState) {
                     };
                     let enabled = camera.is_powered_on();
                     let runtime = state.runtime.state().await;
+                    if !runtime.camera.capabilities.power { continue; }
                     if runtime.camera.powered_on == Some(enabled) {
                         continue;
                     }
@@ -1092,6 +1109,9 @@ async fn set_camera_power(
 
 // Called with camera_power_control held, including when reconciling telemetry.
 async fn apply_camera_power(state: &ApiState, enabled: bool, observed: bool) -> Response {
+    if !state.runtime.state().await.camera.capabilities.power {
+        return apply_reserved_camera_power(state, enabled).await;
+    }
     let request = CameraPowerRequest { enabled };
     let _video_change = state.video_output_control.lock().await;
     if !request.enabled {
@@ -1236,6 +1256,41 @@ async fn apply_camera_power(state: &ApiState, enabled: bool, observed: bool) -> 
         json!({"enabled": request.enabled}),
     );
     record_camera_command(state, "camera.power", json!({"enabled": request.enabled})).await;
+    StatusCode::ACCEPTED.into_response()
+}
+
+// Standard webcams have no vendor sleep command. Stop the capture stream but
+// retain driver buffer ownership, keeping the virtual output muted on resume.
+async fn apply_reserved_camera_power(state: &ApiState, enabled: bool) -> Response {
+    let _video_change = state.video_output_control.lock().await;
+    if !state.runtime.state().await.camera.available {
+        return camera_unavailable();
+    }
+    let Some(pipeline) = &state.pipeline else {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "video pipeline control is unavailable"}))).into_response();
+    };
+    state.preview.set_output_muted(true);
+    state.runtime.update(|runtime| runtime.pipeline.output_muted = true).await;
+    if let Some(settings) = &state.user_settings {
+        if let Err(error) = settings.set_video_output_muted(true).await {
+            return user_settings_error(error);
+        }
+    }
+    if !enabled {
+        let _ = state.recorder.stop().await;
+    }
+    let result = if enabled { pipeline.set_enabled(true).await } else { pipeline.stop_reserved().await };
+    if let Err(error) = result {
+        record_camera_power_error(state, &error).await;
+        return command_error(error);
+    }
+    state.runtime.update(|runtime| {
+        runtime.camera.power_error = None;
+        if !enabled {
+            runtime.perception = Default::default();
+        }
+    }).await;
+    record_camera_command(state, "camera.capture", json!({"enabled": enabled, "reserved": !enabled})).await;
     StatusCode::ACCEPTED.into_response()
 }
 
@@ -1610,6 +1665,7 @@ async fn set_image_control(
     axum::extract::Path(control): axum::extract::Path<CameraImageControl>,
     Json(request): Json<ImageControlRequest>,
 ) -> Response {
+    let _camera_change = state.camera_power_control.lock().await;
     let Some(camera) = state.camera.read().await.clone() else {
         return camera_unavailable();
     };
@@ -4468,7 +4524,9 @@ mod tests {
 
     #[tokio::test]
     async fn devices_apply_without_restart_and_preserve_audio() {
-        let config = Config::default();
+        let mut config = Config::default();
+        // Isolate the switch policy from the no-client automatic mute monitor.
+        config.video.loopback_enabled = false;
         let runtime = Runtime::new();
         runtime
             .update(|state| {
@@ -4531,6 +4589,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert!(old_camera.recenter().await.is_err());
         let after = runtime.state().await;
+        assert!(after.pipeline.output_muted);
         assert_eq!(after.started_at_ms, before.started_at_ms);
         assert_eq!(after.audio_capture_sources, before.audio_capture_sources);
         assert_eq!(
@@ -4539,6 +4598,7 @@ mod tests {
         );
         let (_, restored) = UserSettingsStore::load(path, fallback).await.unwrap();
         assert_eq!(restored.camera_device.as_deref(), Some(""));
+        assert!(restored.video_output_muted);
         assert_eq!(restored.audio_input_reservations["remembered-mic"], false);
         assert_eq!(restored.audio.capture_sources, vec!["remembered-mic"]);
         let response = app
@@ -5292,6 +5352,35 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn generic_camera_power_reserves_capture_and_resumes_muted() {
+        let runtime = Runtime::new();
+        runtime.update(|state| {
+            state.camera.available = true;
+            state.pipeline.enabled = true;
+            state.pipeline.running = true;
+        }).await;
+        let preview = PreviewHub::new();
+        let pipeline = VideoPipelineControl::mock(runtime.clone());
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let mut config = Config::default();
+        config.perception.enabled = false;
+        let app = router_with_controls(config, runtime.clone(), preview.clone(), None,
+            ApiOptions { pipeline: Some(pipeline), ..Default::default() }, shutdown_rx);
+        for enabled in [false, true, false, true] {
+            let response = app.clone().oneshot(Request::post("/api/v1/camera/power")
+                .header("content-type", "application/json")
+                .body(Body::from(json!({"enabled": enabled}).to_string())).unwrap()).await.unwrap();
+            assert_eq!(response.status(), StatusCode::ACCEPTED);
+            let state = runtime.state().await;
+            assert_eq!(state.pipeline.enabled, enabled);
+            assert_eq!(state.pipeline.camera_reserved, !enabled);
+            assert!(state.pipeline.output_muted);
+            assert!(preview.output_muted());
+            assert_eq!(state.camera.powered_on, None);
+        }
     }
 
     #[tokio::test]

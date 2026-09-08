@@ -1,7 +1,7 @@
 use std::{
     path::Path,
     sync::{
-        Arc, Mutex, OnceLock,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread::JoinHandle,
@@ -57,26 +57,26 @@ pub(crate) struct PerceptionFrame {
 }
 
 struct CaptureClock {
-    started_at_ms: u64,
+    started_at_ms: AtomicU64,
     fps: u32,
-    first_pts_ns: OnceLock<u64>,
+    first_pts_ns: Mutex<Option<u64>>,
 }
 
 impl CaptureClock {
     fn new(started_at_ms: u64, fps: u32) -> Self {
         Self {
-            started_at_ms,
+            started_at_ms: AtomicU64::new(started_at_ms),
             fps,
-            first_pts_ns: OnceLock::new(),
+            first_pts_ns: Mutex::new(None),
         }
     }
 
     fn captured_at_ms(&self, pts_ns: u64) -> u64 {
-        self.started_at_ms.saturating_add(pts_ns / 1_000_000)
+        self.started_at_ms.load(Ordering::Relaxed).saturating_add(pts_ns / 1_000_000)
     }
 
     fn frame_id(&self, pts_ns: u64) -> u64 {
-        let first_pts_ns = *self.first_pts_ns.get_or_init(|| pts_ns);
+        let first_pts_ns = *self.first_pts_ns.lock().unwrap().get_or_insert(pts_ns);
         let elapsed_ns = pts_ns.saturating_sub(first_pts_ns) as u128;
         let rounded_frames = (elapsed_ns * self.fps as u128 + 500_000_000) / 1_000_000_000;
         u64::try_from(rounded_frames)
@@ -197,6 +197,7 @@ pub struct VideoPipeline {
     source_changed_at_ms: Arc<AtomicU64>,
     supervisor_running: Arc<AtomicBool>,
     desired_running: Arc<AtomicBool>,
+    desired_reserved: Arc<AtomicBool>,
     runtime: Runtime,
     supervisor: Option<JoinHandle<()>>,
     _virtual_output: Option<VirtualVideoOutput>,
@@ -207,6 +208,7 @@ pub struct VideoPipelineControl {
     config: Arc<Mutex<VideoConfig>>,
     source_changed_at_ms: Arc<AtomicU64>,
     desired_running: Arc<AtomicBool>,
+    desired_reserved: Arc<AtomicBool>,
     runtime: Runtime,
     #[cfg(test)]
     immediate: bool,
@@ -215,6 +217,9 @@ pub struct VideoPipelineControl {
 struct ActivePipeline {
     pipeline: gst::Pipeline,
     running: Arc<AtomicBool>,
+    frame_count: Arc<AtomicU64>,
+    last_frame_at_ms: Arc<AtomicU64>,
+    capture_clock: Arc<CaptureClock>,
 }
 
 // Own the virtual device independently of the physical capture pipeline.
@@ -234,7 +239,7 @@ impl VirtualVideoOutput {
     ) -> Result<Self> {
         let pipeline = gst::parse::launch(&format!(
             "appsrc name=frames is-live=true format=time block=false max-buffers=2 leaky-type=downstream ! \
-             video/x-raw,format=BGRx,width={},height={},framerate={}/1 ! videoconvert ! \
+             video/x-raw,format=BGRx,width={},height={},framerate={}/1,interlace-mode=progressive ! videoconvert ! \
              video/x-raw,format=YUY2 ! {sink}",
             config.width, config.height, config.fps
         ))?.downcast::<gst::Pipeline>().map_err(|_| anyhow::anyhow!("invalid virtual video pipeline"))?;
@@ -270,8 +275,6 @@ impl VirtualVideoOutput {
                     let started = Instant::now();
                     let mut deadline = started;
                     while running.load(Ordering::Relaxed) {
-                        let muted = preview.output_muted();
-                        let replacement = preview.replacement_frame(muted);
                         let mut recording_frame = if capture_enabled.load(Ordering::Relaxed) {
                             preview
                                 .virtual_frame
@@ -284,6 +287,10 @@ impl VirtualVideoOutput {
                         } else {
                             black.clone()
                         };
+                        // Read mute after acquiring the frame: a source switch must
+                        // never pair its new image with a pre-switch unmuted state.
+                        let muted = preview.output_muted();
+                        let replacement = preview.replacement_frame(muted);
                         let buffer = recording_frame.make_mut();
                         buffer.set_pts(gst::ClockTime::from_nseconds(
                             started.elapsed().as_nanos() as u64
@@ -357,6 +364,7 @@ impl VideoPipeline {
         validate_path(&config.output_device)?;
         let supervisor_running = Arc::new(AtomicBool::new(true));
         let desired_running = Arc::new(AtomicBool::new(true));
+        let desired_reserved = Arc::new(AtomicBool::new(false));
         let virtual_output = if config.loopback_enabled {
             Some(VirtualVideoOutput::start(
                 &config,
@@ -378,12 +386,14 @@ impl VideoPipeline {
             preview,
             Arc::clone(&supervisor_running),
             Arc::clone(&desired_running),
+            Arc::clone(&desired_reserved),
         )?;
         Ok(Self {
             source_changed_at_ms: Arc::new(AtomicU64::new(0)),
             config,
             supervisor_running,
             desired_running,
+            desired_reserved,
             runtime,
             supervisor: Some(supervisor),
             _virtual_output: virtual_output,
@@ -395,6 +405,7 @@ impl VideoPipeline {
             source_changed_at_ms: Arc::clone(&self.source_changed_at_ms),
             config: Arc::clone(&self.config),
             desired_running: Arc::clone(&self.desired_running),
+            desired_reserved: Arc::clone(&self.desired_reserved),
             runtime: self.runtime.clone(),
             #[cfg(test)]
             immediate: false,
@@ -404,7 +415,8 @@ impl VideoPipeline {
 
 impl VideoPipelineControl {
     pub fn accepts_frame(&self, captured_at_ms: u64) -> bool {
-        captured_at_ms >= self.source_changed_at_ms.load(Ordering::Relaxed)
+        self.desired_running.load(Ordering::Relaxed)
+            && captured_at_ms >= self.source_changed_at_ms.load(Ordering::Relaxed)
     }
 
     pub fn camera_source(&self) -> String {
@@ -468,6 +480,16 @@ impl VideoPipelineControl {
     }
 
     pub async fn set_enabled(&self, enabled: bool) -> Result<()> {
+        self.set_capture(enabled, false).await
+    }
+
+    pub async fn stop_reserved(&self) -> Result<()> {
+        self.source_changed_at_ms.store(unix_ms(), Ordering::Relaxed);
+        self.set_capture(false, true).await
+    }
+
+    async fn set_capture(&self, enabled: bool, reserved: bool) -> Result<()> {
+        self.desired_reserved.store(reserved, Ordering::Relaxed);
         self.desired_running.store(enabled, Ordering::Relaxed);
         if enabled {
             self.runtime
@@ -484,6 +506,7 @@ impl VideoPipelineControl {
                 .update(|state| {
                     state.pipeline.enabled = enabled;
                     state.pipeline.running = enabled;
+                    state.pipeline.camera_reserved = reserved;
                     state.pipeline.error = None;
                 })
                 .await;
@@ -496,10 +519,13 @@ impl VideoPipelineControl {
                 let reached_target = if enabled {
                     pipeline.enabled && pipeline.running
                 } else {
-                    !pipeline.enabled && !pipeline.running
+                    !pipeline.enabled && !pipeline.running && pipeline.camera_reserved == reserved
                 };
                 if reached_target {
                     return Ok(());
+                }
+                if let Some(error) = pipeline.error.filter(|_| enabled || reserved) {
+                    bail!("{error}");
                 }
                 tokio::time::sleep(Duration::from_millis(25)).await;
             }
@@ -518,6 +544,7 @@ impl VideoPipelineControl {
             source_changed_at_ms: Arc::new(AtomicU64::new(0)),
             config: Arc::new(Mutex::new(VideoConfig::default())),
             desired_running: Arc::new(AtomicBool::new(true)),
+            desired_reserved: Arc::new(AtomicBool::new(false)),
             runtime,
             immediate: true,
         }
@@ -702,6 +729,7 @@ impl ActivePipeline {
             .update(|state| {
                 state.pipeline.enabled = true;
                 state.pipeline.running = true;
+                state.pipeline.camera_reserved = false;
                 state.pipeline.source = match config.source {
                     VideoSource::Camera => "camera",
                     VideoSource::Test => "test",
@@ -726,10 +754,46 @@ impl ActivePipeline {
         spawn_telemetry(
             runtime.clone(),
             Arc::clone(&running),
-            frame_count,
-            last_frame_at_ms,
+            frame_count.clone(),
+            last_frame_at_ms.clone(),
         );
-        Ok(Self { pipeline, running })
+        Ok(Self { pipeline, running, frame_count, last_frame_at_ms, capture_clock })
+    }
+
+    fn reserve(&self) -> Result<()> {
+        self.pipeline.set_state(gst::State::Ready)
+            .context("failed to stop capture for reservation")?;
+        let (result, current, _) = self.pipeline.state(gst::ClockTime::from_seconds(5));
+        result.context("camera did not stop")?;
+        anyhow::ensure!(current == gst::State::Ready, "camera did not reach READY");
+        if let Some(source) = self.pipeline.by_name("physical_camera") {
+            crate::pipeline_reservation::set_reserved(source.property::<i32>("device-fd"), true)?;
+        }
+        Ok(())
+    }
+
+    fn release_reservation(&self) -> Result<()> {
+        if let Some(source) = self.pipeline.by_name("physical_camera") {
+            crate::pipeline_reservation::set_reserved(source.property::<i32>("device-fd"), false)?;
+        }
+        Ok(())
+    }
+
+    async fn resume(&mut self, runtime: Runtime) -> Result<()> {
+        self.release_reservation()?;
+        self.capture_clock.started_at_ms.store(unix_ms(), Ordering::Relaxed);
+        *self.capture_clock.first_pts_ns.lock().unwrap() = None;
+        self.last_frame_at_ms.store(0, Ordering::Relaxed);
+        self.pipeline.set_state(gst::State::Playing).context("failed to resume camera")?;
+        self.running = Arc::new(AtomicBool::new(true));
+        runtime.update(|state| {
+            state.pipeline.enabled = true;
+            state.pipeline.running = true;
+            state.pipeline.camera_reserved = false;
+            state.pipeline.error = None;
+        }).await;
+        spawn_telemetry(runtime, self.running.clone(), self.frame_count.clone(), self.last_frame_at_ms.clone());
+        Ok(())
     }
 }
 
@@ -763,7 +827,7 @@ fn validate_path(path: &str) -> Result<()> {
 fn pipeline_description(config: &VideoConfig) -> String {
     let source = match config.source {
         VideoSource::Camera => format!(
-            "v4l2src device=\"{}\" do-timestamp=true ! image/jpeg,width={},height={},framerate={}/1 ! jpegdec ! videoconvert",
+            "v4l2src name=physical_camera device=\"{}\" do-timestamp=true ! image/jpeg,width={},height={},framerate={}/1 ! jpegdec ! videoconvert",
             config.input_device, config.width, config.height, config.fps
         ),
         VideoSource::Test => format!(
@@ -852,6 +916,7 @@ fn spawn_supervisor(
     preview: PreviewHub,
     supervisor_running: Arc<AtomicBool>,
     desired_running: Arc<AtomicBool>,
+    desired_reserved: Arc<AtomicBool>,
 ) -> Result<JoinHandle<()>> {
     let tokio_handle = tokio::runtime::Handle::current();
     std::thread::Builder::new()
@@ -861,11 +926,40 @@ fn spawn_supervisor(
             let mut retry_after_failure = false;
             let mut disabled_reported = false;
             while supervisor_running.load(Ordering::Relaxed) {
-                if let Some(current) = active.as_ref() {
-                    let exit =
+                if let Some(current) = active.as_mut() {
+                    let mut exit =
                         wait_for_pipeline_exit(current, &supervisor_running, &desired_running);
                     current.running.store(false, Ordering::Relaxed);
+                    if matches!(exit, PipelineExit::Disabled) && desired_reserved.load(Ordering::Relaxed) {
+                        let reservation = current.reserve();
+                        preview.clear();
+                        tokio_handle.block_on(runtime.update(|state| {
+                            state.pipeline.enabled = false;
+                            state.pipeline.running = false;
+                            state.pipeline.camera_reserved = reservation.is_ok();
+                            state.pipeline.fps = 0.0;
+                            state.pipeline.last_frame_at_ms = None;
+                            state.pipeline.error = reservation.err().map(|error| format!("camera reservation failed: {error:#}"));
+                            clear_runtime_effect_frames(state);
+                        }));
+                        while supervisor_running.load(Ordering::Relaxed)
+                            && !desired_running.load(Ordering::Relaxed)
+                            && desired_reserved.load(Ordering::Relaxed)
+                        {
+                            std::thread::sleep(Duration::from_millis(25));
+                        }
+                        if supervisor_running.load(Ordering::Relaxed) && desired_running.load(Ordering::Relaxed) {
+                            match tokio_handle.block_on(current.resume(runtime.clone())) {
+                                Ok(()) => continue,
+                                Err(error) => {
+                                    exit = PipelineExit::Failed(format!("camera resume failed: {error:#}"));
+                                }
+                            }
+                        }
+                        let _ = current.release_reservation();
+                    }
                     drop(active.take());
+                    tokio_handle.block_on(runtime.update(|state| state.pipeline.camera_reserved = false));
                     preview.clear();
                     match exit {
                         PipelineExit::Shutdown => break,
@@ -1117,6 +1211,7 @@ mod tests {
             .unwrap();
         let config = Arc::new(Mutex::new(config));
         let running = Arc::new(AtomicBool::new(true));
+        let reserved = Arc::new(AtomicBool::new(false));
         let supervisor = spawn_supervisor(
             initial,
             config.clone(),
@@ -1124,6 +1219,7 @@ mod tests {
             preview.clone(),
             running.clone(),
             enabled.clone(),
+            reserved.clone(),
         )
         .unwrap();
         let pipeline = VideoPipeline {
@@ -1131,6 +1227,7 @@ mod tests {
             config,
             supervisor_running: running,
             desired_running: enabled,
+            desired_reserved: reserved,
             runtime: runtime.clone(),
             supervisor: Some(supervisor),
             _virtual_output: Some(output),
@@ -1157,8 +1254,9 @@ mod tests {
             last_pts = Some(pts);
             control.select_source("").await.unwrap();
             assert!(!control.accepts_frame(1));
-            assert!(control.accepts_frame(unix_ms()));
+            assert!(!control.accepts_frame(unix_ms()));
             control.set_enabled(true).await.unwrap();
+            assert!(control.accepts_frame(unix_ms()));
             assert_eq!(control.camera_source(), "");
             tokio::time::timeout(Duration::from_secs(3), async {
                 while preview.latest().is_none() {
@@ -1178,6 +1276,42 @@ mod tests {
                 .running
                 .load(Ordering::Relaxed)
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reserved_capture_stops_frames_and_resumes_without_rebuilding() {
+        let config = VideoConfig {
+            source: VideoSource::Test,
+            loopback_enabled: false,
+            width: 64, height: 48, preview_width: 64, preview_height: 48,
+            ..VideoConfig::default()
+        };
+        let runtime = Runtime::new();
+        let preview = PreviewHub::new();
+        let pipeline = VideoPipeline::start(config, runtime.clone(), preview.clone()).await.unwrap();
+        let control = pipeline.control();
+        for _ in 0..3 {
+            control.wait_for_frame().await.unwrap();
+            control.stop_reserved().await.unwrap();
+            let stopped = runtime.state().await.pipeline;
+            assert!(stopped.camera_reserved);
+            assert!(!stopped.running);
+            assert!(!control.accepts_frame(unix_ms()));
+            assert!(preview.latest().is_none());
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert_eq!(runtime.state().await.pipeline.frame_count, stopped.frame_count);
+            control.set_enabled(true).await.unwrap();
+            control.wait_for_frame().await.unwrap();
+            assert!(!runtime.state().await.pipeline.camera_reserved);
+            assert_eq!(runtime.state().await.pipeline.restart_count, 0);
+            assert!(preview.latest().unwrap().frame.captured_at_ms.abs_diff(unix_ms()) < 1000);
+        }
+        control.stop_reserved().await.unwrap();
+        control.set_enabled(false).await.unwrap();
+        assert!(!runtime.state().await.pipeline.camera_reserved);
+        control.select_source("").await.unwrap();
+        control.set_enabled(true).await.unwrap();
+        control.wait_for_frame().await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1436,6 +1570,7 @@ mod tests {
             preview.clone(),
             Arc::clone(&supervisor_running),
             desired_running,
+            Arc::new(AtomicBool::new(false)),
         )
         .unwrap();
 
@@ -1517,7 +1652,7 @@ mod tests {
     #[test]
     fn camera_pipeline_keeps_loopback_branch_leaky() {
         let description = pipeline_description(&VideoConfig::default());
-        assert!(description.contains("v4l2src device=\"/dev/video0\""));
+        assert!(description.contains("v4l2src name=physical_camera device=\"/dev/video0\""));
         assert!(description.contains("appsink name=loopback_bridge"));
         assert!(!description.contains("v4l2sink"));
         assert_eq!(description.matches("leaky=downstream").count(), 5);

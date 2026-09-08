@@ -335,6 +335,7 @@ pub enum CameraAdapter {
     #[default]
     #[serde(rename = "obsbot-tiny-2", alias = "obsbot-tiny2")]
     ObsbotTiny2,
+    V4l2,
     Mock,
     Disabled,
 }

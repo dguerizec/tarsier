@@ -21,6 +21,7 @@ const V4L2_CID_CONTRAST: u32 = 0x0098_0901;
 const V4L2_CID_SATURATION: u32 = 0x0098_0902;
 const V4L2_CID_HUE: u32 = 0x0098_0903;
 const V4L2_CID_AUTO_WHITE_BALANCE: u32 = 0x0098_090c;
+const V4L2_CID_GAMMA: u32 = 0x0098_0910;
 const V4L2_CID_RED_BALANCE: u32 = 0x0098_090e;
 const V4L2_CID_BLUE_BALANCE: u32 = 0x0098_090f;
 const V4L2_CID_GAIN: u32 = 0x0098_0913;
@@ -93,6 +94,14 @@ struct V4l2ExtControls {
 }
 
 nix::ioctl_readwrite!(v4l2_query_control, b'V', 36, V4l2QueryControl);
+#[repr(C, packed)]
+struct V4l2QueryMenu {
+    id: u32,
+    index: u32,
+    name: [u8; 32],
+    reserved: u32,
+}
+nix::ioctl_readwrite!(v4l2_query_menu, b'V', 37, V4l2QueryMenu);
 nix::ioctl_readwrite!(v4l2_get_control, b'V', 27, V4l2Control);
 nix::ioctl_readwrite!(v4l2_set_control, b'V', 28, V4l2Control);
 nix::ioctl_readwrite!(v4l2_set_ext_controls, b'V', 72, V4l2ExtControls);
@@ -268,6 +277,16 @@ impl LinuxUvcTransport {
             options: image_control_options(control)
                 .into_iter()
                 .filter(|option| (query.minimum..=query.maximum).contains(&option.value))
+                .filter(|option| {
+                    let mut menu = V4l2QueryMenu {
+                        id,
+                        index: option.value as u32,
+                        name: [0; 32],
+                        reserved: 0,
+                    };
+                    // SAFETY: menu matches the packed v4l2_querymenu ABI.
+                    unsafe { v4l2_query_menu(self.file.as_raw_fd(), &mut menu) }.is_ok()
+                })
                 .collect(),
             sample_at_ms: Some(unix_ms()),
             error: None,
@@ -512,6 +531,7 @@ fn image_control_id(control: CameraImageControl) -> Option<u32> {
         CameraImageControl::Contrast => V4L2_CID_CONTRAST,
         CameraImageControl::Saturation => V4L2_CID_SATURATION,
         CameraImageControl::Hue => V4L2_CID_HUE,
+        CameraImageControl::Gamma => V4L2_CID_GAMMA,
         CameraImageControl::Gain => V4L2_CID_GAIN,
         CameraImageControl::BacklightCompensation => V4L2_CID_BACKLIGHT_COMPENSATION,
         CameraImageControl::PowerLineFrequency => V4L2_CID_POWER_LINE_FREQUENCY,
