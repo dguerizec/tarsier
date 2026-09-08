@@ -71,6 +71,8 @@ class Observation:
     gesture: str | None
     confidence: float
     latency_ms: float
+    image_width: int = 0
+    image_height: int = 0
 
 
 def normalize_gesture(name: str | None) -> str | None:
@@ -424,6 +426,8 @@ class ObservationProcessor:
                         gesture=gesture,
                         confidence=confidence,
                         latency_ms=latency_ms,
+                        image_width=width,
+                        image_height=height,
                     )
                     try:
                         publisher.publish(observation)

@@ -59,6 +59,7 @@ def test_observation_processor_detects_upright_and_publishes_source_coordinates(
     assert processor.published_count == 1
     observation = published[0]
     assert (observation.frame_id, observation.captured_at_ms) == (42, 456)
+    assert (observation.image_width, observation.image_height) == (3, 2)
     assert observation.face_detected
     for points in [
         observation.face_landmarks,

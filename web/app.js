@@ -904,6 +904,23 @@ function render(next) {
   $("#gesture").textContent = perception.gesture || "No gesture";
   $("#confidence").textContent = gestureDetail(perception);
   $("#gesture-icon").classList.toggle("active", perception.gesture === "open_palm");
+  const phone = perception.phone_near_mouth || {};
+  $("#phone-gesture").classList.toggle("active", Boolean(phone.active));
+  $("#phone-gesture-state").textContent = phone.active ? "Active" : phone.candidate ? "Hold…" : "Idle";
+  $("#phone-gesture-progress").value = phone.active ? 1 : phone.hold_progress || 0;
+  const phoneReasons = {
+    waiting_for_observation: "Waiting for observation", worker_offline: "Worker offline",
+    observations_stale: "Observations expired", gesture_released: "Gesture released",
+    disabled: "Detector disabled", shutdown: "Daemon stopping", face_missing: "Face not detected",
+    hand_missing: "Hand not detected", image_dimensions_missing: "Waiting for image dimensions",
+    invalid_landmarks: "Landmarks unavailable", phone_shape_missing: "Make the phone hand shape",
+    pinky_too_far: "Bring your pinky closer to your mouth", hand_changed: "Keep the same hand steady",
+    holding: "Keep holding", active: "Phone gesture detected", release_pending: "Releasing…",
+  };
+  $("#phone-gesture-detail").textContent = [
+    phoneReasons[phone.reason] || "Waiting for observation",
+    phone.mouth_distance == null ? null : `Pinky distance: ${phone.mouth_distance.toFixed(2)} face widths`,
+  ].filter(Boolean).join(" · ");
   $("#perception-error").hidden = !perception.error;
   $("#perception-error").textContent = perception.error || "";
   const cameraError = [

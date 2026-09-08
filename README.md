@@ -698,6 +698,46 @@ uv run --project worker pytest -q worker
 node --check web/app.js
 ```
 
+### Phone near mouth detector (experimental)
+
+The Perception panel displays an independent phone gesture detector: extend the
+thumb and pinky, curl the index/middle/ring fingers, and hold the pinky tip near
+the mouth. It emits `gesture.phone_near_mouth.started` after a continuous hold
+and `gesture.phone_near_mouth.ended` on release. Both events can be matched by
+scenario configuration. This feature does **not** control a microphone or start
+an agent conversation; the indicator describes detection only.
+
+Configure `[perception.phone_near_mouth]` in the daemon TOML (restart to apply):
+`enabled`, `dwell_ms` (300), `release_ms` (200), `stale_ms` (500), `enter_radius`
+(0.35) and `exit_radius` (0.45). Radii are pinky-to-mouth distances in face widths.
+The wider exit radius prevents boundary jitter. Missing/invalid detections get
+a short release tolerance; a watchdog also ends holds when observations stop,
+the worker disconnects, or the daemon shuts down. Consumers must additionally
+release their own action on connection loss, since a daemon crash cannot deliver
+an end event.
+
+The worker supplies source image dimensions alongside landmarks. The detector
+corrects image aspect ratio, checks each hand separately, and uses projected
+finger straightness/curl and mouth proximity. It does not use the canned gesture
+score as a confidence estimate. State at `perception.phone_near_mouth` exposes
+`active`, `candidate`, `hold_progress`, `phone_shape`, `near_mouth`,
+`mouth_distance` and a diagnostic `reason`. Older observations without image
+dimensions remain accepted but cannot activate this detector.
+
+This is a geometric heuristic, not a trained phone gesture classifier. It checks
+image-plane proximity, not physical contact; strong foreshortening, occlusion,
+head turns and changing hands may interrupt detection. Automated fixtures cover
+geometry, scale, mirroring, in-plane rotation, aspect ratio, temporal transitions
+and API/watchdog events. Real-camera accuracy is not established by these tests.
+Before binding an action, try both hands while speaking, vary distance and head
+angle, and check negatives (open palm, fist, pointing, drinking, touching the face).
+Measure missed gestures, false activations and release latency on separate
+recordings before tuning thresholds.
+
+```sh
+cargo test --bin tarsier phone_gesture
+```
+
 The worker can exercise face and gesture stabilization deterministically
 without camera hardware:
 

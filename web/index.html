@@ -360,6 +360,12 @@
             <div><strong id="gesture">No gesture</strong><span id="confidence">—</span></div>
           </div>
           <p class="hint">Hold an open palm steadily to emit <code>gesture.open_palm.held</code>.</p>
+          <div class="phone-gesture" id="phone-gesture">
+            <strong>Phone near mouth <span id="phone-gesture-state">Idle</span></strong>
+            <progress id="phone-gesture-progress" max="1" value="0" aria-label="Phone gesture hold progress"></progress>
+            <p class="hint" id="phone-gesture-detail">Waiting for observation</p>
+            <p class="hint">Extend your thumb and pinky, curl the other fingers, and hold your pinky near your mouth. Detection only: this does not control the microphone.</p>
+          </div>
           <p id="perception-error" class="error" hidden></p>
         </section>
 

@@ -105,6 +105,7 @@ impl Config {
         if self.perception.release_confidence >= self.perception.minimum_confidence {
             bail!("perception release_confidence must be below minimum_confidence");
         }
+        self.perception.phone_near_mouth.validate()?;
         let mut preset_ids = HashSet::new();
         for preset in &self.presets {
             if !valid_identifier(&preset.id) {
@@ -341,6 +342,7 @@ pub enum CameraAdapter {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct PerceptionConfig {
+    pub phone_near_mouth: crate::phone_gesture::PhoneGestureConfig,
     pub enabled: bool,
     pub supervise_worker: bool,
     pub worker_project: PathBuf,
@@ -363,6 +365,7 @@ pub struct PerceptionConfig {
 impl Default for PerceptionConfig {
     fn default() -> Self {
         Self {
+            phone_near_mouth: crate::phone_gesture::PhoneGestureConfig::default(),
             enabled: true,
             supervise_worker: true,
             worker_project: "worker".into(),
