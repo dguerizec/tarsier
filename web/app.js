@@ -31,7 +31,7 @@ function renderVideoOutput() {
   videoMute.setAttribute("aria-pressed", String(muted));
   videoMute.setAttribute("aria-busy", String(videoMutePending));
   videoMute.disabled = videoMutePending || !socketConnected;
-  videoMute.title = muted ? "Unmute video output" : "Mute video output · keep preview active";
+  videoMute.title = muted ? "Unmute video output · requires a connected application" : "Mute video output · keep preview active";
   videoMute.setAttribute("aria-label", videoMute.title);
   $("#video-output-muted").hidden = !muted && state?.pipeline.output_muted !== true;
   $("#video-output-muted").textContent = videoMutePending ? "Updating video output…" : "Video output muted";

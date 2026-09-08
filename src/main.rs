@@ -194,6 +194,11 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
         .retain(|source| config.audio.allows(source));
     let runtime = Runtime::new();
     let preview = PreviewHub::new();
+    // Never expose capture on startup before a connected client is manually approved.
+    if config.video.loopback_enabled {
+        user_settings.video_output_muted = true;
+        settings_store.set_video_output_muted(true).await?;
+    }
     preview.set_output_muted(user_settings.video_output_muted);
     if let Some(selection) = user_settings.video_mute_media.clone() {
         let directory = settings_store.mute_media_directory();
