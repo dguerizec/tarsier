@@ -232,6 +232,7 @@ pub fn router_with_controls(
         .route("/assets/logo.svg", get(logo_svg))
         .route("/assets/favicon.svg", get(favicon_svg))
         .route("/assets/settings.js", get(settings_js))
+        .route("/assets/daemon-monitor.js", get(daemon_monitor_js))
         .route(
             "/api/v1/settings/network",
             get(network_settings).post(set_network_settings),
@@ -446,6 +447,16 @@ async fn settings_page() -> impl IntoResponse {
     (
         [(header::CACHE_CONTROL, "no-store")],
         Html(include_str!("../web/settings.html")),
+    )
+}
+
+async fn daemon_monitor_js() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        include_str!("../web/daemon-monitor.js"),
     )
 }
 
