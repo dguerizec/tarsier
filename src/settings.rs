@@ -98,6 +98,8 @@ impl AudioSettings {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct UserSettings {
     #[serde(default)]
+    pub video_output_muted: bool,
+    #[serde(default)]
     pub liveportrait_source: Option<PathBuf>,
     #[serde(default)]
     pub camera_device: Option<String>,
@@ -127,6 +129,7 @@ pub struct UserSettings {
 impl UserSettings {
     pub fn from_config(config: &Config) -> Self {
         Self {
+            video_output_muted: false,
             liveportrait_source: None,
             camera_device: None,
             audio_reserve_inputs: None,
@@ -257,6 +260,11 @@ impl UserSettingsStore {
 
     pub async fn set_video_identity(&self, identity: VideoIdentity) -> Result<()> {
         self.replace(|settings| settings.video_identity = identity)
+            .await
+    }
+
+    pub async fn set_video_output_muted(&self, muted: bool) -> Result<()> {
+        self.replace(|settings| settings.video_output_muted = muted)
             .await
     }
 

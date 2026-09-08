@@ -89,6 +89,7 @@
           <img id="preview" draggable="false" title="Drag to pan and tilt; scroll or pinch to zoom" src="/api/v1/preview.mjpeg" alt="Camera preview">
           <canvas id="landmark-overlay" aria-hidden="true"></canvas>
           <div id="preview-placeholder">Waiting for video</div>
+          <span id="video-output-muted" class="video-output-muted" hidden>Video output muted</span>
           <span id="preview-zoom" class="preview-zoom" aria-label="Preview zoom level">Zoom —</span>
           <div class="tracking-mode-controls" role="group" aria-label="Camera tracking">
             <button id="face-tracking-toggle" class="secondary compact" type="button" aria-pressed="false" aria-label="Face tracking" title="Face tracking"></button>
@@ -97,12 +98,14 @@
           </div>
           <div class="preview-overlay-tools" role="group" aria-label="Preview controls">
             <button id="preview-audio-mute" type="button" data-audio-mute aria-label="Mute Tarsier Microphone" aria-pressed="false" title="Mute Tarsier Microphone"></button>
+            <button id="preview-video-mute" type="button" aria-label="Mute video output" aria-pressed="false" title="Mute video output"></button>
             <button id="preview-mirror" type="button" aria-label="Mirror preview" aria-pressed="false" title="Mirror only this preview; output and photos are unchanged"></button>
             <button id="skeleton-toggle" type="button" aria-label="Skeletons" aria-pressed="false" title="Show skeletons"></button>
             <button id="preview-video-applications" type="button" aria-label="Applications using the virtual camera" aria-haspopup="dialog" aria-controls="video-applications-dialog" title="Applications using the virtual camera"><span>–</span></button>
           </div>
         </div>
         <p id="photo-status" class="photo-status" role="status" aria-live="polite">Space: photo · Ctrl+Space: start/stop video · Includes current video effects.</p>
+        <p id="video-output-error" class="photo-status error" role="alert" hidden></p>
         <p id="recording-status" class="photo-status" role="status" aria-live="polite" hidden></p>
         <section class="audio-panel" aria-labelledby="audio-heading">
           <div class="panel-title"><h2 id="audio-heading"><button id="audio-fold" type="button" aria-expanded="true" aria-controls="audio-inputs">Audio</button></h2><span id="audio-folded-source" hidden></span></div>

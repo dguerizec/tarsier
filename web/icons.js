@@ -1,1 +1,1 @@
-export { Users, createElement, FolderOpen, FlipHorizontal2, Bone, Power, ChevronDown, Mic, MicOff, ScanFace, Hand, ZoomIn } from "lucide";
+export { Video, VideoOff, Users, createElement, FolderOpen, FlipHorizontal2, Bone, Power, ChevronDown, Mic, MicOff, ScanFace, Hand, ZoomIn } from "lucide";

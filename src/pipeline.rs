@@ -33,6 +33,7 @@ pub struct PreviewHub {
     effects: VideoEffects,
     virtual_frame: Arc<Mutex<Option<(Instant, gst::Buffer)>>>,
     recording_tx: watch::Sender<Option<gst::Buffer>>,
+    output_muted: Arc<AtomicBool>,
 }
 
 #[derive(Clone, Debug)]
@@ -83,7 +84,16 @@ impl PreviewHub {
             effects: VideoEffects::new(),
             virtual_frame: Arc::default(),
             recording_tx: watch::channel(None).0,
+            output_muted: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    pub fn set_output_muted(&self, muted: bool) {
+        self.output_muted.store(muted, Ordering::Relaxed);
+    }
+
+    pub fn output_muted(&self) -> bool {
+        self.output_muted.load(Ordering::Relaxed)
     }
 
     pub(crate) fn subscribe_recording(&self) -> watch::Receiver<Option<gst::Buffer>> {
@@ -216,18 +226,19 @@ impl VirtualVideoOutput {
                     let started = Instant::now();
                     let mut deadline = started;
                     while running.load(Ordering::Relaxed) {
-                        let mut frame = if capture_enabled.load(Ordering::Relaxed) {
-                            preview
-                                .virtual_frame
-                                .lock()
-                                .unwrap()
-                                .as_ref()
-                                .filter(|(at, _)| at.elapsed() <= Duration::from_millis(500))
-                                .map(|(_, buffer)| buffer.clone())
-                                .unwrap_or_else(|| black.clone())
-                        } else {
-                            black.clone()
-                        };
+                        let mut frame =
+                            if capture_enabled.load(Ordering::Relaxed) && !preview.output_muted() {
+                                preview
+                                    .virtual_frame
+                                    .lock()
+                                    .unwrap()
+                                    .as_ref()
+                                    .filter(|(at, _)| at.elapsed() <= Duration::from_millis(500))
+                                    .map(|(_, buffer)| buffer.clone())
+                                    .unwrap_or_else(|| black.clone())
+                            } else {
+                                black.clone()
+                            };
                         let buffer = frame.make_mut();
                         buffer.set_pts(gst::ClockTime::from_nseconds(
                             started.elapsed().as_nanos() as u64
@@ -1124,6 +1135,7 @@ mod tests {
             ..VideoConfig::default()
         };
         let preview = PreviewHub::new();
+        preview.set_output_muted(true);
         let enabled = Arc::new(AtomicBool::new(true));
         let output = VirtualVideoOutput::start(
             &config,
@@ -1167,10 +1179,37 @@ mod tests {
         let capture = ActivePipeline::start(&config, runtime.clone(), preview.clone(), false)
             .await
             .unwrap();
+        read_until(true);
+        preview.set_output_muted(false);
         read_until(false);
+        for _ in 0..2 {
+            let before = preview.virtual_frame.lock().unwrap().as_ref().unwrap().0;
+            preview.set_output_muted(true);
+            for _ in 0..4 {
+                read_until(true);
+            }
+            // Muting the virtual device must not stop or blacken capture/preview.
+            let frames = preview.virtual_frame.lock().unwrap();
+            let (at, frame) = frames.as_ref().unwrap();
+            assert!(*at > before);
+            assert!(
+                frame
+                    .map_readable()
+                    .unwrap()
+                    .as_slice()
+                    .iter()
+                    .any(|byte| *byte != 0)
+            );
+            drop(frames);
+            assert!(enabled.load(Ordering::Relaxed));
+            preview.set_output_muted(false);
+            read_until(false);
+        }
+        preview.set_output_muted(true);
         enabled.store(false, Ordering::Relaxed);
         drop(capture);
         preview.clear();
+        assert!(preview.output_muted());
         for _ in 0..5 {
             read_until(true);
         }
@@ -1180,6 +1219,8 @@ mod tests {
         let capture = ActivePipeline::start(&config, runtime, preview.clone(), true)
             .await
             .unwrap();
+        read_until(true);
+        preview.set_output_muted(false);
         read_until(false);
         // A failed capture also falls back to black once its last frame expires.
         drop(capture);

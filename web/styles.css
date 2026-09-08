@@ -395,3 +395,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .portrait-unavailable { opacity: .45; cursor: not-allowed; }
 
 #voice-settings[hidden] { display: none; }
+
+#preview-video-mute[aria-pressed="true"] { background: #3a211b; border-color: #ef806b; color: #ffb6a5; }
+.video-output-muted { position: absolute; top: .5rem; right: .5rem; z-index: 3; padding: .3rem .55rem; border: 1px solid #ef806b; border-radius: .45rem; background: #3a211bed; color: #ffb6a5; font-size: .75rem; pointer-events: none; }
+.video-output-muted[hidden] { display: none; }
