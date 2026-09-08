@@ -1,3 +1,6 @@
+import { createDaemonMonitor } from "/assets/daemon-monitor.js";
+createDaemonMonitor().start();
+
 const settingsTabs = [...document.querySelectorAll('[role="tab"]')];
 function selectSettingsTab(id, focus = false) {
   const selected = settingsTabs.find(tab => tab.id === `tab-${id}`) || settingsTabs[0];

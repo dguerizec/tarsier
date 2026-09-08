@@ -1,3 +1,4 @@
+import { createDaemonMonitor } from "/assets/daemon-monitor.js";
 import { installPreviewDrag, sourcePanTiltDirection } from "/assets/preview-drag.js";
 import { syncAudioCapture } from "/assets/audio.js";
 import { createElement, FolderOpen, FlipHorizontal2, Bone, Power, Video, VideoOff, ChevronDown, ScanFace, Hand, ZoomIn } from "/assets/lucide.js";
@@ -102,8 +103,6 @@ let previewMirrorEnabled = localStorage.getItem("tarsier.previewMirror") === "tr
 let socketConnected = false;
 let pipelineWasRunning = null;
 let previewRetry = null;
-let daemonStartedAt = null;
-let reloadRequested = false;
 let daemonRestartAvailable = false;
 let daemonRestartPending = false;
 let cameraControlError = null;
@@ -425,30 +424,12 @@ function syncDaemonRestartControl() {
     : "Daemon restart is unavailable without service supervision";
 }
 
-function observeDaemon(startedAt) {
-  if (!Number.isFinite(startedAt)) return;
-  if (daemonStartedAt == null) {
-    daemonStartedAt = startedAt;
-    return;
-  }
-  if (startedAt !== daemonStartedAt && !reloadRequested) {
-    reloadRequested = true;
-    location.reload();
-  }
-}
-
-async function checkDaemonInstance() {
-  try {
-    const response = await fetch("/api/v1/health", { cache: "no-store" });
-    if (!response.ok) return;
-    const health = await response.json();
+const daemonMonitor = createDaemonMonitor({
+  onHealth(health) {
     daemonRestartAvailable = health.restart_available === true;
     syncDaemonRestartControl();
-    observeDaemon(health.started_at_ms);
-  } catch {
-    // A stopped daemon is expected during upgrades; the WebSocket owns the status display.
-  }
-}
+  },
+});
 
 function drawSkeletons(
   faceLandmarks = state?.perception.face_landmarks || [],
@@ -867,7 +848,7 @@ function renderBackground(videoEffects) {
 }
 
 function render(next) {
-  observeDaemon(next.started_at_ms);
+  daemonMonitor.observe(next.started_at_ms);
   state = next;
   renderVideoOutput();
   syncAudioCapture(next.audio_capture_sources || [], next.audio_virtual, next.audio_reservations, next.audio_released_sources, next.audio_busy_sources, next.audio_output_applications, next.audio_gain, next.audio_voice);
@@ -1839,12 +1820,12 @@ renderVideoOutput();
 
 buildImageSettingsUi();
 setInterval(() => state && render(state), 500);
-setInterval(checkDaemonInstance, 2000);
+
 setSkeletonEnabled(skeletonEnabled);
 loadRecentEvents().catch(console.error);
 loadPresets().catch(console.error);
 connect();
-checkDaemonInstance();
+daemonMonitor.start();
 
 let photoStatusKey = null;
 function renderSavedPhoto(photo) {
