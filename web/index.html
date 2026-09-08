@@ -115,16 +115,18 @@
             <p id="audio-output-error" class="error" role="alert" hidden></p>
             <div id="audio-output-track"></div>
             <div id="voice-conversion" class="voice-conversion" hidden>
-              <div><strong>Voice conversion</strong> <button id="voice-toggle" class="secondary compact" type="button" aria-pressed="false">Off</button></div>
-              <div id="voice-model-controls" hidden>
-                <label>Model <select id="voice-model" aria-label="Voice model"></select></label>
-                <button id="voice-import" class="secondary compact" type="button">Import .pth</button>
-                <input id="voice-model-file" type="file" accept=".pth" hidden>
+              <div class="voice-heading"><strong><button id="voice-fold" type="button" aria-expanded="true" aria-controls="voice-settings">Voice conversion</button></strong> <button id="voice-toggle" class="secondary compact" type="button" aria-pressed="false">Off</button></div>
+              <div id="voice-settings">
+                <div id="voice-model-controls" hidden>
+                  <label>Model <select id="voice-model" aria-label="Voice model"></select></label>
+                  <button id="voice-import" class="secondary compact" type="button">Import .pth</button>
+                  <input id="voice-model-file" type="file" accept=".pth" hidden>
+                </div>
+                <p id="voice-model-credit" class="hint"></p>
+                <p id="voice-import-status" class="hint" role="status"></p>
+                <label>Pitch <input id="voice-pitch" type="range" min="-12" max="12" step="1" value="0"> <output id="voice-pitch-value">0 st</output></label>
+                <p id="voice-status" class="hint" role="status">Off</p>
               </div>
-              <p id="voice-model-credit" class="hint"></p>
-              <p id="voice-import-status" class="hint" role="status"></p>
-              <label>Pitch <input id="voice-pitch" type="range" min="-12" max="12" step="1" value="0"> <output id="voice-pitch-value">0 st</output></label>
-              <p id="voice-status" class="hint" role="status">Off</p>
             </div>
           </div>
         </section>
@@ -246,115 +248,118 @@
         </div>
       </section>
 
-      <section class="telemetry panel">
-        <div class="panel-title camera-heading">
-          <h2>Camera</h2>
-          <div class="camera-heading-actions">
-            <span id="camera-age">No sample</span>
-          </div>
-        </div>
-        <div class="metrics">
-          <article><span>Motor yaw</span><strong id="yaw">—</strong></article>
-          <article><span>Motor pitch</span><strong id="pitch">—</strong></article>
-          <article><span>Motor roll</span><strong id="roll">—</strong></article>
-          <article><span>Camera tracking</span><strong id="tracking">—</strong></article>
-        </div>
-        <div class="telemetry-details">
-          <span>Euler <strong id="camera-euler">—</strong></span>
-          <span>Velocity <strong id="camera-velocity">—</strong></span>
-        </div>
-        <div class="controls">
-          <button data-action="recenter">Recenter</button>
-        </div>
-        <div id="presets" class="controls preset-controls"></div>
-        <div class="camera-subsection">
-          <div class="subsection-title">
-            <h3>Camera features</h3>
-            <span>Camera firmware</span>
-          </div>
-          <div class="feature-controls">
-            <div class="feature-control">
-              <span>Camera tracking</span>
-              <strong id="tracking-feature-state">Unknown</strong>
-              <div class="segmented-control" role="group" aria-label="Camera tracking">
-                <button class="secondary compact" type="button" data-camera-feature="tracking" data-camera-enabled="true">On</button>
-                <button class="secondary compact" type="button" data-camera-feature="tracking" data-camera-enabled="false">Off</button>
-              </div>
+      <aside class="camera-sidebar" aria-label="Camera and perception">
+        <details id="camera-panel" class="telemetry panel" open>
+          <summary class="panel-title camera-heading">
+            <h2>Camera</h2>
+            <div class="camera-heading-actions">
+              <span id="camera-age">No sample</span>
             </div>
-            <div class="feature-control">
-              <span>HDR</span>
-              <strong id="hdr-feature-state">Unknown</strong>
-              <div class="segmented-control" role="group" aria-label="HDR imaging">
-                <button class="secondary compact" type="button" data-camera-feature="hdr" data-camera-enabled="true">On</button>
-                <button class="secondary compact" type="button" data-camera-feature="hdr" data-camera-enabled="false">Off</button>
-              </div>
+          </summary>
+          <div class="metrics">
+            <article><span>Motor yaw</span><strong id="yaw">—</strong></article>
+            <article><span>Motor pitch</span><strong id="pitch">—</strong></article>
+            <article><span>Motor roll</span><strong id="roll">—</strong></article>
+            <article><span>Camera tracking</span><strong id="tracking">—</strong></article>
+          </div>
+          <div class="telemetry-details">
+            <span>Euler <strong id="camera-euler">—</strong></span>
+            <span>Velocity <strong id="camera-velocity">—</strong></span>
+          </div>
+          <div class="controls">
+            <button data-action="recenter">Recenter</button>
+          </div>
+          <div id="presets" class="controls preset-controls"></div>
+          <div class="camera-subsection">
+            <div class="subsection-title">
+              <h3>Camera features</h3>
+              <span>Camera firmware</span>
             </div>
-          </div>
-        </div>
-        <div class="camera-subsection manual-zoom">
-          <div class="subsection-title">
-            <h3>Zoom</h3>
-            <output id="zoom-value" for="zoom-slider">Unknown</output>
-          </div>
-          <div class="zoom-control">
-            <input id="zoom-slider" type="range" min="1" max="4" step="0.1" value="1" aria-describedby="zoom-help" disabled>
-            <button id="zoom-reset" class="secondary compact" type="button" disabled>Reset ×1</button>
-          </div>
-          <div class="zoom-scale" aria-hidden="true"><span>×1</span><span>×4</span></div>
-          <p id="zoom-help" class="control-hint">Manual changes become the new framing while auto zoom is on. <span id="auto-zoom-readback">Auto zoom needs face tracking.</span> <span id="zoom-readback">Awaiting camera readback.</span></p>
-        </div>
-        <div class="camera-subsection image-settings">
-          <div class="subsection-title">
-            <h3>Image settings</h3>
-            <span id="image-settings-readback">Awaiting camera readback</span>
-          </div>
-          <div id="image-settings-groups" class="image-settings-groups"></div>
-          <p id="image-settings-error" class="error" role="alert" hidden></p>
-        </div>
-        <div class="camera-subsection">
-          <div class="subsection-title">
-            <h3>Built-in gestures</h3>
-            <span id="gesture-readback">Awaiting camera readback</span>
-          </div>
-          <div class="feature-controls">
-            <div class="feature-control">
-              <span>Target selection</span>
-              <strong id="gesture-target-selection-state">Unknown</strong>
-              <div class="segmented-control" role="group" aria-label="Target selection gesture">
-                <button class="secondary compact" type="button" data-gesture-feature="target-selection" data-gesture-enabled="true">On</button>
-                <button class="secondary compact" type="button" data-gesture-feature="target-selection" data-gesture-enabled="false">Off</button>
+            <div class="feature-controls">
+              <div class="feature-control">
+                <span>Camera tracking</span>
+                <strong id="tracking-feature-state">Unknown</strong>
+                <div class="segmented-control" role="group" aria-label="Camera tracking">
+                  <button class="secondary compact" type="button" data-camera-feature="tracking" data-camera-enabled="true">On</button>
+                  <button class="secondary compact" type="button" data-camera-feature="tracking" data-camera-enabled="false">Off</button>
+                </div>
               </div>
-            </div>
-            <div class="feature-control">
-              <span>Zoom</span>
-              <strong id="gesture-zoom-state">Unknown</strong>
-              <div class="segmented-control" role="group" aria-label="Zoom gesture">
-                <button class="secondary compact" type="button" data-gesture-feature="zoom" data-gesture-enabled="true">On</button>
-                <button class="secondary compact" type="button" data-gesture-feature="zoom" data-gesture-enabled="false">Off</button>
-              </div>
-            </div>
-            <div class="feature-control">
-              <span>Dynamic zoom</span>
-              <strong id="gesture-dynamic-zoom-state">Unknown</strong>
-              <div class="segmented-control" role="group" aria-label="Dynamic zoom gesture">
-                <button class="secondary compact" type="button" data-gesture-feature="dynamic-zoom" data-gesture-enabled="true">On</button>
-                <button class="secondary compact" type="button" data-gesture-feature="dynamic-zoom" data-gesture-enabled="false">Off</button>
+              <div class="feature-control">
+                <span>HDR</span>
+                <strong id="hdr-feature-state">Unknown</strong>
+                <div class="segmented-control" role="group" aria-label="HDR imaging">
+                  <button class="secondary compact" type="button" data-camera-feature="hdr" data-camera-enabled="true">On</button>
+                  <button class="secondary compact" type="button" data-camera-feature="hdr" data-camera-enabled="false">Off</button>
+                </div>
               </div>
             </div>
           </div>
-        </div>
-        <p id="camera-error" class="error" hidden></p>
-      </section>
+          <div class="camera-subsection manual-zoom">
+            <div class="subsection-title">
+              <h3>Zoom</h3>
+              <output id="zoom-value" for="zoom-slider">Unknown</output>
+            </div>
+            <div class="zoom-control">
+              <input id="zoom-slider" type="range" min="1" max="4" step="0.1" value="1" aria-describedby="zoom-help" disabled>
+              <button id="zoom-reset" class="secondary compact" type="button" disabled>Reset ×1</button>
+            </div>
+            <div class="zoom-scale" aria-hidden="true"><span>×1</span><span>×4</span></div>
+            <p id="zoom-help" class="control-hint">Manual changes become the new framing while auto zoom is on. <span id="auto-zoom-readback">Auto zoom needs face tracking.</span> <span id="zoom-readback">Awaiting camera readback.</span></p>
+          </div>
+          <div class="camera-subsection image-settings">
+            <div class="subsection-title">
+              <h3>Image settings</h3>
+              <span id="image-settings-readback">Awaiting camera readback</span>
+            </div>
+            <div id="image-settings-groups" class="image-settings-groups"></div>
+            <p id="image-settings-error" class="error" role="alert" hidden></p>
+          </div>
+          <div class="camera-subsection">
+            <div class="subsection-title">
+              <h3>Built-in gestures</h3>
+              <span id="gesture-readback">Awaiting camera readback</span>
+            </div>
+            <div class="feature-controls">
+              <div class="feature-control">
+                <span>Target selection</span>
+                <strong id="gesture-target-selection-state">Unknown</strong>
+                <div class="segmented-control" role="group" aria-label="Target selection gesture">
+                  <button class="secondary compact" type="button" data-gesture-feature="target-selection" data-gesture-enabled="true">On</button>
+                  <button class="secondary compact" type="button" data-gesture-feature="target-selection" data-gesture-enabled="false">Off</button>
+                </div>
+              </div>
+              <div class="feature-control">
+                <span>Zoom</span>
+                <strong id="gesture-zoom-state">Unknown</strong>
+                <div class="segmented-control" role="group" aria-label="Zoom gesture">
+                  <button class="secondary compact" type="button" data-gesture-feature="zoom" data-gesture-enabled="true">On</button>
+                  <button class="secondary compact" type="button" data-gesture-feature="zoom" data-gesture-enabled="false">Off</button>
+                </div>
+              </div>
+              <div class="feature-control">
+                <span>Dynamic zoom</span>
+                <strong id="gesture-dynamic-zoom-state">Unknown</strong>
+                <div class="segmented-control" role="group" aria-label="Dynamic zoom gesture">
+                  <button class="secondary compact" type="button" data-gesture-feature="dynamic-zoom" data-gesture-enabled="true">On</button>
+                  <button class="secondary compact" type="button" data-gesture-feature="dynamic-zoom" data-gesture-enabled="false">Off</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <p id="camera-error" class="error" hidden></p>
+        </details>
 
-      <section class="panel">
-        <div class="panel-title"><h2>Perception</h2><span id="worker">Worker offline</span></div>
-        <div class="gesture">
-          <div class="gesture-icon" id="gesture-icon">✋</div>
-          <div><strong id="gesture">No gesture</strong><span id="confidence">—</span></div>
-        </div>
-        <p class="hint">Hold an open palm steadily to emit <code>gesture.open_palm.held</code>.</p>
-        <p id="perception-error" class="error" hidden></p>
-      </section>
+        <section class="panel">
+          <div class="panel-title"><h2>Perception</h2><span id="worker">Worker offline</span></div>
+          <div class="gesture">
+            <div class="gesture-icon" id="gesture-icon">✋</div>
+            <div><strong id="gesture">No gesture</strong><span id="confidence">—</span></div>
+          </div>
+          <p class="hint">Hold an open palm steadily to emit <code>gesture.open_palm.held</code>.</p>
+          <p id="perception-error" class="error" hidden></p>
+        </section>
+
+      </aside>
 
       <section class="panel events-panel">
         <div class="panel-title"><h2>Recent events</h2><button id="demo-trigger" class="link-button">Test scenario</button></div>

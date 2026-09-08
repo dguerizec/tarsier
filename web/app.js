@@ -3,6 +3,20 @@ import { syncAudioCapture } from "/assets/audio.js";
 import { createElement, FolderOpen, FlipHorizontal2, Bone, Power, ChevronDown, ScanFace, Hand, ZoomIn } from "/assets/lucide.js";
 
 const $ = (selector) => document.querySelector(selector);
+const cameraPanel = $("#camera-panel");
+cameraPanel.querySelector("summary").prepend(createElement(ChevronDown, { width: 18, height: 18, "aria-hidden": "true", focusable: "false" }));
+try {
+  cameraPanel.open = localStorage.getItem("tarsier.camera.open") !== "false";
+} catch {
+  // Keep the default when browser storage is unavailable.
+}
+cameraPanel.addEventListener("toggle", () => {
+  try {
+    localStorage.setItem("tarsier.camera.open", String(cameraPanel.open));
+  } catch {
+    // Folding remains available when browser storage cannot be written.
+  }
+});
 const connection = $("#connection");
 const daemonRestartDialog = $("#daemon-restart-dialog");
 const daemonRestartForm = $("#daemon-restart-form");
