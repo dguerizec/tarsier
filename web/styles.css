@@ -417,3 +417,6 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .settings-tab-panel { display: grid; gap: 1rem; min-width: 0; }
 .settings-tab-panel[hidden] { display: none; }
 .mute-media-library-controls select { background: var(--panel); color: #f2f5ef; border: 1px solid var(--panel-edge); border-radius: .5rem; padding: .55rem; font: inherit; font-size: .85rem; flex: 1 1 15rem; min-width: 0; max-width: 100%; }
+
+#camera-diagnostics { margin-top: 12px; color: var(--muted); font-size: 0.8rem; }
+#camera-diagnostics-text { white-space: pre-wrap; overflow-wrap: anywhere; }
