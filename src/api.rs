@@ -2663,11 +2663,28 @@ async fn delete_saved_mute_media(
     let Some(selection) = settings.video_mute_library().await.into_iter().find(|item| item.filename == query.filename) else {
         return StatusCode::NOT_FOUND.into_response();
     };
+    let active = state.preview.replacement_info().selection.as_ref()
+        .is_some_and(|item| item.filename == selection.filename);
+    let default_media = if active {
+        let directory = settings.mute_media_directory();
+        let (width, height) = (state.config.video.width, state.config.video.height);
+        match tokio::task::spawn_blocking(move || {
+            crate::mute_media::Media::open(
+                &crate::mute_media::default_selection().unwrap(), &directory, width, height,
+            )
+        }).await {
+            Ok(Ok(media)) => Some(media),
+            Ok(Err(error)) => return command_error(error),
+            Err(error) => return command_error(error.into()),
+        }
+    } else {
+        None
+    };
     if let Err(error) = settings.delete_video_mute_media(&selection.filename).await {
         return user_settings_error(error);
     }
-    if state.preview.replacement_info().selection.as_ref().is_some_and(|item| item.filename == selection.filename) {
-        state.preview.set_replacement(None, None, None);
+    if active {
+        state.preview.set_replacement(crate::mute_media::default_selection(), default_media, None);
     }
     if let Ok(path) = selection.path(&settings.mute_media_directory()) {
         if let Err(error) = tokio::fs::remove_file(path).await {
@@ -6015,7 +6032,10 @@ mod tests {
         assert_eq!(preview.replacement_info().selection, Some(selected.clone()));
         let response = app.clone().oneshot(Request::delete(&saved_url).body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        assert!(preview.replacement_info().selection.is_none());
+        assert_eq!(preview.replacement_info().selection, crate::mute_media::default_selection());
+        let (_, restored) = UserSettingsStore::load(path.clone(), UserSettings::from_config(&Config::default())).await.unwrap();
+        assert_eq!(restored.video_mute_media, crate::mute_media::default_selection());
+        assert!(restored.video_mute_library.is_empty());
         assert!(preview.output_muted());
         assert!(!selected.path(&path.parent().unwrap().join("mute-media")).unwrap().exists());
         let response = app.oneshot(Request::post(&saved_url).body(Body::empty()).unwrap()).await.unwrap();

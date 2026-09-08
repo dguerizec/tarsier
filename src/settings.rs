@@ -288,7 +288,7 @@ impl UserSettingsStore {
             settings.remember_mute_media();
             settings.video_mute_library.retain(|item| item.filename != filename);
             if settings.video_mute_media.as_ref().is_some_and(|item| item.filename == filename) {
-                settings.video_mute_media = None;
+                settings.video_mute_media = crate::mute_media::default_selection();
             }
         }).await
     }
