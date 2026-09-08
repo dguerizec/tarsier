@@ -100,6 +100,8 @@ pub struct UserSettings {
     #[serde(default)]
     pub video_output_muted: bool,
     #[serde(default)]
+    pub video_mute_media: Option<crate::mute_media::Selection>,
+    #[serde(default)]
     pub liveportrait_source: Option<PathBuf>,
     #[serde(default)]
     pub camera_device: Option<String>,
@@ -130,6 +132,7 @@ impl UserSettings {
     pub fn from_config(config: &Config) -> Self {
         Self {
             video_output_muted: false,
+            video_mute_media: None,
             liveportrait_source: None,
             camera_device: None,
             audio_reserve_inputs: None,
@@ -240,6 +243,21 @@ impl UserSettingsStore {
             },
             settings,
         ))
+    }
+
+    pub fn mute_media_directory(&self) -> PathBuf {
+        self.path
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join("mute-media")
+    }
+
+    pub async fn set_video_mute_media(
+        &self,
+        selection: Option<crate::mute_media::Selection>,
+    ) -> Result<()> {
+        self.replace(|settings| settings.video_mute_media = selection)
+            .await
     }
 
     pub fn portrait_directory(&self) -> PathBuf {

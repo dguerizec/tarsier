@@ -34,6 +34,19 @@ pub struct PreviewHub {
     virtual_frame: Arc<Mutex<Option<(Instant, gst::Buffer)>>>,
     recording_tx: watch::Sender<Option<gst::Buffer>>,
     output_muted: Arc<AtomicBool>,
+    replacement: Arc<Mutex<Replacement>>,
+}
+
+#[derive(Default)]
+struct Replacement {
+    info: ReplacementInfo,
+    media: Option<crate::mute_media::Media>,
+}
+
+#[derive(Clone, Default, serde::Serialize)]
+pub struct ReplacementInfo {
+    pub selection: Option<crate::mute_media::Selection>,
+    pub error: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -85,6 +98,37 @@ impl PreviewHub {
             virtual_frame: Arc::default(),
             recording_tx: watch::channel(None).0,
             output_muted: Arc::new(AtomicBool::new(false)),
+            replacement: Arc::default(),
+        }
+    }
+
+    pub fn set_replacement(
+        &self,
+        selection: Option<crate::mute_media::Selection>,
+        media: Option<crate::mute_media::Media>,
+        error: Option<String>,
+    ) {
+        *self.replacement.lock().unwrap() = Replacement {
+            info: ReplacementInfo { selection, error },
+            media,
+        };
+    }
+
+    pub fn replacement_info(&self) -> ReplacementInfo {
+        self.replacement.lock().unwrap().info.clone()
+    }
+
+    fn replacement_frame(&self, active: bool) -> Option<gst::Buffer> {
+        let mut replacement = self.replacement.lock().unwrap();
+        let result = replacement.media.as_mut()?.frame(active);
+        match result {
+            Ok(frame) => frame,
+            Err(error) => {
+                tracing::warn!(%error, "mute media failed; keeping black output fallback");
+                replacement.info.error = Some(error.to_string());
+                replacement.media = None;
+                None
+            }
         }
     }
 
@@ -226,19 +270,22 @@ impl VirtualVideoOutput {
                     let started = Instant::now();
                     let mut deadline = started;
                     while running.load(Ordering::Relaxed) {
-                        let mut frame =
-                            if capture_enabled.load(Ordering::Relaxed) && !preview.output_muted() {
-                                preview
-                                    .virtual_frame
-                                    .lock()
-                                    .unwrap()
-                                    .as_ref()
-                                    .filter(|(at, _)| at.elapsed() <= Duration::from_millis(500))
-                                    .map(|(_, buffer)| buffer.clone())
-                                    .unwrap_or_else(|| black.clone())
-                            } else {
-                                black.clone()
-                            };
+                        let muted = preview.output_muted();
+                        let replacement = preview.replacement_frame(muted);
+                        let mut frame = if muted {
+                            replacement.unwrap_or_else(|| black.clone())
+                        } else if capture_enabled.load(Ordering::Relaxed) {
+                            preview
+                                .virtual_frame
+                                .lock()
+                                .unwrap()
+                                .as_ref()
+                                .filter(|(at, _)| at.elapsed() <= Duration::from_millis(500))
+                                .map(|(_, buffer)| buffer.clone())
+                                .unwrap_or_else(|| black.clone())
+                        } else {
+                            black.clone()
+                        };
                         let buffer = frame.make_mut();
                         buffer.set_pts(gst::ClockTime::from_nseconds(
                             started.elapsed().as_nanos() as u64
@@ -1226,6 +1273,74 @@ mod tests {
         drop(capture);
         tokio::time::sleep(Duration::from_millis(550)).await;
         read_until(true);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn muted_output_uses_replacement_and_returns_to_black_when_removed() {
+        gst::init().unwrap();
+        let config = VideoConfig {
+            width: 4,
+            height: 4,
+            ..VideoConfig::default()
+        };
+        let directory = std::env::temp_dir().join(format!(
+            "tarsier-mute-stream-{}-{}",
+            std::process::id(),
+            unix_ms()
+        ));
+        let mut image = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(4, 4, image::Rgba([255, 0, 0, 255]))
+            .write_to(&mut image, image::ImageFormat::Png)
+            .unwrap();
+        let (selection, media) =
+            crate::mute_media::upload(&directory, "away.png", image.get_ref(), 4, 4).unwrap();
+        let preview = PreviewHub::new();
+        preview.set_replacement(Some(selection), Some(media), None);
+        preview.set_output_muted(true);
+        let mut frames = preview.subscribe_recording();
+        let _output = VirtualVideoOutput::start(
+            &config,
+            preview.clone(),
+            Arc::new(AtomicBool::new(false)),
+            Runtime::new(),
+            "fakesink sync=false",
+        )
+        .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), frames.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            frames
+                .borrow_and_update()
+                .as_ref()
+                .unwrap()
+                .map_readable()
+                .unwrap()
+                .as_slice(),
+            [0, 0, 255, 0].repeat(16)
+        );
+        preview.set_replacement(None, None, None);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                frames.changed().await.unwrap();
+                if frames
+                    .borrow_and_update()
+                    .as_ref()
+                    .unwrap()
+                    .map_readable()
+                    .unwrap()
+                    .as_slice()
+                    .iter()
+                    .all(|byte| *byte == 0)
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -12,6 +12,7 @@ mod face_tracking;
 mod hands_tracking;
 mod media_metadata;
 mod model;
+mod mute_media;
 mod perception;
 mod pipeline;
 mod recording;
@@ -194,6 +195,22 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
     let runtime = Runtime::new();
     let preview = PreviewHub::new();
     preview.set_output_muted(user_settings.video_output_muted);
+    if let Some(selection) = user_settings.video_mute_media.clone() {
+        let directory = settings_store.mute_media_directory();
+        let selected = selection.clone();
+        let (width, height) = (config.video.width, config.video.height);
+        let loaded = tokio::task::spawn_blocking(move || {
+            crate::mute_media::Media::open(&selected, &directory, width, height)
+        })
+        .await?;
+        match loaded {
+            Ok(media) => preview.set_replacement(Some(selection), Some(media), None),
+            Err(error) => {
+                tracing::warn!(%error, "mute media unavailable; keeping black output fallback");
+                preview.set_replacement(Some(selection), None, Some(error.to_string()));
+            }
+        }
+    }
     let output_mode = user_settings.output_mode();
     let avatar_engine = user_settings
         .avatar_engine()
