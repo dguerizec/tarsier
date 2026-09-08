@@ -717,17 +717,21 @@ release their own action on connection loss, since a daemon crash cannot deliver
 an end event.
 
 The worker supplies source image dimensions alongside landmarks. The detector
-corrects image aspect ratio, checks each hand separately, and uses projected
-finger straightness/curl and mouth proximity. It does not use the canned gesture
+corrects image aspect ratio, checks each hand separately, and uses estimated 3D
+finger straightness/curl and thumb-to-pinky spread (over 1.5 wrist-to-middle-knuckle
+lengths). Both x and z are converted from source-width to source-height units.
+This retains hand shape under backward tilt when depth estimates remain reliable.
+Mouth proximity and hand continuity still use image coordinates: hand-local depth
+cannot be compared with face-local depth. It does not use the canned gesture
 score as a confidence estimate. State at `perception.phone_near_mouth` exposes
 `active`, `candidate`, `hold_progress`, `phone_shape`, `near_mouth`,
 `mouth_distance` and a diagnostic `reason`. Older observations without image
 dimensions remain accepted but cannot activate this detector.
 
 This is a geometric heuristic, not a trained phone gesture classifier. It checks
-image-plane proximity, not physical contact; strong foreshortening, occlusion,
+image-plane mouth proximity, not physical contact; unreliable depth, occlusion,
 head turns and changing hands may interrupt detection. Automated fixtures cover
-geometry, scale, mirroring, in-plane rotation, aspect ratio, temporal transitions
+geometry, scale, mirroring, in-plane rotation, 3D hand tilt, aspect ratio, temporal transitions
 and API/watchdog events. Real-camera accuracy is not established by these tests.
 Before binding an action, try both hands while speaking, vary distance and head
 angle, and check negatives (open palm, fist, pointing, drinking, touching the face).
