@@ -360,6 +360,7 @@ pub fn router_with_controls(
                 .layer(DefaultBodyLimit::max(crate::mute_media::MAX_UPLOAD_BYTES)),
         )
         .route("/api/v1/settings/video-mute/media", get(mute_media_file))
+        .route("/api/v1/settings/video-mute/library", post(select_saved_mute_media).delete(delete_saved_mute_media))
         .route("/api/v1/settings/video-mute/default", post(restore_default_mute_media))
         .route("/api/v1/video/resolution", post(set_resolution))
         .route("/api/v1/video/background", post(set_background))
@@ -2548,7 +2549,11 @@ async fn set_resolution(
 }
 
 async fn mute_media_settings(State(state): State<ApiState>) -> Response {
-    Json(json!({"can_apply": state.user_settings.is_some(), "media": state.preview.replacement_info()})).into_response()
+    let library = match &state.user_settings {
+        Some(settings) => settings.video_mute_library().await,
+        None => Vec::new(),
+    };
+    Json(json!({"can_apply": state.user_settings.is_some(), "media": state.preview.replacement_info(), "library": library})).into_response()
 }
 
 #[derive(Deserialize)]
@@ -2587,10 +2592,10 @@ async fn upload_mute_media(
         }
         Err(error) => return command_error(error.into()),
     };
-    let previous = state.preview.replacement_info().selection;
+    let library = settings.video_mute_library().await;
     if let Err(error) = settings.set_video_mute_media(Some(selection.clone())).await {
         drop(media);
-        if previous.as_ref().map(|old| &old.filename) != Some(&selection.filename) {
+        if !library.iter().any(|item| item.filename == selection.filename) {
             if let Ok(path) = selection.path(&directory) {
                 let _ = tokio::fs::remove_file(path).await;
             }
@@ -2600,9 +2605,64 @@ async fn upload_mute_media(
     state
         .preview
         .set_replacement(Some(selection.clone()), Some(media), None);
-    if let Some(old) = previous.filter(|old| old.filename != selection.filename) {
-        if let Ok(path) = old.path(&directory) {
-            let _ = tokio::fs::remove_file(path).await;
+    mute_media_settings(State(state.clone())).await
+}
+
+#[derive(Deserialize)]
+struct SavedMuteMedia {
+    filename: String,
+}
+
+async fn select_saved_mute_media(
+    State(state): State<ApiState>,
+    Query(query): Query<SavedMuteMedia>,
+) -> Response {
+    let _guard = state.mute_media_control.lock().await;
+    let Some(settings) = &state.user_settings else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let Some(selection) = settings.video_mute_library().await.into_iter().find(|item| item.filename == query.filename) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let directory = settings.mute_media_directory();
+    let selected = selection.clone();
+    let (width, height) = (state.config.video.width, state.config.video.height);
+    let media = match tokio::task::spawn_blocking(move || {
+        crate::mute_media::Media::open(&selected, &directory, width, height)
+    }).await {
+        Ok(Ok(media)) => media,
+        Ok(Err(error)) => return (StatusCode::BAD_REQUEST, Json(json!({"error": error.to_string()}))).into_response(),
+        Err(error) => return command_error(error.into()),
+    };
+    if let Err(error) = settings.set_video_mute_media(Some(selection.clone())).await {
+        return user_settings_error(error);
+    }
+    state.preview.set_replacement(Some(selection), Some(media), None);
+    mute_media_settings(State(state.clone())).await
+}
+
+async fn delete_saved_mute_media(
+    State(state): State<ApiState>,
+    Query(query): Query<SavedMuteMedia>,
+) -> Response {
+    let _guard = state.mute_media_control.lock().await;
+    let Some(settings) = &state.user_settings else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let Some(selection) = settings.video_mute_library().await.into_iter().find(|item| item.filename == query.filename) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if let Err(error) = settings.delete_video_mute_media(&selection.filename).await {
+        return user_settings_error(error);
+    }
+    if state.preview.replacement_info().selection.as_ref().is_some_and(|item| item.filename == selection.filename) {
+        state.preview.set_replacement(None, None, None);
+    }
+    if let Ok(path) = selection.path(&settings.mute_media_directory()) {
+        if let Err(error) = tokio::fs::remove_file(path).await {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                return command_error(error.into());
+            }
         }
     }
     mute_media_settings(State(state.clone())).await
@@ -2628,13 +2688,7 @@ async fn remove_mute_media(State(state): State<ApiState>) -> Response {
     if let Err(error) = settings.set_video_mute_media(None).await {
         return user_settings_error(error);
     }
-    let previous = state.preview.replacement_info().selection;
     state.preview.set_replacement(None, None, None);
-    if let Some(old) = previous {
-        if let Ok(path) = old.path(&settings.mute_media_directory()) {
-            let _ = tokio::fs::remove_file(path).await;
-        }
-    }
     mute_media_settings(State(state.clone())).await
 }
 
@@ -5921,7 +5975,7 @@ mod tests {
         assert!(preview.replacement_info().selection.is_none());
         assert!(preview.output_muted());
         assert!(
-            !selected
+            selected
                 .path(&path.parent().unwrap().join("mute-media"))
                 .unwrap()
                 .exists()
@@ -5936,12 +5990,25 @@ mod tests {
         ).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(preview.replacement_info().selection, crate::mute_media::default_selection());
-        let response = app.oneshot(
+        let response = app.clone().oneshot(
             Request::get("/api/v1/settings/video-mute/media")
                 .body(Body::empty()).unwrap()
         ).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(&to_bytes(response.into_body(), 1024 * 1024).await.unwrap()[..], crate::mute_media::DEFAULT_IMAGE);
+        let (_, restored) = UserSettingsStore::load(path.clone(), UserSettings::from_config(&Config::default())).await.unwrap();
+        assert_eq!(restored.video_mute_library, vec![selected.clone()]);
+        let saved_url = format!("/api/v1/settings/video-mute/library?filename={}", selected.filename);
+        let response = app.clone().oneshot(Request::post(&saved_url).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(preview.replacement_info().selection, Some(selected.clone()));
+        let response = app.clone().oneshot(Request::delete(&saved_url).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(preview.replacement_info().selection.is_none());
+        assert!(preview.output_muted());
+        assert!(!selected.path(&path.parent().unwrap().join("mute-media")).unwrap().exists());
+        let response = app.oneshot(Request::post(&saved_url).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 

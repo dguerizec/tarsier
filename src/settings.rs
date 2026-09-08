@@ -102,6 +102,8 @@ pub struct UserSettings {
     #[serde(default = "crate::mute_media::default_selection")]
     pub video_mute_media: Option<crate::mute_media::Selection>,
     #[serde(default)]
+    pub video_mute_library: Vec<crate::mute_media::Selection>,
+    #[serde(default)]
     pub liveportrait_source: Option<PathBuf>,
     #[serde(default)]
     pub camera_device: Option<String>,
@@ -129,10 +131,22 @@ pub struct UserSettings {
 }
 
 impl UserSettings {
+    fn remember_mute_media(&mut self) {
+        if let Some(selection) = &self.video_mute_media {
+            let default = crate::mute_media::default_selection().unwrap();
+            if selection.filename != default.filename
+                && !self.video_mute_library.iter().any(|item| item.filename == selection.filename)
+            {
+                self.video_mute_library.push(selection.clone());
+            }
+        }
+    }
+
     pub fn from_config(config: &Config) -> Self {
         Self {
             video_output_muted: false,
             video_mute_media: crate::mute_media::default_selection(),
+            video_mute_library: Vec::new(),
             liveportrait_source: None,
             camera_device: None,
             audio_reserve_inputs: None,
@@ -256,8 +270,27 @@ impl UserSettingsStore {
         &self,
         selection: Option<crate::mute_media::Selection>,
     ) -> Result<()> {
-        self.replace(|settings| settings.video_mute_media = selection)
-            .await
+        self.replace(|settings| {
+            settings.remember_mute_media();
+            settings.video_mute_media = selection;
+            settings.remember_mute_media();
+        }).await
+    }
+
+    pub async fn video_mute_library(&self) -> Vec<crate::mute_media::Selection> {
+        let mut settings = self.current.lock().await.clone();
+        settings.remember_mute_media();
+        settings.video_mute_library
+    }
+
+    pub async fn delete_video_mute_media(&self, filename: &str) -> Result<()> {
+        self.replace(|settings| {
+            settings.remember_mute_media();
+            settings.video_mute_library.retain(|item| item.filename != filename);
+            if settings.video_mute_media.as_ref().is_some_and(|item| item.filename == filename) {
+                settings.video_mute_media = None;
+            }
+        }).await
     }
 
     pub fn portrait_directory(&self) -> PathBuf {
@@ -417,6 +450,9 @@ fn persist(path: &Path, settings: UserSettings) -> Result<()> {
     }
     let mut bytes = serde_json::to_vec_pretty(&settings)?;
     bytes.push(b'\n');
+    if bytes.len() > MAX_SETTINGS_BYTES {
+        bail!("settings storage is full; remove unused saved media before adding more");
+    }
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -466,6 +502,28 @@ fn persist(path: &Path, settings: UserSettings) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn mute_library_preserves_existing_media_and_multiple_selections() {
+        let path = std::env::temp_dir().join(format!("tarsier-library-{}-{}/settings.json", std::process::id(), crate::model::unix_ms()));
+        let mut old = UserSettings::from_config(&Config::default());
+        let first = crate::mute_media::Selection { filename: format!("{}.png", "a".repeat(64)), name: "Work".into(), kind: crate::mute_media::Kind::Image };
+        let second = crate::mute_media::Selection { filename: format!("{}.mp4", "b".repeat(64)), name: "Friends".into(), kind: crate::mute_media::Kind::Video };
+        old.video_mute_media = Some(first.clone());
+        let (store, _) = UserSettingsStore::load(path.clone(), old).await.unwrap();
+        assert_eq!(store.video_mute_library().await, vec![first.clone()]);
+        store.set_video_mute_media(Some(second.clone())).await.unwrap();
+        store.set_video_mute_media(crate::mute_media::default_selection()).await.unwrap();
+        store.set_video_mute_media(None).await.unwrap();
+        let (store, _) = UserSettingsStore::load(path.clone(), UserSettings::from_config(&Config::default())).await.unwrap();
+        assert_eq!(store.video_mute_library().await, vec![first.clone(), second.clone()]);
+        store.set_video_mute_media(Some(first.clone())).await.unwrap();
+        store.delete_video_mute_media(&second.filename).await.unwrap();
+        let (_, restored) = UserSettingsStore::load(path.clone(), UserSettings::from_config(&Config::default())).await.unwrap();
+        assert_eq!(restored.video_mute_media, Some(first.clone()));
+        assert_eq!(restored.video_mute_library, vec![first]);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
     #[test]
     fn legacy_audio_settings_enable_automatic_gain_without_reusing_calibration() {
         let settings: super::AudioSettings = serde_json::from_str(
