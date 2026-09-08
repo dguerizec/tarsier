@@ -661,19 +661,19 @@ impl<T: XuTransport> Worker<T> {
                 Ok(CommandOutcome::Applied)
             }
             Command::Move { yaw, pitch, roll } => {
-                self.wake()?;
+                self.wake("move")?;
                 let mut frame = protocol::move_frame(self.next_sequence(), yaw, pitch, roll);
                 self.set(VENDOR_SELECTOR, &mut frame)?;
                 Ok(CommandOutcome::Applied)
             }
             Command::Recenter => {
-                self.wake()?;
+                self.wake("recenter")?;
                 let mut frame = protocol::recenter_frame(self.next_sequence());
                 self.set(VENDOR_SELECTOR, &mut frame)?;
                 Ok(CommandOutcome::Applied)
             }
             Command::Tracking { enabled } => {
-                self.wake()?;
+                self.wake("tracking")?;
                 let mut payload = protocol::tracking_payload(enabled);
                 self.set(TRACKING_SELECTOR, &mut payload)?;
                 Ok(CommandOutcome::Applied)
@@ -683,7 +683,7 @@ impl<T: XuTransport> Worker<T> {
                 Ok(CommandOutcome::Applied)
             }
             Command::BuiltInGesture { feature, enabled } => {
-                self.wake()?;
+                self.wake("built_in_gesture")?;
                 let mut frame =
                     protocol::built_in_gesture_frame(self.next_sequence(), feature, enabled);
                 self.set(VENDOR_SELECTOR, &mut frame)?;
@@ -798,12 +798,23 @@ impl<T: XuTransport> Worker<T> {
         if !enabled && self.pan_tilt_direction != (0, 0) {
             self.set_pan_tilt_speed(0, 0, NUDGE_SPEED_FRACTION)?;
         }
+        crate::audit::record(
+            "camera.power.command",
+            serde_json::json!({"enabled": enabled, "reason": "power_transition"}),
+        );
         let mut frame = if enabled {
             protocol::wake_frame(self.next_sequence())
         } else {
             protocol::sleep_frame(self.next_sequence())
         };
-        self.set(VENDOR_SELECTOR, &mut frame)?;
+        if let Err(error) = self.set(VENDOR_SELECTOR, &mut frame) {
+            crate::audit::record("camera.power.command_failed", serde_json::json!({}));
+            return Err(error);
+        }
+        crate::audit::record(
+            "camera.power.command_sent",
+            serde_json::json!({"enabled": enabled}),
+        );
         self.powered_on.store(enabled, Ordering::Relaxed);
         if let Some(led) = &mut self.led {
             led.invalidate(Instant::now());
@@ -889,9 +900,14 @@ impl<T: XuTransport> Worker<T> {
         }
     }
 
-    fn wake(&mut self) -> Result<()> {
+    fn wake(&mut self, reason: &str) -> Result<()> {
+        crate::audit::record("camera.wake.command", serde_json::json!({"reason": reason}));
         let mut frame = protocol::wake_frame(self.next_sequence());
-        self.set(VENDOR_SELECTOR, &mut frame)?;
+        if let Err(error) = self.set(VENDOR_SELECTOR, &mut frame) {
+            crate::audit::record("camera.wake.command_failed", serde_json::json!({}));
+            return Err(error);
+        }
+        crate::audit::record("camera.wake.command_sent", serde_json::json!({}));
         std::thread::sleep(Duration::from_millis(100));
         Ok(())
     }
