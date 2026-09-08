@@ -2,31 +2,36 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { dragDirection, sourcePanTiltDirection, installPreviewDrag } from "./preview-drag.js";
 
-function harness() {
+function harness(withZoom = false) {
   const listeners = new Map(), classes = new Set(), timers = new Map();
-  const directions = [];
-  let captured = null, timerId = 0, stops = 0, enabled = true;
+  const directions = [], zooms = [];
+  const captures = new Set();
+  let zoom = 1;
+  let timerId = 0, stops = 0, enabled = true;
   const element = {
     classList: { add: value => classes.add(value), remove: value => classes.delete(value) },
     addEventListener(name, fn) { listeners.set(name, fn); },
-    setPointerCapture(id) { captured = id; },
-    hasPointerCapture(id) { return captured === id; },
-    releasePointerCapture() { captured = null; },
+    setPointerCapture(id) { captures.add(id); },
+    hasPointerCapture(id) { return captures.has(id); },
+    releasePointerCapture(id) { captures.delete(id); },
   };
   const drag = installPreviewDrag(element, {
     canControl: () => enabled,
+    ...(withZoom ? { getZoom: () => zoom, onZoom: value => { zoom = value; zooms.push(value); } } : {}),
     onDirection: direction => directions.push(direction),
     onStop: () => stops++,
     schedule(fn) { timers.set(++timerId, fn); return timerId; },
     unschedule(id) { timers.delete(id); },
   });
   return {
-    drag, classes, directions,
+    drag, classes, directions, zooms, captures,
     get stops() { return stops; },
-    get captured() { return captured; },
+    get captured() { return captures.values().next().value ?? null; },
     set enabled(value) { enabled = value; },
     emit(name, values = {}) {
-      listeners.get(name)({ pointerId: 1, isPrimary: true, button: 0, buttons: 1, clientX: 100, clientY: 100, preventDefault() {}, ...values });
+      let prevented = false;
+      listeners.get(name)({ pointerId: 1, isPrimary: true, button: 0, buttons: 1, clientX: 100, clientY: 100, preventDefault() { prevented = true; }, ...values });
+      return prevented;
     },
     idle() { for (const fn of timers.values()) fn(); timers.clear(); },
   };
@@ -103,3 +108,56 @@ test("external cancellation and missing pressed button clear all pending movemen
   h.emit("pointerdown"); h.emit("pointermove", { buttons: 0 });
   assert.equal(h.stops, 1);
 });
+
+test("wheel zoom handles pixel, line and page deltas and clamps to camera limits", () => {
+  for (const [deltaMode, deltaY] of [[0, -160], [1, -10], [2, -0.2]]) {
+    const h = harness(true);
+    assert(h.emit("wheel", { deltaMode, deltaY }));
+    assert(Math.abs(h.zooms[0] - Math.exp(0.24)) < 1e-10);
+    for (let n = 0; n < 5; n++) h.emit("wheel", { deltaMode: 0, deltaY: -500 });
+    assert.equal(h.zooms.at(-1), 4);
+    for (let n = 0; n < 5; n++) h.emit("wheel", { deltaMode: 0, deltaY: 500 });
+    assert.equal(h.zooms.at(-1), 1);
+    h.enabled = false;
+    assert(!h.emit("wheel", { deltaY: -100 }));
+    assert.equal(h.zooms.at(-1), 1);
+  }
+});
+
+test("pinch stops dragging, zooms both ways and does not drag the remaining finger", () => {
+  const h = harness(true);
+  h.emit("pointerdown", { pointerType: "touch" });
+  h.emit("pointermove", { pointerType: "touch", clientX: 110 });
+  assert.deepEqual(h.directions, ["left"]);
+  h.emit("pointerdown", { pointerType: "touch", pointerId: 2, isPrimary: false, clientX: 210 });
+  assert.equal(h.stops, 1);
+  h.idle();
+  assert.equal(h.stops, 1);
+  assert.equal(h.captures.size, 2);
+  h.emit("pointermove", { pointerType: "touch", pointerId: 2, clientX: 310 });
+  assert.equal(h.zooms.at(-1), 2);
+  h.emit("pointermove", { pointerType: "touch", pointerId: 2, clientX: 260 });
+  assert.equal(h.zooms.at(-1), 1.5);
+  h.emit("pointerup", { pointerType: "touch", pointerId: 2 });
+  h.emit("pointermove", { pointerType: "touch", clientX: 140 });
+  assert.deepEqual(h.directions, ["left"]);
+  h.emit("pointerup", { pointerType: "touch" });
+  assert.equal(h.captures.size, 0);
+  h.emit("pointerdown", { pointerType: "touch" });
+  h.emit("pointermove", { pointerType: "touch", clientX: 120 });
+  assert.deepEqual(h.directions, ["left", "left"]);
+});
+
+for (const reason of ["pointercancel", "lostpointercapture", "disabled"]) {
+  test(`pinch cancellation on ${reason} releases all pointers`, () => {
+    const h = harness(true);
+    h.emit("pointerdown", { pointerType: "touch" });
+    h.emit("pointerdown", { pointerType: "touch", pointerId: 2, isPrimary: false, clientX: 200 });
+    if (reason === "disabled") { h.enabled = false; h.emit("pointermove"); }
+    else h.emit(reason);
+    assert.equal(h.captures.size, 0);
+    h.emit("pointermove", { pointerId: 2, clientX: 300 });
+    assert.deepEqual(h.zooms, []);
+    assert.deepEqual(h.directions, []);
+  });
+}
