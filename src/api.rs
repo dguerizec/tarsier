@@ -387,7 +387,7 @@ pub fn router_with_controls(
         ))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
-    if let Some(auth) = auth {
+    let router = if let Some(auth) = auth {
         router
             .merge(crate::auth::routes(auth.clone()))
             .layer(axum::middleware::from_fn_with_state(
@@ -396,7 +396,26 @@ pub fn router_with_controls(
             ))
     } else {
         router
+    };
+    router.layer(axum::middleware::from_fn(audit_access))
+}
+
+async fn audit_access(request: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let path = request.uri().path();
+    let tracked = path.starts_with("/mcp/")
+        || matches!(path, "/api/v1/camera/power" | "/api/v1/daemon/restart");
+    let log = tracked.then(|| {
+        let peer = request
+            .extensions()
+            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+            .map(|peer| peer.0.to_string());
+        crate::audit::RequestLog::begin(request.method().as_str(), path, peer)
+    });
+    let response = next.run(request).await;
+    if let Some(log) = log {
+        log.finish(response.status().as_u16());
     }
+    response
 }
 
 async fn index() -> impl IntoResponse {
@@ -896,6 +915,7 @@ async fn set_camera_power(
     State(state): State<ApiState>,
     Json(request): Json<CameraPowerRequest>,
 ) -> Response {
+    crate::audit::record("camera.power.requested", json!({"enabled": request.enabled}));
     let _power_change = state.camera_power_control.lock().await;
     let _video_change = state.video_output_control.lock().await;
     if !request.enabled {
@@ -1027,6 +1047,7 @@ async fn set_camera_power(
             .await;
     }
 
+    crate::audit::record("camera.power.completed", json!({"enabled": request.enabled}));
     record_camera_command(&state, "camera.power", json!({"enabled": request.enabled})).await;
     StatusCode::ACCEPTED.into_response()
 }

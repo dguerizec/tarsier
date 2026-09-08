@@ -1,6 +1,7 @@
 mod api;
 mod audio;
 mod audio_gain;
+mod audit;
 mod auth;
 mod avatar_source;
 mod camera;
@@ -83,7 +84,12 @@ async fn main() -> Result<()> {
         .init();
 
     match Cli::parse().command {
-        Command::Serve { config } => serve(config).await,
+        Command::Serve { config } => {
+            audit::init()?;
+            let result = serve(config).await;
+            audit::record("daemon.exited", serde_json::json!({"success": result.is_ok()}));
+            result
+        }
         Command::Auth { command } => {
             let auth = auth::Auth::new(auth::default_path()?, &auth::worker_token())?;
             match command {
@@ -212,6 +218,10 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
                 && user_settings.background_effect == crate::model::BackgroundEffect::GreenScreen;
         })
         .await;
+    audit::record(
+        "camera.capture.starting",
+        serde_json::json!({"source": config.video.source, "reason": "daemon_startup"}),
+    );
     let pipeline = VideoPipeline::start(config.video.clone(), runtime.clone(), preview.clone())
         .await
         .context("failed to start video pipeline")?;
@@ -298,6 +308,10 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
         runtime,
         worker_token,
     );
+    audit::record(
+        "daemon.ready",
+        serde_json::json!({"address": config.server.bind.to_string()}),
+    );
     tracing::info!(address = %config.server.bind, "Tarsier control surface is ready");
     let restart_requested = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let graceful_restart_requested = std::sync::Arc::clone(&restart_requested);
@@ -307,8 +321,9 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
     )
     .with_graceful_shutdown(async move {
         tokio::select! {
-            () = shutdown_signal() => {},
+            () = shutdown_signal() => { audit::record("daemon.stopping", serde_json::json!({"reason": "signal"})); },
             () = restart_signal(restart_rx) => {
+                audit::record("daemon.stopping", serde_json::json!({"reason": "restart_request"}));
                 graceful_restart_requested
                     .store(true, std::sync::atomic::Ordering::Relaxed);
             }
