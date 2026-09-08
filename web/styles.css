@@ -405,3 +405,11 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .mute-media-preview img, .mute-media-preview video { display: block; width: 100%; max-height: 18rem; object-fit: contain; }
 .mute-media-preview[hidden], .mute-media-preview [hidden] { display: none; }
 #mute-media-name { overflow-wrap: anywhere; }
+
+.settings-tabs { display: flex; flex-wrap: wrap; gap: .5rem; }
+.settings-tabs [role="tab"] { flex: 1 1 auto; background: var(--panel); color: var(--muted); border: 1px solid var(--panel-edge); }
+.settings-tabs [aria-selected="true"] { background: var(--green); color: #090d0b; border-color: var(--green); }
+.settings-tabs [role="tab"]:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; }
+.settings-tab-panel { display: grid; gap: 1rem; min-width: 0; }
+.settings-tab-panel[hidden] { display: none; }
+.mute-media-library-controls select { background: var(--panel); color: #f2f5ef; border: 1px solid var(--panel-edge); border-radius: .5rem; padding: .55rem; font: inherit; font-size: .85rem; flex: 1 1 15rem; min-width: 0; max-width: 100%; }

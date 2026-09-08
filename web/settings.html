@@ -13,6 +13,13 @@
       <a class="settings-link" href="/">Back to preview</a>
     </header>
     <main class="settings-page">
+      <div class="settings-tabs" role="tablist" aria-label="Settings categories">
+        <button type="button" role="tab" id="tab-video" aria-controls="settings-video" aria-selected="true" tabindex="0">Video</button>
+        <button type="button" role="tab" id="tab-devices" aria-controls="settings-devices" aria-selected="false" tabindex="-1">Devices</button>
+        <button type="button" role="tab" id="tab-network" aria-controls="settings-network" aria-selected="false" tabindex="-1">Network</button>
+        <button type="button" role="tab" id="tab-security" aria-controls="settings-security" aria-selected="false" tabindex="-1">Security</button>
+      </div>
+      <div class="settings-tab-panel" role="tabpanel" id="settings-video" aria-labelledby="tab-video" tabindex="0">
       <section class="panel" aria-labelledby="mute-media-heading">
         <h2 id="mute-media-heading">Video mute replacement</h2>
         <p>Choose an image or a silent looping video to show when video output is muted. Your local preview stays live. Without a replacement, the output is black.</p>
@@ -24,6 +31,13 @@
             <img id="mute-media-image" alt="Video mute replacement" hidden>
             <video id="mute-media-video" controls muted loop playsinline preload="metadata" aria-label="Video mute replacement preview" hidden></video>
           </div>
+          <label for="mute-media-library">Saved media</label>
+          <div class="controls mute-media-library-controls">
+            <select id="mute-media-library" disabled aria-label="Saved replacement media"></select>
+            <button id="mute-media-use" type="button" disabled>Use selected</button>
+            <button id="mute-media-delete" type="button" class="secondary" disabled>Delete selected</button>
+          </div>
+          <p>Imported media stays in your library when you switch to another image, video, Tarsier or black output. Deleting the active media switches to black output.</p>
           <p id="mute-media-name">Loading replacement…</p>
           <div class="controls">
             <button id="mute-media-save" type="submit" disabled>Upload and use</button>
@@ -33,7 +47,8 @@
           <p id="mute-media-status" role="status" aria-live="polite"></p>
         </form>
       </section>
-
+      </div>
+      <div class="settings-tab-panel" role="tabpanel" id="settings-devices" aria-labelledby="tab-devices" tabindex="0" hidden>
       <section class="panel" aria-labelledby="devices-heading">
         <h2 id="devices-heading">Camera and microphones</h2>
         <form id="devices-form">
@@ -46,6 +61,28 @@
           <p id="devices-status" role="status" aria-live="polite">Loading devices…</p>
         </form>
       </section>
+      </div>
+      <div class="settings-tab-panel" role="tabpanel" id="settings-network" aria-labelledby="tab-network" tabindex="0" hidden>
+      <section class="panel" aria-labelledby="network-heading">
+        <h2 id="network-heading">Network access</h2>
+        <p>Choose which devices can open the preview and camera controls.</p>
+        <form id="network-form">
+          <fieldset id="network-options" disabled>
+            <legend>Allow access from other devices</legend>
+            <div class="segmented-control network-choice">
+              <label><input type="radio" name="lan_access" value="false"> <span>Local only</span></label>
+              <label><input type="radio" name="lan_access" value="true"> <span>Local network</span></label>
+            </div>
+          </fieldset>
+          <p id="network-description">Loading settings…</p>
+          <p class="network-notice">Network access includes live video, saved media, and camera controls. Enable access protection before sharing access. HTTP does not encrypt passwords or tokens; use HTTPS or an encrypted tunnel on untrusted networks.</p>
+          <p id="network-address"></p>
+          <button id="network-save" type="submit" disabled>Save and restart</button>
+          <p id="network-status" role="status" aria-live="polite"></p>
+        </form>
+      </section>
+      </div>
+      <div class="settings-tab-panel" role="tabpanel" id="settings-security" aria-labelledby="tab-security" tabindex="0" hidden>
       <section class="panel" aria-labelledby="security-heading">
         <h2 id="security-heading">Access protection</h2>
         <p id="auth-summary">Loading access settings…</p>
@@ -83,24 +120,7 @@
         <ul id="token-list"></ul>
         <p id="token-status" role="status" aria-live="polite"></p>
       </section>
-      <section class="panel" aria-labelledby="network-heading">
-        <h2 id="network-heading">Network access</h2>
-        <p>Choose which devices can open the preview and camera controls.</p>
-        <form id="network-form">
-          <fieldset id="network-options" disabled>
-            <legend>Allow access from other devices</legend>
-            <div class="segmented-control network-choice">
-              <label><input type="radio" name="lan_access" value="false"> <span>Local only</span></label>
-              <label><input type="radio" name="lan_access" value="true"> <span>Local network</span></label>
-            </div>
-          </fieldset>
-          <p id="network-description">Loading settings…</p>
-          <p class="network-notice">Network access includes live video, saved media, and camera controls. Enable access protection before sharing access. HTTP does not encrypt passwords or tokens; use HTTPS or an encrypted tunnel on untrusted networks.</p>
-          <p id="network-address"></p>
-          <button id="network-save" type="submit" disabled>Save and restart</button>
-          <p id="network-status" role="status" aria-live="polite"></p>
-        </form>
-      </section>
+      </div>
     </main>
     <script type="module" src="/assets/settings.js"></script>
   </body>

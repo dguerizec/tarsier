@@ -213,11 +213,14 @@ model unless the Depth map identity is selected.
 The video button beside the microphone mute button masks the virtual camera
 output while keeping capture and the local preview active. New settings use a
 built-in Tarsier logo image by default. In **Settings →
-Video mute replacement**, upload a PNG/JPEG image or MP4/WebM video (up to
+Video → Video mute replacement**, upload a PNG/JPEG image or MP4/WebM video (up to
 100 MB), restore **Use Tarsier image**, or choose **Use black output**. Replacements fit inside the output
 frame without cropping or distortion. Videos loop without audio, pause when
-output is unmuted, and restart on the next mute. The selected file and mute
-state are saved locally across daemon restarts and camera power cycles.
+output is unmuted, and restart on the next mute. Imported media is kept in a local library, so switching to Tarsier, black output
+or another saved image or video does not delete it. Use **Delete selected** to
+remove a library item; deleting the active item switches muted output to black.
+The library, selected file and mute state survive daemon restarts and camera
+power cycles. Existing selected custom media is retained in the library.
 If a replacement cannot be loaded or played, muted output stays black.
 Tarsier recordings follow this muted output; preview photos remain unchanged.
 

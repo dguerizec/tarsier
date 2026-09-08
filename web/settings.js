@@ -1,3 +1,34 @@
+const settingsTabs = [...document.querySelectorAll('[role="tab"]')];
+function selectSettingsTab(id, focus = false) {
+  const selected = settingsTabs.find(tab => tab.id === `tab-${id}`) || settingsTabs[0];
+  for (const tab of settingsTabs) {
+    const active = tab === selected;
+    tab.setAttribute('aria-selected', String(active));
+    tab.tabIndex = active ? 0 : -1;
+    document.getElementById(tab.getAttribute('aria-controls')).hidden = !active;
+  }
+  if (selected.id !== 'tab-video') document.querySelector('#mute-media-video').pause();
+  if (focus) selected.focus();
+}
+for (const [index, tab] of settingsTabs.entries()) {
+  tab.addEventListener('click', () => {
+    selectSettingsTab(tab.id.slice(4));
+    history.replaceState(null, '', `#${tab.id.slice(4)}`);
+  });
+  tab.addEventListener('keydown', event => {
+    const next = event.key === 'ArrowRight' ? (index + 1) % settingsTabs.length
+      : event.key === 'ArrowLeft' ? (index + settingsTabs.length - 1) % settingsTabs.length
+      : event.key === 'Home' ? 0 : event.key === 'End' ? settingsTabs.length - 1 : null;
+    if (next === null) return;
+    event.preventDefault();
+    const id = settingsTabs[next].id.slice(4);
+    selectSettingsTab(id, true);
+    history.replaceState(null, '', `#${id}`);
+  });
+}
+window.addEventListener('hashchange', () => selectSettingsTab(location.hash.slice(1)));
+selectSettingsTab(location.hash.slice(1));
+
 const form = document.querySelector("#network-form");
 const options = document.querySelector("#network-options");
 const save = document.querySelector("#network-save");
@@ -250,6 +281,9 @@ const muteMediaFile = document.querySelector('#mute-media-file');
 const muteMediaSave = document.querySelector('#mute-media-save');
 const muteMediaDefault = document.querySelector('#mute-media-default');
 const muteMediaRemove = document.querySelector('#mute-media-remove');
+const muteMediaLibrary = document.querySelector('#mute-media-library');
+const muteMediaUse = document.querySelector('#mute-media-use');
+const muteMediaDelete = document.querySelector('#mute-media-delete');
 const muteMediaStatus = document.querySelector('#mute-media-status');
 let muteMediaState = null;
 let muteMediaPending = false;
@@ -258,6 +292,20 @@ function renderMuteMedia() {
   muteMediaFile.disabled = muteMediaPending || !muteMediaState?.can_apply;
   muteMediaSave.disabled = muteMediaFile.disabled || !muteMediaFile.files.length;
   const selection = muteMediaState?.media.selection;
+  const previousChoice = muteMediaLibrary.value;
+  const library = muteMediaState?.library || [];
+  muteMediaLibrary.replaceChildren(...library.map(item => {
+    const option = document.createElement('option');
+    option.value = item.filename;
+    option.textContent = `${item.name} · ${item.kind === 'video' ? 'Video' : 'Image'}${selection?.filename === item.filename ? ' · Active' : ''}`;
+    return option;
+  }));
+  if (!library.length) muteMediaLibrary.add(new Option('No saved media yet', ''));
+  else if (library.some(item => item.filename === previousChoice)) muteMediaLibrary.value = previousChoice;
+  else if (library.some(item => item.filename === selection?.filename)) muteMediaLibrary.value = selection.filename;
+  muteMediaLibrary.disabled = muteMediaFile.disabled || !library.length;
+  muteMediaUse.disabled = muteMediaLibrary.disabled || muteMediaLibrary.value === selection?.filename;
+  muteMediaDelete.disabled = muteMediaLibrary.disabled;
   muteMediaDefault.disabled = muteMediaFile.disabled;
   muteMediaRemove.disabled = muteMediaFile.disabled || !selection;
   document.querySelector('#mute-media-name').textContent = selection
@@ -322,3 +370,21 @@ async function selectBuiltinMuteMedia(useDefault) {
 muteMediaRemove.addEventListener('click', () => selectBuiltinMuteMedia(false));
 muteMediaDefault.addEventListener('click', () => selectBuiltinMuteMedia(true));
 loadMuteMedia().catch(error => { muteMediaStatus.textContent = error.message; });
+
+muteMediaLibrary.addEventListener('change', renderMuteMedia);
+async function changeSavedMuteMedia(remove) {
+  if (muteMediaPending || !muteMediaLibrary.value) return;
+  const filename = muteMediaLibrary.value;
+  muteMediaPending = true;
+  renderMuteMedia();
+  muteMediaStatus.textContent = remove ? 'Deleting media…' : 'Loading media…';
+  try {
+    const response = await fetch(`/api/v1/settings/video-mute/library?filename=${encodeURIComponent(filename)}`, {method: remove ? 'DELETE' : 'POST'});
+    if (!response.ok) throw new Error('Could not change saved media. Reload settings and try again.');
+    muteMediaState = await response.json();
+    muteMediaStatus.textContent = remove ? 'Media deleted from the library.' : 'Saved media selected for muted video output.';
+  } catch (error) { muteMediaStatus.textContent = error.message; }
+  finally { muteMediaPending = false; renderMuteMedia(); }
+}
+muteMediaUse.addEventListener('click', () => changeSavedMuteMedia(false));
+muteMediaDelete.addEventListener('click', () => changeSavedMuteMedia(true));
