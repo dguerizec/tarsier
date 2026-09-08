@@ -353,7 +353,7 @@ function renderImageSettings(camera) {
     : newestSample == null ? "Awaiting camera readback"
     : `Readback ${age(newestSample)}`;
 
-  const error = imageSettingError || settings.error;
+  const error = camera.available ? imageSettingError || settings.error : null;
   $("#image-settings-error").hidden = !error;
   $("#image-settings-error").textContent = error || "";
 
@@ -612,7 +612,7 @@ function gestureDetail(perception) {
 
 function renderBuiltInGestures(camera) {
   const gestures = camera.built_in_gestures || {};
-  $("#gesture-readback").textContent = gestures.sample_at_ms == null
+  $("#gesture-readback").textContent = !camera.available ? "Camera unavailable" : gestures.sample_at_ms == null
     ? "Awaiting camera readback"
     : `Measured ${age(gestures.sample_at_ms)}`;
   for (const control of builtInGestureControls) {
@@ -649,7 +649,8 @@ function renderZoom(camera) {
     || autoZoomPending || faceTrackingPending || handsTrackingPending;
   $("#auto-zoom-readback").textContent = autoZoomPending
     ? "Switching auto zoom…"
-    : autoZoom.error ? `Auto zoom failed: ${autoZoom.error}.`
+    : !camera.available ? "Camera unavailable."
+    : autoZoom.error ? "Auto zoom unavailable. See camera details."
     : !faceTracking.enabled ? "Auto zoom needs face tracking."
     : !autoZoom.enabled ? "Auto zoom is off."
     : !autoZoom.calibrated ? "Auto zoom is waiting for a fresh face."
@@ -915,10 +916,15 @@ function render(next) {
   renderCameraCapabilities(camera);
   renderOutputMode(next.video_effects);
   renderBackground(next.video_effects);
+  const cameraMissing = !camera.available && camera.adapter === "obsbot-tiny-2";
+  const previewStatus = cameraMissing ? "Camera disconnected · reconnect the USB cable"
+    : !cameraIsPowered(camera) ? "Camera off"
+    : pipeline.error ? "Video unavailable · check the camera connection"
+    : "Waiting for video";
+  $("#preview-placeholder").textContent = previewStatus;
   $("#pipeline-summary").textContent = pipeline.running
     ? ` · ${pipeline.fps.toFixed(1)} fps · ${pipeline.frame_count} frames`
-    : !cameraIsPowered(camera) ? "Camera off"
-    : pipeline.error || "Pipeline stopped";
+    : ` · ${cameraMissing ? "Camera disconnected" : !cameraIsPowered(camera) ? "Camera off" : pipeline.error ? "Video unavailable" : "Pipeline stopped"}`;
   $("#video-resolution").textContent = pipeline.width ? `${pipeline.width}×${pipeline.height}` : "Resolution";
   for (const button of document.querySelectorAll("[data-resolution]")) {
     button.disabled = resolutionPending || recordingState?.active || !socketConnected || !daemonRestartAvailable;
@@ -931,9 +937,29 @@ function render(next) {
   $("#gesture").textContent = perception.gesture || "No gesture";
   $("#confidence").textContent = gestureDetail(perception);
   $("#gesture-icon").classList.toggle("active", perception.gesture === "open_palm");
+  const phone = perception.phone_near_mouth || {};
+  $("#phone-gesture").classList.toggle("active", Boolean(phone.active));
+  $("#phone-gesture-state").textContent = phone.active ? "Active" : phone.candidate ? "Hold…" : "Idle";
+  $("#phone-gesture-progress").value = phone.active ? 1 : phone.hold_progress || 0;
+  const phoneReasons = {
+    waiting_for_observation: "Waiting for observation", worker_offline: "Worker offline",
+    observations_stale: "Observations expired", gesture_released: "Gesture released",
+    disabled: "Detector disabled", shutdown: "Daemon stopping", face_missing: "Face not detected",
+    hand_missing: "Hand not detected", image_dimensions_missing: "Waiting for image dimensions",
+    invalid_landmarks: "Landmarks unavailable", phone_shape_missing: "Make the phone hand shape",
+    pinky_too_far: "Bring your pinky closer to your mouth", hand_changed: "Keep the same hand steady",
+    holding: "Keep holding", active: "Phone gesture detected", release_pending: "Releasing…",
+  };
+  $("#phone-gesture-detail").textContent = [
+    phoneReasons[phone.reason] || "Waiting for observation",
+    phone.mouth_distance == null ? null : `Pinky distance: ${phone.mouth_distance.toFixed(2)} face widths`,
+  ].filter(Boolean).join(" · ");
   $("#perception-error").hidden = !perception.error;
   $("#perception-error").textContent = perception.error || "";
-  const cameraError = [
+  const cameraErrors = [...new Set([
+    pipeline.error,
+    imageSettingError,
+    camera.image_settings?.error,
     cameraControlError,
     cameraPowerError,
     camera.power_error,
@@ -947,9 +973,11 @@ function render(next) {
     camera.zoom_error,
     camera.hdr_error,
     camera.built_in_gestures?.error,
-  ].filter(Boolean).join(" · ");
-  $("#camera-error").hidden = !cameraError;
-  $("#camera-error").textContent = cameraError || "";
+  ].filter(Boolean))];
+  $("#camera-error").hidden = cameraMissing || cameraErrors.length === 0;
+  $("#camera-error").textContent = "Some camera features are unavailable. See technical details.";
+  $("#camera-diagnostics").hidden = cameraErrors.length === 0;
+  $("#camera-diagnostics-text").textContent = cameraErrors.join("\n\n");
   document.querySelectorAll("[data-action], [data-preset]").forEach((button) => {
     button.disabled = !cameraControlsAvailable(camera) || faceTrackingPending
       || handsTrackingPending || trackingPending;

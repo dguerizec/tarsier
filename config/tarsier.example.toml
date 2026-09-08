@@ -47,6 +47,15 @@ cooldown_ms = 3000
 face_dwell_ms = 300
 face_release_ms = 500
 
+[perception.phone_near_mouth]
+enabled = true
+dwell_ms = 300
+release_ms = 200
+stale_ms = 500
+# Pinky-to-mouth distance in face widths, with a wider exit zone.
+enter_radius = 0.35
+exit_radius = 0.45
+
 [avatar]
 enabled = true
 engine = "liveportrait"

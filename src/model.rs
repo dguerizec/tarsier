@@ -410,6 +410,7 @@ pub struct PerceptionState {
     pub peak_gesture: Option<String>,
     pub peak_gesture_confidence: Option<f32>,
     pub peak_gesture_at_ms: Option<u64>,
+    pub phone_near_mouth: crate::phone_gesture::PhoneGestureState,
     pub sample_at_ms: Option<u64>,
     pub latency_ms: Option<f32>,
 }
@@ -446,6 +447,10 @@ pub struct ScenarioActivation {
 pub struct PerceptionObservation {
     pub frame_id: u64,
     pub captured_at_ms: u64,
+    #[serde(default)]
+    pub image_width: u32,
+    #[serde(default)]
+    pub image_height: u32,
     #[serde(default)]
     pub face_detected: bool,
     #[serde(default)]

@@ -467,7 +467,11 @@ pub async fn start(config: CameraConfig, runtime: Runtime) -> Result<Option<Came
                     state.camera.powered_on = None;
                 })
                 .await;
-            *handle.telemetry.lock().await = Some(spawn_telemetry_updates(telemetry_rx, runtime));
+            *handle.telemetry.lock().await = Some(spawn_telemetry_updates(
+                telemetry_rx,
+                runtime,
+                config.control_device.clone(),
+            ));
             Ok(Some(handle))
         }
         CameraAdapter::ObsbotTiny2 => {
@@ -508,7 +512,11 @@ pub async fn start(config: CameraConfig, runtime: Runtime) -> Result<Option<Came
                     "low-priority AI telemetry polling is enabled"
                 );
             }
-            *handle.telemetry.lock().await = Some(spawn_telemetry_updates(telemetry_rx, runtime));
+            *handle.telemetry.lock().await = Some(spawn_telemetry_updates(
+                telemetry_rx,
+                runtime,
+                config.control_device.clone(),
+            ));
             Ok(Some(handle))
         }
     }
@@ -1373,9 +1381,17 @@ fn speed_units(control: ZoomControl, direction: i8, speed_fraction: f64) -> Resu
 fn spawn_telemetry_updates(
     mut updates: tokio_mpsc::UnboundedReceiver<TelemetryUpdate>,
     runtime: Runtime,
+    control_device: String,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         while let Some(update) = updates.recv().await {
+            // The adapter remains configured when its USB device disappears.
+            let available = tokio::fs::try_exists(&control_device)
+                .await
+                .unwrap_or(false);
+            runtime
+                .update(|state| state.camera.available = available)
+                .await;
             match update {
                 TelemetryUpdate::Gimbal(sample) => {
                     runtime
@@ -1809,6 +1825,40 @@ mod tests {
             data.copy_from_slice(&reply);
             self.operations.push("get");
             Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn telemetry_tracks_device_removal_and_return() {
+        let runtime = Runtime::new();
+        runtime.update(|state| state.camera.available = true).await;
+        let device = std::env::temp_dir().join(format!(
+            "tarsier-device-presence-{}-{}",
+            std::process::id(),
+            unix_ms()
+        ));
+        for present in [false, true, false] {
+            if present {
+                std::fs::write(&device, b"").unwrap();
+            } else if device.exists() {
+                std::fs::remove_file(&device).unwrap();
+            }
+            let (tx, rx) = tokio_mpsc::unbounded_channel();
+            let task =
+                spawn_telemetry_updates(rx, runtime.clone(), device.to_str().unwrap().to_owned());
+            tx.send(TelemetryUpdate::Failure {
+                kind: TelemetryKind::Status,
+                error: "readback unavailable".into(),
+                retry_after: Duration::from_secs(1),
+            })
+            .unwrap();
+            drop(tx);
+            task.await.unwrap();
+            assert_eq!(runtime.state().await.camera.available, present);
+            assert_eq!(
+                runtime.state().await.camera.zoom_error.as_deref(),
+                Some("readback unavailable")
+            );
         }
     }
 
