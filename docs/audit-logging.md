@@ -19,8 +19,11 @@ separates daemon runs even when they append to the same daily file.
   Logging wraps authentication, so denied attempts are included. The peer may
   be the local MCP gateway; it does not identify the human or agent behind it.
 - `camera.power.requested` and `camera.power.completed`: the requested on/off
-  state and successful completion of the API operation. A failed operation has
-  its HTTP error status and no completed entry.
+  state and successful completion of power reconciliation. A failed API operation
+  has its HTTP error status and no completed entry.
+- `camera.power.observed`: a hardware state change detected by passive readback,
+  including physically raising or lowering the camera head. A successful capture
+  reconciliation produces `camera.power.completed` without a hardware power write.
 - `camera.power.command`, `camera.power.command_sent`, and
   `camera.power.command_failed`: an actual hardware power transition attempt
   and the USB send outcome. A repeated request for the current state sends no

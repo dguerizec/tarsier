@@ -66,6 +66,7 @@ pub struct AiGestureStatus {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CameraStatus {
+    pub powered_on: Option<bool>,
     pub tracking: Option<bool>,
     pub zoom_percent: Option<u8>,
     pub hdr: Option<bool>,
@@ -284,6 +285,11 @@ pub fn decode_camera_status(block: &[u8]) -> Result<CameraStatus, FrameError> {
         _ => None,
     };
     Ok(CameraStatus {
+        powered_on: match block[0x09] {
+            1 => Some(true),
+            3 | 4 => Some(false),
+            _ => None,
+        },
         tracking,
         zoom_percent: (zoom_percent <= 100).then_some(zoom_percent as u8),
         hdr: flag(HDR_OFFSET),
@@ -451,6 +457,23 @@ mod tests {
     }
 
     #[test]
+    fn decodes_power_from_device_status_and_ignores_reserved_byte() {
+        for (value, expected) in [
+            (1, Some(true)),
+            (3, Some(false)),
+            (4, Some(false)),
+            (0, None),
+            (2, None),
+            (255, None),
+        ] {
+            let mut block = [0; FRAME_SIZE];
+            block[0x02] = 3;
+            block[0x09] = value;
+            assert_eq!(decode_camera_status(&block).unwrap().powered_on, expected);
+        }
+    }
+
+    #[test]
     fn decodes_tracking_zoom_and_hdr_from_selector_six_status() {
         let status = |mode, sub_mode, zoom_percent: u16, hdr, face_ae| {
             let mut block = [0_u8; FRAME_SIZE];
@@ -464,6 +487,7 @@ mod tests {
         assert_eq!(
             decode_camera_status(&status(0, 0, 0_u16, 0, 0)).unwrap(),
             CameraStatus {
+                powered_on: None,
                 tracking: Some(false),
                 zoom_percent: Some(0),
                 hdr: Some(false),
@@ -473,6 +497,7 @@ mod tests {
         assert_eq!(
             decode_camera_status(&status(2, 0, 50_u16, 1, 1)).unwrap(),
             CameraStatus {
+                powered_on: None,
                 tracking: Some(true),
                 zoom_percent: Some(50),
                 hdr: Some(true),
@@ -482,6 +507,7 @@ mod tests {
         assert_eq!(
             decode_camera_status(&status(2, 4, 100_u16, 0, 0)).unwrap(),
             CameraStatus {
+                powered_on: None,
                 tracking: Some(true),
                 zoom_percent: Some(100),
                 hdr: Some(false),
@@ -491,6 +517,7 @@ mod tests {
         assert_eq!(
             decode_camera_status(&status(6, 0, 101_u16, 2, 2)).unwrap(),
             CameraStatus {
+                powered_on: None,
                 tracking: None,
                 zoom_percent: None,
                 hdr: None,
@@ -500,6 +527,7 @@ mod tests {
         assert_eq!(
             decode_camera_status(&status(2, 9, 25_u16, 1, 1)).unwrap(),
             CameraStatus {
+                powered_on: None,
                 tracking: None,
                 zoom_percent: Some(25),
                 hdr: Some(true),

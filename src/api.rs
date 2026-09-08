@@ -217,6 +217,7 @@ pub fn router_with_controls(
         video_applications: crate::video_clients::Monitor::default(),
         shutdown,
     };
+    spawn_camera_power_monitor(state.clone());
     let router = Router::new()
         .route("/", get(index))
         .route("/settings", get(settings_page))
@@ -911,12 +912,56 @@ struct CameraPowerRequest {
     enabled: bool,
 }
 
+fn spawn_camera_power_monitor(state: ApiState) {
+    if state.pipeline.is_none() {
+        return;
+    }
+    tokio::spawn(async move {
+        let mut shutdown = state.shutdown.clone();
+        let mut tick = tokio::time::interval(std::time::Duration::from_millis(250));
+        loop {
+            tokio::select! {
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() {
+                        break;
+                    }
+                }
+                _ = tick.tick() => {
+                    let _power_change = state.camera_power_control.lock().await;
+                    let Some(camera) = state.camera.read().await.clone() else {
+                        continue;
+                    };
+                    let enabled = camera.is_powered_on();
+                    let runtime = state.runtime.state().await;
+                    if runtime.camera.powered_on == Some(enabled) {
+                        continue;
+                    }
+                    crate::audit::record("camera.power.observed", json!({"enabled": enabled}));
+                    let response = apply_camera_power(&state, enabled, true).await;
+                    if !response.status().is_success() {
+                        tracing::warn!(status = %response.status(), "failed to reconcile physical camera power");
+                    }
+                }
+            }
+        }
+    });
+}
+
 async fn set_camera_power(
     State(state): State<ApiState>,
     Json(request): Json<CameraPowerRequest>,
 ) -> Response {
-    crate::audit::record("camera.power.requested", json!({"enabled": request.enabled}));
+    crate::audit::record(
+        "camera.power.requested",
+        json!({"enabled": request.enabled}),
+    );
     let _power_change = state.camera_power_control.lock().await;
+    apply_camera_power(&state, request.enabled, false).await
+}
+
+// Called with camera_power_control held, including when reconciling telemetry.
+async fn apply_camera_power(state: &ApiState, enabled: bool, observed: bool) -> Response {
+    let request = CameraPowerRequest { enabled };
     let _video_change = state.video_output_control.lock().await;
     if !request.enabled {
         let _ = state.recorder.stop().await;
@@ -933,10 +978,15 @@ async fn set_camera_power(
     };
 
     if request.enabled {
-        if !camera.is_powered_on()
+        if !observed
+            && !camera.is_powered_on()
             && let Err(error) = camera.set_powered_on(true).await
         {
-            record_camera_power_error(&state, &error).await;
+            record_camera_power_error(state, &error).await;
+            return command_error(error);
+        }
+        if let Err(error) = pipeline.set_enabled(true).await {
+            record_camera_power_error(state, &error).await;
             return command_error(error);
         }
         state
@@ -946,12 +996,8 @@ async fn set_camera_power(
                 runtime.camera.power_error = None;
             })
             .await;
-        if let Err(error) = pipeline.set_enabled(true).await {
-            record_camera_power_error(&state, &error).await;
-            return command_error(error);
-        }
     } else {
-        if camera.is_powered_on() {
+        if camera.is_powered_on() || state.runtime.state().await.camera.powered_on != Some(false) {
             let source = state.runtime.state().await.audio_virtual.source;
             if source
                 .as_deref()
@@ -971,13 +1017,15 @@ async fn set_camera_power(
                     return response;
                 }
             }
-            if let Err(error) = camera.set_face_tracking_speed(0, 0, 0.0).await {
-                record_camera_power_error(&state, &error).await;
+            if camera.is_powered_on()
+                && let Err(error) = camera.set_face_tracking_speed(0, 0, 0.0).await
+            {
+                record_camera_power_error(state, &error).await;
                 return command_error(error);
             }
             state.face_tracking.lock().await.set_enabled(false);
             state.hands_tracking.lock().await.set_enabled(false);
-            clear_pan_tilt_motion(&state).await;
+            clear_pan_tilt_motion(state).await;
             state
                 .runtime
                 .update(|runtime| {
@@ -985,16 +1033,20 @@ async fn set_camera_power(
                     runtime.camera.hands_tracking = HandsTrackingState::default();
                 })
                 .await;
-            if let Err(error) = save_face_tracking_setting(&state, false).await {
+            if let Err(error) = save_face_tracking_setting(state, false).await {
                 return user_settings_error(error);
             }
-            if let Err(error) = save_hands_tracking_setting(&state, false).await {
+            if let Err(error) = save_hands_tracking_setting(state, false).await {
                 return user_settings_error(error);
             }
             camera.begin_power_transition();
         }
         if let Err(error) = pipeline.set_enabled(false).await {
-            let rollback_error = pipeline.set_enabled(true).await.err();
+            let rollback_error = if observed {
+                None
+            } else {
+                pipeline.set_enabled(true).await.err()
+            };
             camera.end_power_transition();
             let error = if let Some(rollback_error) = rollback_error {
                 anyhow::anyhow!(
@@ -1003,10 +1055,11 @@ async fn set_camera_power(
             } else {
                 anyhow::anyhow!("failed to stop video capture: {error}")
             };
-            record_camera_power_error(&state, &error).await;
+            record_camera_power_error(state, &error).await;
             return command_error(error);
         }
-        if camera.is_powered_on()
+        if !observed
+            && camera.is_powered_on()
             && let Err(error) = camera.set_powered_on(false).await
         {
             let rollback_error = pipeline.set_enabled(true).await.err();
@@ -1018,7 +1071,7 @@ async fn set_camera_power(
             } else {
                 anyhow::anyhow!("failed to put camera to sleep: {error}")
             };
-            record_camera_power_error(&state, &error).await;
+            record_camera_power_error(state, &error).await;
             return command_error(error);
         }
         camera.end_power_transition();
@@ -1047,8 +1100,11 @@ async fn set_camera_power(
             .await;
     }
 
-    crate::audit::record("camera.power.completed", json!({"enabled": request.enabled}));
-    record_camera_command(&state, "camera.power", json!({"enabled": request.enabled})).await;
+    crate::audit::record(
+        "camera.power.completed",
+        json!({"enabled": request.enabled}),
+    );
+    record_camera_command(state, "camera.power", json!({"enabled": request.enabled})).await;
     StatusCode::ACCEPTED.into_response()
 }
 
@@ -4881,6 +4937,50 @@ mod tests {
         assert!(include_str!("../web/index.html").contains("id=\"image-settings-groups\""));
         assert!(include_str!("../web/app.js").contains("/api/v1/camera/image-settings/"));
         assert!(include_str!("../web/app.js").contains("face-priority-auto-exposure"));
+    }
+
+    #[tokio::test]
+    async fn observed_camera_power_stops_and_restores_capture() {
+        let mut config = Config::default();
+        config.camera.adapter = CameraAdapter::Mock;
+        config.perception.enabled = false;
+        let runtime = Runtime::new();
+        let camera = camera::start(config.camera.clone(), runtime.clone())
+            .await
+            .unwrap()
+            .unwrap();
+        let pipeline = VideoPipelineControl::mock(runtime.clone());
+        pipeline.set_enabled(true).await.unwrap();
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let _app = router_with_controls(
+            config,
+            runtime.clone(),
+            PreviewHub::new(),
+            Some(camera.clone()),
+            ApiOptions {
+                pipeline: Some(pipeline),
+                ..ApiOptions::default()
+            },
+            shutdown_rx,
+        );
+        for enabled in [false, true, false, true] {
+            // Change only the adapter, bypassing the HTTP power endpoint.
+            camera.set_powered_on(enabled).await.unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                loop {
+                    let state = runtime.state().await;
+                    if state.camera.powered_on == Some(enabled)
+                        && state.pipeline.enabled == enabled
+                        && state.pipeline.running == enabled
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("physical power must reach the runtime and capture pipeline");
+        }
     }
 
     #[tokio::test]
