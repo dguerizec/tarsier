@@ -222,7 +222,9 @@ remove a library item; deleting the active item restores the default Tarsier ima
 The library, selected file and mute state survive daemon restarts and camera
 power cycles. Existing selected custom media is retained in the library.
 If a replacement cannot be loaded or played, muted output stays black.
-Tarsier recordings follow this muted output; preview photos remain unchanged.
+Tarsier recordings and preview photos use the real processed camera image,
+including its effects, independently of the video output mute. This lets you
+record a new welcome clip while a replacement is shown in your conference.
 
 Scroll over the preview or pinch with two fingers to zoom from x1 to x4.
 One-finger dragging still pans and tilts; pinching stops that movement.
