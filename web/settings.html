@@ -22,7 +22,7 @@
       <div class="settings-tab-panel" role="tabpanel" id="settings-video" aria-labelledby="tab-video" tabindex="0">
       <section class="panel" aria-labelledby="mute-media-heading">
         <h2 id="mute-media-heading">Video mute replacement</h2>
-        <p>Choose an image or a silent looping video to show when video output is muted. Your local preview stays live. Without a replacement, the output is black.</p>
+        <p>Choose an image or a silent looping video to show when video output is muted. Your local preview stays live. The Tarsier image is the default; black output remains available as an explicit choice.</p>
         <form id="mute-media-form">
           <label for="mute-media-file">Image or video</label>
           <input id="mute-media-file" type="file" accept="image/png,image/jpeg,video/mp4,video/webm,.png,.jpg,.jpeg,.mp4,.webm" disabled>
@@ -37,11 +37,11 @@
             <button id="mute-media-use" type="button" disabled>Use selected</button>
             <button id="mute-media-delete" type="button" class="secondary" disabled>Delete selected</button>
           </div>
-          <p>Imported media stays in your library when you switch to another image, video, Tarsier or black output. Deleting the active media switches to black output.</p>
+          <p>Imported media stays in your library when you switch to another image, video, Tarsier or black output. Deleting the active media restores the default Tarsier image.</p>
           <p id="mute-media-name">Loading replacement…</p>
           <div class="controls">
             <button id="mute-media-save" type="submit" disabled>Upload and use</button>
-            <button id="mute-media-default" type="button" class="secondary" disabled>Use Tarsier image</button>
+            <button id="mute-media-default" type="button" class="secondary" disabled>Use Tarsier image (default)</button>
             <button id="mute-media-remove" type="button" class="secondary" disabled>Use black output</button>
           </div>
           <p id="mute-media-status" role="status" aria-live="polite"></p>

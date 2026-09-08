@@ -218,7 +218,7 @@ Video → Video mute replacement**, upload a PNG/JPEG image or MP4/WebM video (u
 frame without cropping or distortion. Videos loop without audio, pause when
 output is unmuted, and restart on the next mute. Imported media is kept in a local library, so switching to Tarsier, black output
 or another saved image or video does not delete it. Use **Delete selected** to
-remove a library item; deleting the active item switches muted output to black.
+remove a library item; deleting the active item restores the default Tarsier image.
 The library, selected file and mute state survive daemon restarts and camera
 power cycles. Existing selected custom media is retained in the library.
 If a replacement cannot be loaded or played, muted output stays black.
