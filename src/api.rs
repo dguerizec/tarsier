@@ -47,6 +47,7 @@ struct ApiState {
     stabilizer: Arc<Mutex<OpenPalmStabilizer>>,
     face_presence: Arc<Mutex<FacePresenceStabilizer>>,
     phone_gesture: Arc<Mutex<PhoneGestureDetector>>,
+    utterance_slots: Arc<tokio::sync::Semaphore>,
     preview: PreviewHub,
     camera: Arc<tokio::sync::RwLock<Option<CameraHandle>>>,
     pipeline: Option<VideoPipelineControl>,
@@ -205,6 +206,7 @@ pub fn router_with_controls(
         phone_gesture: Arc::new(Mutex::new(PhoneGestureDetector::new(
             config.perception.phone_near_mouth.clone(),
         ))),
+        utterance_slots: Arc::new(tokio::sync::Semaphore::new(16)),
         config,
         runtime,
         preview,
@@ -281,6 +283,7 @@ pub fn router_with_controls(
         )
         .route("/api/v1/audio/sources", get(audio_sources))
         .route("/api/v1/audio/meter", get(audio_meter))
+        .route("/api/v1/audio/utterances", get(audio_utterances))
         .route("/api/v1/audio/capture", post(set_audio_capture))
         .route("/api/v1/audio/exclusive", post(set_audio_exclusive))
         .route("/api/v1/audio/applications", get(audio_applications))
@@ -4179,6 +4182,35 @@ async fn set_audio_capture(
     }
     state.runtime.update(|current| audio.apply(current)).await;
     Json(json!({"source": request.source, "enabled": request.enabled})).into_response()
+}
+
+async fn audio_utterances(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    websocket: WebSocketUpgrade,
+) -> Response {
+    let Some(audio) = state.audio else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let Ok(permit) = state.utterance_slots.try_acquire_owned() else {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    };
+    websocket
+        .max_message_size(4096)
+        .max_frame_size(4096)
+        .on_upgrade(move |socket| async move {
+            let _permit = permit;
+            crate::utterances::stream(
+                socket,
+                audio,
+                state.runtime,
+                state.auth,
+                headers,
+                state.config.audio.virtual_source,
+                state.shutdown,
+            )
+            .await
+        })
 }
 
 async fn audio_meter(

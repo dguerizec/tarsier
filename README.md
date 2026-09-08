@@ -700,6 +700,9 @@ node --check web/app.js
 
 ### Phone near mouth detector (experimental)
 
+For client-owned start/end subscriptions, configurable audio pre-roll and a local
+live Whisper transcription client, see [audio subscriptions](docs/audio-subscriptions.md).
+
 The Perception panel displays an independent phone gesture detector: extend the
 thumb and pinky, curl the index/middle/ring fingers, and hold the pinky tip near
 the mouth. It emits `gesture.phone_near_mouth.started` after a continuous hold
