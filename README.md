@@ -150,13 +150,19 @@ sudo apt install \
   v4l-utils v4l2loopback-dkms v4l2loopback-utils
 ```
 
-Load a loopback device matching the example configuration:
+When video loopback is enabled, Tarsier reuses the configured output device or
+attempts to create it with `v4l2loopback-ctl` if it is missing, using the name
+`Tarsier Camera` and exclusive capabilities. The kernel module must already be
+loaded, and the user must have access to `/dev/v4l2loopback`. Creation failures
+are reported at startup; Tarsier does not invoke `sudo`.
+
+To load the module and create a device matching the example configuration manually:
 
 ```sh
 sudo modprobe v4l2loopback video_nr=42 'card_label=Tarsier Camera' exclusive_caps=1
 ```
 
-The physical camera and `/dev/video42` must be free before the daemon starts.
+The physical camera and any existing `/dev/video42` must be free before the daemon starts.
 The example uses the stable `/dev/v4l/by-id/...-video-index0` camera symlink so
 a manual restart still finds the device after USB re-enumeration.
 

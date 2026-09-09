@@ -357,6 +357,44 @@ impl Drop for VirtualVideoOutput {
     }
 }
 
+async fn ensure_virtual_video_device(device: &str, utility: &str) -> Result<()> {
+    if Path::new(device).try_exists()? {
+        return Ok(());
+    }
+    tracing::info!(device, "creating missing virtual camera");
+    let mut command = tokio::process::Command::new(utility);
+    command
+        .args(["add", "-n", "Tarsier Camera", "-x", "1", device])
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(Duration::from_secs(10), command.output())
+        .await
+        .with_context(|| format!("timed out creating virtual camera {device}"))?
+        .with_context(|| {
+            format!("failed to create virtual camera {device}: install v4l2loopback-ctl and ensure it is executable")
+        })?;
+    // udev assigns ownership and ACLs asynchronously after device creation.
+    // Another starter may also have created it while the command was running.
+    if output.status.success() || Path::new(device).try_exists()? {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match std::fs::OpenOptions::new().read(true).write(true).open(device) {
+                Ok(_) => return Ok(()),
+                Err(error) if Instant::now() >= deadline => {
+                    return Err(error).with_context(|| {
+                        format!("virtual camera {device} was created but is not accessible; check device permissions")
+                    });
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+            }
+        }
+    }
+    bail!(
+        "failed to create virtual camera {device} ({}): {}. Ensure the v4l2loopback module is loaded and you have access to /dev/v4l2loopback",
+        output.status,
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+}
+
 impl VideoPipeline {
     pub async fn start(config: VideoConfig, runtime: Runtime, preview: PreviewHub) -> Result<Self> {
         gst::init().context("failed to initialize GStreamer")?;
@@ -366,6 +404,7 @@ impl VideoPipeline {
         let desired_running = Arc::new(AtomicBool::new(true));
         let desired_reserved = Arc::new(AtomicBool::new(false));
         let virtual_output = if config.loopback_enabled {
+            ensure_virtual_video_device(&config.output_device, "v4l2loopback-ctl").await?;
             Some(VirtualVideoOutput::start(
                 &config,
                 preview.clone(),
@@ -1176,6 +1215,31 @@ fn wait_for_retry(running: &AtomicBool, desired_running: &AtomicBool, delay: Dur
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn virtual_device_existing_path_does_not_require_utility() {
+        ensure_virtual_video_device("/dev/null", "/nonexistent/tarsier-loopback-ctl")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn virtual_device_creation_failure_explains_permissions() {
+        let error = ensure_virtual_video_device("/nonexistent/tarsier-video", "/bin/false")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("/dev/v4l2loopback"));
+        assert!(error.to_string().contains("exit status: 1"));
+    }
+
+    #[tokio::test]
+    async fn virtual_device_creation_requires_device_even_after_success() {
+        assert!(
+            ensure_virtual_video_device("/nonexistent/tarsier-video", "/bin/true")
+                .await
+                .is_err()
+        );
+    }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn source_selection_keeps_the_same_virtual_output_stream() {
