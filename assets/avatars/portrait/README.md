@@ -43,7 +43,13 @@ photo materials and preserves existing projection coordinates before creating
 `RuntimeUV`. Export operates on base mesh data and shape keys, not unapplied
 modifiers. Check neutral and animated views before activating a revision.
 
-Set `[avatar].portrait_model` to the exported directory and restart the daemon.
+Use the folder button on **Personal 3D** to choose an exported model. The catalog
+includes bundles in this directory, alongside the selected model, and in
+`portraits/models/` beside the user settings file. Each bundle must contain
+`manifest.json` and `mesh.npz`. The saved choice takes precedence over
+`[avatar].portrait_model` and reloads the active renderer automatically.
+The renderer validates the mesh and textures before publishing frames; invalid
+assets retain the privacy fallback and report diagnostics in the worker log.
 The default is `assets/avatars/portrait/current`, ignored by Git because it
 contains personal assets. Keep the previous revision for rollback. To reload
 assets at the same path, switch away from Personal 3D and back after replacing

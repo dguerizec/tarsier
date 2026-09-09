@@ -125,6 +125,14 @@ let portraitSwitchRevision = null;
 let portraitSwitchPolling = false;
 let selectedPortraitId = null;
 let currentPortraitId = null;
+const modelChoose = $("#portrait3d-choose");
+const modelDialog = $("#portrait3d-dialog");
+const modelGallery = $("#portrait3d-gallery");
+const modelError = $("#portrait3d-error");
+const modelSave = $("#portrait3d-save");
+const modelCancel = $("#portrait3d-cancel");
+let modelPending = false;
+let selectedModelId = null;
 const portraitChoose = $("#liveportrait-choose");
 const portraitDialog = $("#liveportrait-dialog");
 const portraitGallery = $("#liveportrait-gallery");
@@ -814,6 +822,7 @@ function renderOutputMode(videoEffects) {
     input.disabled = outputModePending || (cameraOnly4k() && input.value !== "camera");
     input.checked = input.value === identity;
   }
+  modelChoose.disabled = modelPending || !socketConnected;
   portraitChoose.disabled = portraitPending || !socketConnected;
   skeletonToggle.disabled = identity !== "camera";
   const status = outputModeError
@@ -1177,6 +1186,82 @@ async function setOutputMode(identity) {
     if (state) render(state);
   }
 }
+
+modelChoose.append(createElement(FolderOpen, { width: 16, height: 16, "aria-hidden": "true", focusable: "false" }));
+modelChoose.addEventListener("click", async () => {
+  modelError.hidden = true;
+  modelGallery.textContent = "Loading models…";
+  selectedModelId = null;
+  modelSave.disabled = true;
+  modelDialog.showModal();
+  try {
+    const response = await fetch("/api/v1/video/portrait3d/models", { cache: "no-store" });
+    if (!response.ok) throw new Error(`Could not load models (${response.status})`);
+    const models = await response.json();
+    modelGallery.replaceChildren();
+    for (const model of models) {
+      const label = document.createElement("label");
+      label.className = "portrait-option";
+      const input = document.createElement("input");
+      input.type = "radio";
+      input.name = "portrait3d-model";
+      input.value = model.id;
+      input.checked = model.selected;
+      const card = document.createElement("span");
+      card.className = "portrait-card";
+      card.textContent = model.name;
+      if (model.selected) {
+        const badge = document.createElement("small");
+        badge.textContent = "Selected model";
+        card.append(badge);
+      }
+      input.addEventListener("change", () => {
+        selectedModelId = model.id;
+        modelSave.disabled = modelPending || model.selected;
+      });
+      label.append(input, card);
+      modelGallery.append(label);
+    }
+    if (!models.length) modelGallery.textContent = "No exported 3D models available.";
+  } catch (error) {
+    modelGallery.replaceChildren();
+    modelError.textContent = error instanceof Error ? error.message : String(error);
+    modelError.hidden = false;
+  }
+});
+modelCancel.addEventListener("click", () => modelDialog.close());
+modelDialog.addEventListener("cancel", (event) => {
+  if (modelPending) event.preventDefault();
+});
+$("#portrait3d-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!selectedModelId || modelPending) return;
+  modelPending = true;
+  modelSave.disabled = modelCancel.disabled = true;
+  modelGallery.inert = true;
+  modelError.hidden = true;
+  try {
+    const response = await fetch("/api/v1/video/portrait3d/models", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: selectedModelId }),
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.error || `Model selection failed (${response.status})`);
+    }
+    const model = await response.json();
+    const status = $("#portrait3d-status");
+    status.hidden = false;
+    status.textContent = `${model.name} selected. Personal 3D will load this model when active.`;
+    modelDialog.close();
+  } catch (error) {
+    modelError.textContent = error instanceof Error ? error.message : String(error);
+    modelError.hidden = false;
+  } finally {
+    modelPending = false;
+    modelSave.disabled = modelCancel.disabled = false;
+    modelGallery.inert = false;
+  }
+});
 
 portraitChoose.append(createElement(FolderOpen, { width: 16, height: 16, "aria-hidden": "true", focusable: "false" }));
 portraitChoose.addEventListener("click", async () => {

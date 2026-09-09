@@ -62,6 +62,7 @@ struct ApiState {
     audio_settings_control: Arc<Mutex<()>>,
     portrait_selection_control: Arc<Mutex<()>>,
     liveportrait: Arc<Mutex<crate::avatar_source::LivePortraitState>>,
+    portrait3d_model: Arc<Mutex<std::path::PathBuf>>,
     shutdown: watch::Receiver<bool>,
 }
 
@@ -198,6 +199,9 @@ pub fn router_with_controls(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(&config.avatar.source_image),
     )));
     let state = ApiState {
+        portrait3d_model: Arc::new(Mutex::new(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(&config.avatar.portrait_model),
+        )),
         auth: options.auth,
         recorder: options.recorder,
         audio: options.audio,
@@ -235,6 +239,10 @@ pub fn router_with_controls(
         .route(
             "/api/v1/video/liveportrait/source",
             get(liveportrait_sources).post(set_liveportrait_source),
+        )
+        .route(
+            "/api/v1/video/portrait3d/models",
+            get(portrait3d_models).post(set_portrait3d_model),
         )
         .route("/api/v1/video/liveportrait/source/{id}", get(liveportrait_thumbnail))
         .route("/api/v1/video/liveportrait/status", get(liveportrait_status).post(report_liveportrait_error))
@@ -489,6 +497,64 @@ async fn portrait_catalog(state: &ApiState) -> anyhow::Result<Vec<crate::avatar_
     let current = state.liveportrait.lock().await.source.clone();
     tokio::task::spawn_blocking(move || crate::avatar_source::catalog(&directories, &current))
         .await?
+}
+
+async fn model_catalog(state: &ApiState) -> anyhow::Result<Vec<crate::avatar_source::Portrait>> {
+    let current = state.portrait3d_model.lock().await.clone();
+    let mut directories =
+        vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/avatars/portrait")];
+    if let Some(parent) = current.parent() {
+        directories.push(parent.to_path_buf());
+    }
+    if let Some(settings) = &state.user_settings {
+        directories.push(settings.portrait_directory().join("models"));
+    }
+    tokio::task::spawn_blocking(move || crate::portrait_models::catalog(&directories, &current))
+        .await?
+}
+
+async fn portrait3d_models(State(state): State<ApiState>) -> Response {
+    match model_catalog(&state).await {
+        Ok(models) => ([(header::CACHE_CONTROL, "no-store")], Json(models)).into_response(),
+        Err(error) => command_error(error),
+    }
+}
+
+async fn set_portrait3d_model(
+    State(state): State<ApiState>,
+    Json(selection): Json<PortraitSelection>,
+) -> Response {
+    let _selection = state.portrait_selection_control.lock().await;
+    if !state.config.avatar.enabled {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "Avatar output is disabled"})),
+        )
+            .into_response();
+    }
+    let Some(settings) = &state.user_settings else {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "Model changes require persistent settings"})),
+        )
+            .into_response();
+    };
+    let models = match model_catalog(&state).await {
+        Ok(models) => models,
+        Err(error) => return command_error(error),
+    };
+    let Some(model) = models.into_iter().find(|model| model.id == selection.id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "This model is no longer available"})),
+        )
+            .into_response();
+    };
+    if let Err(error) = settings.set_portrait3d_model(model.path.clone()).await {
+        return command_error(error);
+    }
+    *state.portrait3d_model.lock().await = model.path.clone();
+    Json(model).into_response()
 }
 
 async fn liveportrait_sources(State(state): State<ApiState>) -> Response {
@@ -1349,6 +1415,7 @@ struct IdentityRequest {
 
 #[derive(Serialize)]
 struct IdentityResponse {
+    portrait3d_model: std::path::PathBuf,
     liveportrait: crate::avatar_source::LivePortraitState,
     identity: VideoIdentity,
     background_enabled: bool,
@@ -2990,6 +3057,7 @@ async fn set_transform(
 async fn current_identity(State(state): State<ApiState>) -> Json<IdentityResponse> {
     let effects = state.runtime.state().await.video_effects;
     Json(IdentityResponse {
+        portrait3d_model: state.portrait3d_model.lock().await.clone(),
         liveportrait: state.liveportrait.lock().await.clone(),
         identity: video_identity(effects.output_mode, effects.avatar_engine),
         background_enabled: effects.background_enabled,
@@ -5978,6 +6046,100 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn model_selection_is_persisted_and_published_without_changing_identity() {
+        let mut config = Config::default();
+        config.avatar.enabled = true;
+        let directory =
+            std::env::temp_dir().join(format!("tarsier-model-api-{:032x}", rand::random::<u128>()));
+        let model = directory.join("portraits/models/example");
+        std::fs::create_dir_all(&model).unwrap();
+        std::fs::write(
+            model.join("manifest.json"),
+            r#"{"schema_version":1,"revision":"Example","draws":[{}]}"#,
+        )
+        .unwrap();
+        std::fs::write(model.join("mesh.npz"), b"mesh").unwrap();
+        let path = directory.join("settings.json");
+        let fallback = UserSettings::from_config(&config);
+        let (settings, _) = UserSettingsStore::load(path.clone(), fallback.clone())
+            .await
+            .unwrap();
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = router_with_controls(
+            config,
+            Runtime::new(),
+            PreviewHub::new(),
+            None,
+            ApiOptions {
+                user_settings: Some(settings),
+                ..ApiOptions::default()
+            },
+            shutdown_rx,
+        );
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/video/portrait3d/models")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let models: Vec<Value> = serde_json::from_slice(&bytes).unwrap();
+        let id = models
+            .iter()
+            .find(|model| model["name"] == "Example")
+            .unwrap()["id"]
+            .clone();
+        let invalid = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/video/portrait3d/models")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"id":"../../etc"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(invalid.status(), StatusCode::NOT_FOUND);
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/video/portrait3d/models")
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({"id": id}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let (_, restored) = UserSettingsStore::load(path, fallback).await.unwrap();
+        assert_eq!(restored.portrait3d_model, Some(model.clone()));
+        let response = app
+            .oneshot(
+                Request::get("/api/v1/video/identity")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let identity: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            identity["portrait3d_model"],
+            model.to_string_lossy().as_ref()
+        );
+        assert_eq!(identity["identity"], "camera");
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[tokio::test]

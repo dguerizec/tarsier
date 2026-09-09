@@ -273,6 +273,7 @@ class VideoIdentityClient:
         self._next_refresh = 0.0
         self.portrait_source: tuple[int, Path] | None = None
         self.portrait_active_revision = 0
+        self.portrait_model: Path | None = None
 
     def selected_identity(self) -> str:
         now = time.monotonic()
@@ -319,6 +320,9 @@ class VideoIdentityClient:
             identity = payload.get("identity")
             if identity not in {"camera", "portrait3d", "liveportrait", "depth-map"}:
                 raise ValueError(f"invalid video identity: {identity!r}")
+            model = payload.get("portrait3d_model")
+            if isinstance(model, str) and model:
+                self.portrait_model = Path(model)
             portrait = payload.get("liveportrait")
             if isinstance(portrait, dict):
                 revision, source = portrait.get("revision"), portrait.get("source")
@@ -430,7 +434,15 @@ class AvatarProcessor:
             while (frame := self._frames.get()) is not None:
                 selected_engine = identity.selected_avatar_engine()
                 self._portrait_request = identity.portrait_source
-                if selected_engine != active_engine:
+                model_changed = (
+                    selected_engine == "portrait3d"
+                    and identity.portrait_model is not None
+                    and identity.portrait_model != self._portrait_model
+                )
+                if model_changed:
+                    self._portrait_model = identity.portrait_model
+                    failed_engine = None
+                if selected_engine != active_engine or model_changed:
                     resources.close()
                     self._portrait_switcher = None
                     resources = ExitStack()

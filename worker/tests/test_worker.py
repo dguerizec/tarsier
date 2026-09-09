@@ -452,3 +452,55 @@ def test_avatar_publisher_tags_the_source_revision(monkeypatch):
         "liveportrait", 42, 1234, np.zeros((1, 2, 4), dtype=np.uint8), source_revision=7,
     )
     assert requests[0].get_header("X-tarsier-avatar-source-revision") == "7"
+
+
+def test_identity_client_refreshes_personal_model(monkeypatch) -> None:  # noqa: ANN001
+    responses = iter([
+        b'{"identity":"portrait3d","portrait3d_model":"/models/first"}',
+        b'{"identity":"portrait3d","portrait3d_model":"/models/second"}',
+    ])
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **kw: HttpResponse(next(responses)))
+    identity = VideoIdentityClient("http://127.0.0.1:8742")
+    assert identity.selected_avatar_engine() == "portrait3d"
+    assert identity.portrait_model == Path("/models/first")
+    identity.invalidate()
+    assert identity.selected_avatar_engine() == "portrait3d"
+    assert identity.portrait_model == Path("/models/second")
+
+
+def test_personal_model_change_reopens_renderer_and_releases_resources(monkeypatch) -> None:  # noqa: ANN001
+    import queue
+    from types import SimpleNamespace
+
+    from tarsier_perception.avatar import AvatarProcessor
+
+    models = iter([Path("/models/first"), Path("/models/second"), Path("/models/second")])
+    identity = SimpleNamespace(portrait_source=None, portrait_model=None)
+
+    def selected_engine():
+        identity.portrait_model = next(models)
+        return "portrait3d"
+
+    identity.selected_avatar_engine = selected_engine
+    monkeypatch.setattr("tarsier_perception.avatar.VideoIdentityClient", lambda _: identity)
+    processor = AvatarProcessor(
+        "http://localhost", Path("/tracker"), "portrait3d", None, 16, 9,
+        compile_models=False, portrait_model=Path("/models/first"),
+    )
+    processor._frames = queue.Queue()
+    for frame in [1, 2, 3, None]:
+        processor._frames.put(frame)
+    opened, closed, published = [], [], []
+
+    def open_engine(resources, engine):
+        model = processor._portrait_model
+        opened.append(model)
+        resources.callback(closed.append, model)
+        return lambda frame: model
+
+    processor._open_engine = open_engine
+    processor._publish = lambda *args: published.append(args[-1])
+    processor._run_switchable()
+    assert opened == [Path("/models/first"), Path("/models/second")]
+    assert closed == opened
+    assert published == [Path("/models/first"), Path("/models/second"), Path("/models/second")]

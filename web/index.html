@@ -155,13 +155,16 @@
                 <small>Visualize local relative depth</small>
               </span>
             </label>
-            <label class="output-mode-option">
-              <input type="radio" name="output-mode" value="portrait3d" data-output-mode disabled>
-              <span class="output-mode-card">
-                <strong>Personal 3D</strong>
-                <small>Animate your scanned portrait with a replaceable background</small>
-              </span>
-            </label>
+            <div class="liveportrait-option">
+              <label class="output-mode-option">
+                <input type="radio" name="output-mode" value="portrait3d" data-output-mode disabled>
+                <span class="output-mode-card">
+                  <strong>Personal 3D</strong>
+                  <small>Animate your scanned portrait with a replaceable background</small>
+                </span>
+              </label>
+              <button id="portrait3d-choose" class="liveportrait-choose" type="button" aria-label="Choose Personal 3D model" title="Choose Personal 3D model" disabled></button>
+            </div>
             <div class="liveportrait-option">
               <label class="output-mode-option">
                 <input type="radio" name="output-mode" value="liveportrait" data-output-mode disabled>
@@ -173,6 +176,18 @@
               <button id="liveportrait-choose" class="liveportrait-choose" type="button" aria-label="Choose LivePortrait image" title="Choose LivePortrait image" disabled></button>
             </div>
           </div>
+          <dialog id="portrait3d-dialog">
+            <form id="portrait3d-form">
+              <h2>Choose Personal 3D model</h2>
+              <div id="portrait3d-gallery" class="portrait-gallery" role="radiogroup" aria-label="Available 3D models"></div>
+              <p id="portrait3d-error" class="error" role="alert" hidden></p>
+              <div class="dialog-actions">
+                <button id="portrait3d-cancel" type="button">Cancel</button>
+                <button id="portrait3d-save" type="submit" disabled>Use this model</button>
+              </div>
+            </form>
+          </dialog>
+          <p id="portrait3d-status" role="status" hidden></p>
           <dialog id="liveportrait-dialog">
             <form id="liveportrait-form">
               <h2>Choose LivePortrait image</h2>

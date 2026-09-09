@@ -106,6 +106,8 @@ pub struct UserSettings {
     #[serde(default)]
     pub liveportrait_source: Option<PathBuf>,
     #[serde(default)]
+    pub portrait3d_model: Option<PathBuf>,
+    #[serde(default)]
     pub camera_device: Option<String>,
     #[serde(default)]
     pub audio_reserve_inputs: Option<bool>,
@@ -148,6 +150,7 @@ impl UserSettings {
             video_mute_media: crate::mute_media::default_selection(),
             video_mute_library: Vec::new(),
             liveportrait_source: None,
+            portrait3d_model: None,
             camera_device: None,
             audio_reserve_inputs: None,
             audio_input_reservations: Default::default(),
@@ -298,6 +301,11 @@ impl UserSettingsStore {
             .parent()
             .unwrap_or(Path::new("."))
             .join("portraits")
+    }
+
+    pub async fn set_portrait3d_model(&self, path: PathBuf) -> Result<()> {
+        self.replace(|settings| settings.portrait3d_model = Some(path))
+            .await
     }
 
     pub async fn set_liveportrait_source(&self, path: PathBuf) -> Result<()> {

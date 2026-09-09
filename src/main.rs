@@ -4,6 +4,7 @@ mod audio_gain;
 mod audit;
 mod auth;
 mod avatar_source;
+mod portrait_models;
 mod camera;
 mod config;
 mod devices;
@@ -153,6 +154,9 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
         settings::UserSettings::from_config(&config),
     )
     .await?;
+    if let Some(model) = &user_settings.portrait3d_model {
+        config.avatar.portrait_model = model.clone();
+    }
     if let Some(source) = &user_settings.liveportrait_source {
         config.avatar.source_image = source.clone();
     }
