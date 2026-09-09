@@ -15,6 +15,7 @@
     <main class="settings-page">
       <div class="settings-tabs" role="tablist" aria-label="Settings categories">
         <button type="button" role="tab" id="tab-video" aria-controls="settings-video" aria-selected="true" tabindex="0">Video</button>
+        <button type="button" role="tab" id="tab-avatars" aria-controls="settings-avatars" aria-selected="false" tabindex="-1">Avatars</button>
         <button type="button" role="tab" id="tab-devices" aria-controls="settings-devices" aria-selected="false" tabindex="-1">Devices</button>
         <button type="button" role="tab" id="tab-network" aria-controls="settings-network" aria-selected="false" tabindex="-1">Network</button>
         <button type="button" role="tab" id="tab-security" aria-controls="settings-security" aria-selected="false" tabindex="-1">Security</button>
@@ -47,6 +48,37 @@
           <p id="mute-media-status" role="status" aria-live="polite"></p>
         </form>
       </section>
+      </div>
+      <div class="settings-tab-panel" role="tabpanel" id="settings-avatars" aria-labelledby="tab-avatars" tabindex="0" hidden>
+        <section class="panel" aria-labelledby="avatar-library-heading">
+          <h2 id="avatar-library-heading">Avatar library</h2>
+          <p>Imports stay on this computer in your Tarsier data folder. Importing does not change your active avatar. Choose an avatar from its folder button on the preview page.</p>
+          <button id="avatar-library-refresh" type="button" class="secondary">Refresh library</button>
+          <p id="avatar-library-status" role="status" aria-live="polite"></p>
+        </section>
+        <section class="panel" aria-labelledby="import-liveportrait-heading">
+          <h2 id="import-liveportrait-heading">LivePortrait</h2>
+          <p>Import a PNG or JPEG portrait, at least 256 × 256 pixels and up to 10 MB. The image is cropped to a centered square.</p>
+          <form id="import-liveportrait-form">
+            <label for="import-liveportrait-file">Portrait image</label>
+            <input id="import-liveportrait-file" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg" required disabled>
+            <button type="submit" disabled>Import portrait</button>
+            <p id="import-liveportrait-status" role="status" aria-live="polite"></p>
+          </form>
+          <div id="liveportrait-library" class="avatar-library-grid" aria-label="LivePortrait library"></div>
+        </section>
+        <section class="panel" aria-labelledby="import-portrait3d-heading">
+          <h2 id="import-portrait3d-heading">Personal 3D</h2>
+          <p>Choose a Tarsier model export folder containing its manifest, mesh and textures (up to 256 MB). Blender scenes and GLB/FBX files must first be converted to this format.</p>
+          <form id="import-portrait3d-form">
+            <label for="import-portrait3d-files">Exported model folder</label>
+            <input id="import-portrait3d-files" type="file" webkitdirectory multiple required disabled>
+            <button type="submit" disabled>Import model</button>
+            <p id="import-portrait3d-status" role="status" aria-live="polite"></p>
+          </form>
+          <p>The model is checked and a neutral preview is generated during import. A missing preview can be generated again from the library.</p>
+          <div id="portrait3d-library" class="avatar-library-grid" aria-label="Personal 3D library"></div>
+        </section>
       </div>
       <div class="settings-tab-panel" role="tabpanel" id="settings-devices" aria-labelledby="tab-devices" tabindex="0" hidden>
       <section class="panel" aria-labelledby="devices-heading">

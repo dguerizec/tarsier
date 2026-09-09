@@ -17,6 +17,29 @@ camera segmentation pass. Off and Blur show a neutral synthetic backdrop.
 Stale generated output retains the existing privacy fallback; camera pixels
 are never substituted for the portrait.
 
+## Importing avatars
+
+Open **Settings → Avatars** to import LivePortrait PNG/JPEG images or Personal 3D
+export folders. Images must be at least 256 × 256 pixels and at most 10 MB;
+imports are normalized to centered 512 × 512 PNG portraits. Model imports accept
+`manifest.json`, `mesh.npz`, and the textures referenced by the manifest, up to
+256 MB and 128 files. Blender, GLB and FBX conversion is not part of this importer.
+
+Imports are stored under `$XDG_DATA_HOME/tarsier/avatars/` (normally
+`~/.local/share/tarsier/avatars/`), in `liveportrait/` and `portrait3d/` respectively.
+The importer refuses repository storage. It creates private files and directories,
+prepares each upload in a hidden staging directory, then publishes it atomically.
+It never changes the current video identity or selects an imported avatar.
+
+The perception worker environment with avatar dependencies must be installed for
+model validation and previews. A separate Python process checks the model and
+renders a neutral 256 × 256 PNG using software OpenGL, with bounded CPU time and
+mesh decompression. Preview failure keeps a validated model available without
+an image. **Generate preview** retries from the library and can also generate
+previews for existing models; those previews live in the user data library, so
+original model folders are not modified. A full import timeout or validation
+failure rejects the upload and removes its staging directory.
+
 ## Updating the model
 
 The editable Blender scene is the source of truth. Keep its `Head` vertex group,
@@ -44,8 +67,9 @@ photo materials and preserves existing projection coordinates before creating
 modifiers. Check neutral and animated views before activating a revision.
 
 Use the folder button on **Personal 3D** to choose an exported model. The catalog
-includes bundles in this directory, alongside the selected model, and in
-`portraits/models/` beside the user settings file. Each bundle must contain
+includes imported bundles in the user data library, bundles in this directory,
+those alongside the selected model, and legacy `portraits/models/` folders beside
+the user settings file. Each bundle must contain
 `manifest.json` and `mesh.npz`. The saved choice takes precedence over
 `[avatar].portrait_model` and reloads the active renderer automatically.
 The renderer validates the mesh and textures before publishing frames; invalid

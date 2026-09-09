@@ -16,7 +16,13 @@ pub fn catalog(directories: &[PathBuf], current: &Path) -> Result<Vec<Portrait>>
             Err(error) => return Err(error.into()),
         };
         for entry in entries {
-            candidates.push(entry?.path());
+            let path = entry?.path();
+            if !path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with('.'))
+            {
+                candidates.push(path);
+            }
         }
     }
     let mut models: Vec<Portrait> = Vec::new();

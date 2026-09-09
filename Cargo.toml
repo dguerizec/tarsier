@@ -10,7 +10,7 @@ default-run = "tarsier"
 anyhow = "1.0"
 argon2 = "0.5"
 async-stream = "0.3"
-axum = { version = "0.8.9", features = ["json", "ws"] }
+axum = { version = "0.8.9", features = ["json", "ws", "multipart"] }
 base64 = "0.23"
 bytes = "1.11"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }

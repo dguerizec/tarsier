@@ -424,3 +424,12 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 
 #camera-panel > .pan-tilt-bar, #camera-panel > .output-control { margin-top: 1rem; padding: .85rem 0 0; }
 #camera-panel .output-heading { align-items: flex-start; flex-direction: column; gap: .35rem; }
+
+.avatar-library-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: .8rem; margin-top: 1rem; }
+.avatar-library-card { display: grid; align-content: start; gap: .5rem; padding: .7rem; border: 1px solid var(--panel-edge); border-radius: .7rem; min-width: 0; }
+.avatar-library-card strong { overflow-wrap: anywhere; font-size: .85rem; }
+.avatar-library-card img, .avatar-preview-placeholder { width: 100%; aspect-ratio: 1; object-fit: contain; border-radius: .4rem; background: var(--panel); }
+.avatar-preview-placeholder { display: grid; place-items: center; color: var(--muted); font-size: .8rem; text-align: center; }
+.avatar-library-card [hidden] { display: none; }
+#settings-avatars form { display: grid; gap: .7rem; }
+#settings-avatars input { min-width: 0; max-width: 100%; }

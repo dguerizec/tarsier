@@ -570,6 +570,11 @@ requests must be same-origin. Login attempts are throttled to one per second.
 | `POST` | `/api/v1/camera/tracking` | Enable or disable built-in tracking |
 | `POST` | `/api/v1/camera/face-tracking` | Enable or disable Tarsier face tracking |
 | `POST` | `/api/v1/camera/hands-tracking` | Enable or disable slow two-hand framing with one-hand zoom freeze |
+| `GET` | `/api/v1/settings/avatars` | List local LivePortrait images and Personal 3D models |
+| `POST` | `/api/v1/settings/avatars/liveportrait?name=...` | Import a PNG/JPEG body into the local avatar library |
+| `POST` | `/api/v1/settings/avatars/portrait3d` | Import model files as multipart form data; validate and generate a preview |
+| `GET`, `POST` | `/api/v1/video/portrait3d/models` | List or select an exported 3D model |
+| `GET`, `POST` | `/api/v1/video/portrait3d/models/{id}/preview` | Read or regenerate a model preview |
 | `GET`, `POST` | `/api/v1/video/identity` | Read or select `camera`, `depth-map`, `portrait3d`, or `liveportrait` |
 | `POST` | `/api/v1/video/output-mode` | Compatibility selector for the underlying output mode |
 | `POST` | `/api/v1/video/background` | Enable one final-output background effect with `{"enabled": bool, "effect": string}`; accepted effects are `green-screen`, `blur`, and `pixel-party` |

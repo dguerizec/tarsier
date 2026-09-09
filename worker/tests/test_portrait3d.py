@@ -100,3 +100,41 @@ def test_personal_pose_preserves_profile_angles_and_rotation_order(portrait):
         # Portrait axes: X right, Y away from viewer, Z up.
         basis = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]])
         np.testing.assert_allclose(actual, basis @ source_rotation @ basis.T, atol=1e-6)
+
+
+def test_import_generates_neutral_preview(portrait):
+    from tarsier_perception.avatar_import import prepare_model
+
+    pytest.importorskip("moderngl")
+    import cv2
+
+    preview = portrait / ".preview.png"
+    result = prepare_model(portrait, preview)
+    assert result == {"preview": True, "warning": None}
+    image = cv2.imread(str(preview), cv2.IMREAD_UNCHANGED)
+    assert image.shape == (256, 256, 4)
+    assert image[:, :, 3].max() == 255
+    assert preview.stat().st_mode & 0o777 == 0o600
+
+
+def test_import_rejects_oversized_mesh_before_loading(portrait, monkeypatch):
+    from tarsier_perception.avatar_import import validate_model
+
+    monkeypatch.setattr("tarsier_perception.avatar_import.MAX_MESH_BYTES", 1)
+    with pytest.raises(ValueError, match="too large"):
+        validate_model(portrait)
+
+
+def test_import_keeps_valid_model_when_preview_renderer_fails(portrait, monkeypatch):
+    from tarsier_perception.avatar_import import prepare_model
+
+    def fail(*args):
+        raise RuntimeError("EGL unavailable")
+
+    monkeypatch.setattr("tarsier_perception.avatar_import.Portrait3DAvatarEngine", fail)
+    preview = portrait / ".preview.png"
+    result = prepare_model(portrait, preview)
+    assert result["preview"] is False
+    assert result["warning"]
+    assert not preview.exists()
+    assert (portrait / "mesh.npz").is_file()

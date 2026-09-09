@@ -1209,7 +1209,14 @@ modelChoose.addEventListener("click", async () => {
       input.checked = model.selected;
       const card = document.createElement("span");
       card.className = "portrait-card";
-      card.textContent = model.name;
+      const image = document.createElement("img");
+      image.src = `/api/v1/video/portrait3d/models/${encodeURIComponent(model.id)}/preview`;
+      image.alt = "";
+      image.loading = "lazy";
+      image.addEventListener("error", () => { image.hidden = true; });
+      const name = document.createElement("span");
+      name.textContent = model.name;
+      card.append(image, name);
       if (model.selected) {
         const badge = document.createElement("small");
         badge.textContent = "Selected model";

@@ -4,7 +4,7 @@ use axum::{
     Json, Router,
     body::Body,
     extract::{
-        DefaultBodyLimit, Query, State, WebSocketUpgrade,
+        DefaultBodyLimit, Multipart, Query, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
     http::{HeaderMap, StatusCode, header},
@@ -63,6 +63,8 @@ struct ApiState {
     portrait_selection_control: Arc<Mutex<()>>,
     liveportrait: Arc<Mutex<crate::avatar_source::LivePortraitState>>,
     portrait3d_model: Arc<Mutex<std::path::PathBuf>>,
+    avatar_library: Option<std::path::PathBuf>,
+    avatar_import_control: Arc<tokio::sync::Semaphore>,
     shutdown: watch::Receiver<bool>,
 }
 
@@ -90,6 +92,7 @@ impl DaemonRestart {
 
 #[derive(Default)]
 pub struct ApiOptions {
+    pub avatar_library: Option<std::path::PathBuf>,
     pub auth: Option<crate::auth::Auth>,
     pub audio: Option<crate::audio::AudioHub>,
     pub recorder: crate::recording::Recorder,
@@ -199,6 +202,8 @@ pub fn router_with_controls(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(&config.avatar.source_image),
     )));
     let state = ApiState {
+        avatar_library: options.avatar_library.or_else(crate::avatar_import::default_library),
+        avatar_import_control: Arc::new(tokio::sync::Semaphore::new(1)),
         portrait3d_model: Arc::new(Mutex::new(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(&config.avatar.portrait_model),
         )),
@@ -236,6 +241,12 @@ pub fn router_with_controls(
     let router = Router::new()
         .route("/", get(index))
         .route("/settings", get(settings_page))
+        .route("/api/v1/settings/avatars", get(avatar_library_settings))
+        .route("/api/v1/settings/avatars/liveportrait", post(import_liveportrait)
+            .layer(DefaultBodyLimit::max(crate::avatar_source::MAX_UPLOAD_BYTES)))
+        .route("/api/v1/settings/avatars/portrait3d", post(import_portrait3d)
+            .layer(DefaultBodyLimit::max(crate::avatar_import::MAX_MODEL_BYTES + 1024 * 1024)))
+        .route("/api/v1/video/portrait3d/models/{id}/preview", get(model_preview).post(generate_model_preview))
         .route(
             "/api/v1/video/liveportrait/source",
             get(liveportrait_sources).post(set_liveportrait_source),
@@ -491,6 +502,9 @@ async fn settings_js() -> impl IntoResponse {
 async fn portrait_catalog(state: &ApiState) -> anyhow::Result<Vec<crate::avatar_source::Portrait>> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut directories = vec![root.join("assets/avatars")];
+    if let Some(library) = &state.avatar_library {
+        directories.push(library.join("liveportrait"));
+    }
     if let Some(settings) = &state.user_settings {
         directories.push(settings.portrait_directory());
     }
@@ -503,6 +517,9 @@ async fn model_catalog(state: &ApiState) -> anyhow::Result<Vec<crate::avatar_sou
     let current = state.portrait3d_model.lock().await.clone();
     let mut directories =
         vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/avatars/portrait")];
+    if let Some(library) = &state.avatar_library {
+        directories.push(library.join("portrait3d"));
+    }
     if let Some(parent) = current.parent() {
         directories.push(parent.to_path_buf());
     }
@@ -511,6 +528,165 @@ async fn model_catalog(state: &ApiState) -> anyhow::Result<Vec<crate::avatar_sou
     }
     tokio::task::spawn_blocking(move || crate::portrait_models::catalog(&directories, &current))
         .await?
+}
+
+async fn avatar_library_settings(State(state): State<ApiState>) -> Response {
+    let portraits = match portrait_catalog(&state).await {
+        Ok(value) => value,
+        Err(error) => return command_error(error),
+    };
+    let models = match model_catalog(&state).await {
+        Ok(value) => value,
+        Err(error) => return command_error(error),
+    };
+    Json(json!({"liveportrait": portraits, "portrait3d": models,
+        "can_import": state.avatar_library.is_some()}))
+    .into_response()
+}
+
+async fn import_liveportrait(
+    State(state): State<ApiState>,
+    Query(query): Query<MuteMediaUpload>,
+    body: Bytes,
+) -> Response {
+    let Ok(_permit) = state.avatar_import_control.try_acquire() else {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "Another avatar import is in progress"})),
+        )
+            .into_response();
+    };
+    let Some(library) = &state.avatar_library else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "Avatar storage is unavailable"})),
+        )
+            .into_response();
+    };
+    let directory = library.join("liveportrait");
+    match tokio::task::spawn_blocking(move || crate::avatar_import::import_image(&directory, &query.name, &body)).await {
+        Ok(Ok(())) => (StatusCode::CREATED, Json(json!({"message": "Portrait imported. Choose it from LivePortrait in the preview."}))).into_response(),
+        Ok(Err(error)) => (StatusCode::BAD_REQUEST, Json(json!({"error": error.to_string()}))).into_response(),
+        Err(error) => command_error(error.into()),
+    }
+}
+
+async fn import_portrait3d(State(state): State<ApiState>, mut multipart: Multipart) -> Response {
+    let Ok(_permit) = state.avatar_import_control.try_acquire() else {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "Another avatar import is in progress"})),
+        )
+            .into_response();
+    };
+    let Some(library) = &state.avatar_library else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "Avatar storage is unavailable"})),
+        )
+            .into_response();
+    };
+    let result = async {
+        let directory = library.join("portrait3d");
+        let staging = crate::avatar_import::StagingDirectory::new(&directory)?;
+        crate::avatar_import::receive_model(&mut multipart, &staging.0).await?;
+        let prepared = crate::avatar_import::prepare_model(
+            &state.config.perception.worker_project,
+            &staging.0,
+            &staging.0.join(".preview.png"),
+        )
+        .await?;
+        let destination = directory.join(format!("model-{:032x}", rand::random::<u128>()));
+        tokio::fs::rename(&staging.0, destination).await?;
+        Ok::<_, anyhow::Error>(prepared)
+    }
+    .await;
+    match result {
+        Ok(prepared) => (StatusCode::CREATED, Json(prepared)).into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+async fn model_preview(
+    State(state): State<ApiState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Response {
+    let models = match model_catalog(&state).await {
+        Ok(models) => models,
+        Err(error) => return command_error(error),
+    };
+    let Some(model) = models.into_iter().find(|model| model.id == id) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let cached = state
+        .avatar_library
+        .as_ref()
+        .map(|library| library.join("previews").join(format!("{id}.png")));
+    let path = cached
+        .filter(|path| path.is_file())
+        .unwrap_or_else(|| model.path.join(".preview.png"));
+    match tokio::task::spawn_blocking(move || crate::avatar_import::preview_bytes(&path)).await {
+        Ok(Ok(bytes)) => (
+            [
+                (header::CONTENT_TYPE, "image/png"),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            bytes,
+        )
+            .into_response(),
+        _ => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+async fn generate_model_preview(
+    State(state): State<ApiState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Response {
+    let Ok(_permit) = state.avatar_import_control.try_acquire() else {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "Another avatar import is in progress"})),
+        )
+            .into_response();
+    };
+    let Some(library) = &state.avatar_library else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let models = match model_catalog(&state).await {
+        Ok(models) => models,
+        Err(error) => return command_error(error),
+    };
+    let Some(model) = models.into_iter().find(|model| model.id == id) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let result = async {
+        let directory = library.join("previews");
+        let staging = crate::avatar_import::StagingDirectory::new(&directory)?;
+        let preview = staging.0.join("preview.png");
+        let prepared = crate::avatar_import::prepare_model(
+            &state.config.perception.worker_project,
+            &model.path,
+            &preview,
+        )
+        .await?;
+        if prepared.preview {
+            tokio::fs::rename(preview, directory.join(format!("{id}.png"))).await?;
+        }
+        Ok::<_, anyhow::Error>(prepared)
+    }
+    .await;
+    match result {
+        Ok(prepared) => Json(prepared).into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": error.to_string()})),
+        )
+            .into_response(),
+    }
 }
 
 async fn portrait3d_models(State(state): State<ApiState>) -> Response {
@@ -6046,6 +6222,185 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn avatar_imports_publish_to_external_library_without_changing_selection() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!(
+            "tarsier-import-api-{:032x}",
+            rand::random::<u128>()
+        ));
+        let worker = root.join("worker");
+        std::fs::create_dir_all(worker.join(".venv/bin")).unwrap();
+        let importer = worker.join(".venv/bin/python");
+        std::fs::write(
+            &importer,
+            "#!/bin/sh\nprintf '%s' '{\"preview\":false,\"warning\":\"Preview unavailable\"}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&importer, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut config = Config::default();
+        config.perception.worker_project = worker;
+        let library = root.join("library");
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = router_with_controls(
+            config,
+            Runtime::new(),
+            PreviewHub::new(),
+            None,
+            ApiOptions {
+                avatar_library: Some(library.clone()),
+                ..ApiOptions::default()
+            },
+            shutdown_rx,
+        );
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/settings/avatars/liveportrait?name=Imported.png")
+                    .body(Body::from(
+                        include_bytes!("../assets/avatars/liveportrait-default.png").as_slice(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/settings/avatars")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: Value = serde_json::from_slice(&bytes).unwrap();
+        let imported = payload["liveportrait"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["name"].as_str().unwrap().starts_with("Imported-"))
+            .unwrap();
+        assert_eq!(imported["selected"], false);
+        let portrait_id = imported["id"].as_str().unwrap();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get(format!("/api/v1/video/liveportrait/source/{portrait_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        for files in [
+            vec![("../outside", "bad")],
+            vec![("mesh.npz", "a"), ("mesh.npz", "b")],
+            vec![("mesh.npz", "a")],
+        ] {
+            let body = multipart_model_fixture(&files);
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post("/api/v1/settings/avatars/portrait3d")
+                        .header(
+                            "content-type",
+                            "multipart/form-data; boundary=test-boundary",
+                        )
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(
+                std::fs::read_dir(library.join("portrait3d"))
+                    .unwrap()
+                    .count(),
+                0
+            );
+        }
+        let body = multipart_model_fixture(&[
+            (
+                "manifest.json",
+                r#"{"schema_version":1,"revision":"Imported model","draws":[{}]}"#,
+            ),
+            ("mesh.npz", "mock mesh"),
+        ]);
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/settings/avatars/portrait3d")
+                    .header(
+                        "content-type",
+                        "multipart/form-data; boundary=test-boundary",
+                    )
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        assert_eq!(
+            std::fs::read_dir(library.join("portrait3d"))
+                .unwrap()
+                .count(),
+            1
+        );
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/settings/avatars")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(
+            payload["portrait3d"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["name"] == "Imported model" && item["selected"] == false)
+        );
+        let response = app
+            .oneshot(
+                Request::get("/api/v1/video/identity")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let identity: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(identity["identity"], "camera");
+        assert!(
+            !identity["portrait3d_model"]
+                .as_str()
+                .unwrap()
+                .contains("library")
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn multipart_model_fixture(files: &[(&str, &str)]) -> Vec<u8> {
+        let mut body = String::new();
+        for (name, contents) in files {
+            body.push_str(&format!("--test-boundary\r\nContent-Disposition: form-data; name=\"files\"; filename=\"{name}\"\r\nContent-Type: application/octet-stream\r\n\r\n{contents}\r\n"));
+        }
+        body.push_str("--test-boundary--\r\n");
+        body.into_bytes()
     }
 
     #[tokio::test]

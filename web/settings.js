@@ -391,3 +391,140 @@ async function changeSavedMuteMedia(remove) {
 }
 muteMediaUse.addEventListener('click', () => changeSavedMuteMedia(false));
 muteMediaDelete.addEventListener('click', () => changeSavedMuteMedia(true));
+
+
+const avatarLibraryStatus = document.querySelector('#avatar-library-status');
+const avatarRefresh = document.querySelector('#avatar-library-refresh');
+const portraitImportForm = document.querySelector('#import-liveportrait-form');
+const modelImportForm = document.querySelector('#import-portrait3d-form');
+let avatarImportPending = false;
+let avatarCanImport = false;
+
+function updateAvatarImportControls() {
+  for (const form of [portraitImportForm, modelImportForm]) {
+    for (const input of form.querySelectorAll('input, button')) {
+      input.disabled = avatarImportPending || !avatarCanImport;
+    }
+  }
+  avatarRefresh.disabled = avatarImportPending;
+  for (const button of document.querySelectorAll('#portrait3d-library button')) {
+    button.disabled = avatarImportPending || !avatarCanImport;
+  }
+}
+
+function avatarLibraryCard(item, kind) {
+  const card = document.createElement('article');
+  card.className = 'avatar-library-card';
+  const image = document.createElement('img');
+  const imageUrl = kind === 'portrait3d'
+    ? `/api/v1/video/portrait3d/models/${encodeURIComponent(item.id)}/preview`
+    : `/api/v1/video/liveportrait/source/${encodeURIComponent(item.id)}`;
+  image.src = imageUrl;
+  image.alt = '';
+  image.loading = 'lazy';
+  const placeholder = document.createElement('div');
+  placeholder.className = 'avatar-preview-placeholder';
+  placeholder.textContent = 'Preview unavailable';
+  placeholder.hidden = true;
+  image.addEventListener('error', () => { image.hidden = true; placeholder.hidden = false; });
+  const name = document.createElement('strong');
+  name.textContent = item.name;
+  card.append(image, placeholder, name);
+  if (item.selected) {
+    const selected = document.createElement('small');
+    selected.textContent = 'Selected';
+    card.append(selected);
+  }
+  if (kind === 'portrait3d') {
+    const generate = document.createElement('button');
+    generate.type = 'button';
+    generate.className = 'secondary';
+    generate.textContent = 'Generate preview';
+    generate.addEventListener('click', async () => {
+      if (avatarImportPending) return;
+      avatarImportPending = true;
+      updateAvatarImportControls();
+      avatarLibraryStatus.textContent = 'Generating preview…';
+      try {
+        const response = await fetch(imageUrl, {method: 'POST'});
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(result.error || 'Could not generate preview');
+        avatarLibraryStatus.textContent = result.preview ? 'Preview generated.' : 'Preview unavailable. You can try again later.';
+        if (result.preview) {
+          image.hidden = false;
+          placeholder.hidden = true;
+          image.src = `${imageUrl}?v=${Date.now()}`;
+        }
+      } catch (error) { avatarLibraryStatus.textContent = error.message; }
+      finally { avatarImportPending = false; updateAvatarImportControls(); }
+    });
+    card.append(generate);
+  }
+  return card;
+}
+
+async function loadAvatarLibrary() {
+  const response = await fetch('/api/v1/settings/avatars', {cache: 'no-store'});
+  if (!response.ok) throw new Error('Could not load avatar library. Refresh to try again.');
+  const result = await response.json();
+  avatarCanImport = result.can_import;
+  for (const kind of ['liveportrait', 'portrait3d']) {
+    const library = document.querySelector(`#${kind}-library`);
+    library.replaceChildren(...result[kind].map(item => avatarLibraryCard(item, kind)));
+    if (!result[kind].length) library.textContent = 'No avatars available yet.';
+  }
+  updateAvatarImportControls();
+}
+avatarRefresh.addEventListener('click', () => {
+  avatarLibraryStatus.textContent = 'Loading library…';
+  loadAvatarLibrary().then(() => { avatarLibraryStatus.textContent = ''; })
+    .catch(error => { avatarLibraryStatus.textContent = error.message; });
+});
+
+for (const [kind, form] of [['liveportrait', portraitImportForm], ['portrait3d', modelImportForm]]) {
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    if (avatarImportPending) return;
+    const status = document.querySelector(`#import-${kind}-status`);
+    const input = form.querySelector('input');
+    avatarImportPending = true;
+    updateAvatarImportControls();
+    status.textContent = kind === 'portrait3d' ? 'Uploading, checking model and generating preview…' : 'Importing portrait…';
+    try {
+      let body;
+      let url = `/api/v1/settings/avatars/${kind}`;
+      if (kind === 'liveportrait') {
+        body = input.files[0];
+        if (!body || body.size > 10 * 1024 * 1024) throw new Error('Choose a PNG or JPEG up to 10 MB.');
+        url += `?name=${encodeURIComponent(body.name)}`;
+      } else {
+        const files = [...input.files];
+        const manifestFile = files.find(file => file.name === 'manifest.json' && file.webkitRelativePath.split('/').length === 2);
+        if (!manifestFile || manifestFile.size > 1024 * 1024) throw new Error('Choose an exported Tarsier model folder with a manifest.json file.');
+        const manifest = JSON.parse(await manifestFile.text());
+        if (manifest.schema_version !== 1 || !Array.isArray(manifest.draws) || !manifest.draws.length) throw new Error('Unsupported model export.');
+        const required = new Set(['manifest.json', 'mesh.npz', ...manifest.draws.map(draw => draw.texture).filter(Boolean)]);
+        const prefix = manifestFile.webkitRelativePath.slice(0, -manifestFile.name.length);
+        body = new FormData();
+        let bytes = 0;
+        for (const name of required) {
+          if (typeof name !== 'string' || name.includes('/') || name.includes('\\') || name.startsWith('.')) throw new Error('Model textures must be in the export folder.');
+          const file = files.find(file => file.webkitRelativePath === prefix + name);
+          if (!file) throw new Error(`The export is missing ${name}.`);
+          bytes += file.size;
+          body.append('files', file, name);
+        }
+        if (required.size > 128 || bytes > 256 * 1024 * 1024) throw new Error('Choose a model up to 256 MB and 128 files.');
+      }
+      const response = await fetch(url, {method: 'POST', body});
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || `Import failed (${response.status}).`);
+      status.textContent = result.warning || 'Imported. Choose it from its folder button on the preview page.';
+      form.reset();
+      try { await loadAvatarLibrary(); }
+      catch { status.textContent += ' Refresh the library to see the new avatar.'; }
+    } catch (error) { status.textContent = error.message; }
+    finally { avatarImportPending = false; updateAvatarImportControls(); }
+  });
+}
+loadAvatarLibrary().catch(error => { avatarLibraryStatus.textContent = error.message; });

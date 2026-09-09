@@ -4,6 +4,7 @@ mod audio_gain;
 mod audit;
 mod auth;
 mod avatar_source;
+mod avatar_import;
 mod portrait_models;
 mod camera;
 mod config;
@@ -314,6 +315,7 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
         preview,
         camera,
         api::ApiOptions {
+            avatar_library: None,
             auth: Some(auth),
             audio: Some(audio),
             recorder: recorder.clone(),
