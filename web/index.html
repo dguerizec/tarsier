@@ -135,32 +135,6 @@
           </div>
         </section>
 
-        <div class="pan-tilt-bar" data-camera-capability="pan_tilt" hidden>
-          <div class="pan-tilt-copy">
-            <strong>Pan / tilt</strong>
-            <span id="pan-tilt-status">Hold a button or use the arrow keys</span>
-          </div>
-          <div class="pan-tilt-controls">
-            <div class="direction-pad" role="group" aria-label="Pan and tilt camera">
-              <button class="secondary direction-up" type="button" data-pan-tilt="up" aria-label="Tilt up" title="Tilt up · Arrow Up">↑</button>
-              <button class="secondary direction-left" type="button" data-pan-tilt="left" aria-label="Pan left" title="Pan left · Arrow Left">←</button>
-              <button class="secondary direction-center" type="button" data-action="recenter" aria-label="Recenter camera" title="Recenter camera">●</button>
-              <button class="secondary direction-right" type="button" data-pan-tilt="right" aria-label="Pan right" title="Pan right · Arrow Right">→</button>
-              <button class="secondary direction-down" type="button" data-pan-tilt="down" aria-label="Tilt down" title="Tilt down · Arrow Down">↓</button>
-            </div>
-          </div>
-        </div>
-        <div class="output-control">
-          <div class="output-heading"><strong>Video orientation</strong><span>Clockwise · fits the output frame</span></div>
-          <div class="controls" id="video-transform-controls" role="group" aria-label="Video rotation">
-            <button type="button" class="secondary" data-video-rotation="0" aria-pressed="true">0°</button>
-            <button type="button" class="secondary" data-video-rotation="90" aria-pressed="false">90°</button>
-            <button type="button" class="secondary" data-video-rotation="180" aria-pressed="false">180°</button>
-            <button type="button" class="secondary" data-video-rotation="270" aria-pressed="false">270°</button>
-            <label class="toggle-switch" for="video-mirror"><strong>Mirror output</strong><input id="video-mirror" type="checkbox" role="switch"><span class="switch-track" aria-hidden="true"></span></label>
-          </div>
-          <p id="video-transform-error" class="error" role="alert" hidden></p>
-        </div>
         <div class="output-control">
           <div class="output-heading">
             <strong>Video identity</strong>
@@ -274,6 +248,32 @@
             <button data-action="recenter">Recenter</button>
           </div>
           <div id="presets" class="controls preset-controls" data-camera-capability="absolute_position" hidden></div>
+          <div class="pan-tilt-bar" data-camera-capability="pan_tilt" hidden>
+            <div class="pan-tilt-copy">
+              <strong>Pan / tilt</strong>
+              <span id="pan-tilt-status">Hold a button or use the arrow keys</span>
+            </div>
+            <div class="pan-tilt-controls">
+              <div class="direction-pad" role="group" aria-label="Pan and tilt camera">
+                <button class="secondary direction-up" type="button" data-pan-tilt="up" aria-label="Tilt up" title="Tilt up · Arrow Up">↑</button>
+                <button class="secondary direction-left" type="button" data-pan-tilt="left" aria-label="Pan left" title="Pan left · Arrow Left">←</button>
+                <button class="secondary direction-center" type="button" data-action="recenter" aria-label="Recenter camera" title="Recenter camera">●</button>
+                <button class="secondary direction-right" type="button" data-pan-tilt="right" aria-label="Pan right" title="Pan right · Arrow Right">→</button>
+                <button class="secondary direction-down" type="button" data-pan-tilt="down" aria-label="Tilt down" title="Tilt down · Arrow Down">↓</button>
+              </div>
+            </div>
+          </div>
+          <div class="output-control">
+            <div class="output-heading"><strong>Video orientation</strong><span>Clockwise · fits the output frame</span></div>
+            <div class="controls" id="video-transform-controls" role="group" aria-label="Video rotation">
+              <button type="button" class="secondary" data-video-rotation="0" aria-pressed="true">0°</button>
+              <button type="button" class="secondary" data-video-rotation="90" aria-pressed="false">90°</button>
+              <button type="button" class="secondary" data-video-rotation="180" aria-pressed="false">180°</button>
+              <button type="button" class="secondary" data-video-rotation="270" aria-pressed="false">270°</button>
+              <label class="toggle-switch" for="video-mirror"><strong>Mirror output</strong><input id="video-mirror" type="checkbox" role="switch"><span class="switch-track" aria-hidden="true"></span></label>
+            </div>
+            <p id="video-transform-error" class="error" role="alert" hidden></p>
+          </div>
           <div class="camera-subsection" data-camera-capability="tracking,hdr" hidden>
             <div class="subsection-title">
               <h3>Camera features</h3>

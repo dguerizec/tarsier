@@ -421,3 +421,6 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 
 #camera-diagnostics { margin-top: 12px; color: var(--muted); font-size: 0.8rem; }
 #camera-diagnostics-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+#camera-panel > .pan-tilt-bar, #camera-panel > .output-control { margin-top: 1rem; padding: .85rem 0 0; }
+#camera-panel .output-heading { align-items: flex-start; flex-direction: column; gap: .35rem; }
