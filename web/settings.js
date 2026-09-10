@@ -578,7 +578,7 @@ async function changeVoiceLibrary(url = '/api/v1/settings/voice', options = {}) 
     const body = await response.json();
     if (!response.ok) throw new Error(body.error || 'Could not update voice library');
     voiceLibrary = body;
-    voiceLibraryStatus.textContent = !body.available ? 'Model storage is not configured.' : !body.worker_available ? 'Voice worker is not configured. You can still manage models.' : options.method ? 'Saved.' : '';
+    voiceLibraryStatus.textContent = !body.available ? 'Model storage is not configured.' : !body.worker_available ? 'Voice worker is not configured. You can still manage models.' : '';
   } catch (error) { voiceLibraryStatus.textContent = error.message; }
   finally { voiceLibraryBusy = false; renderVoiceLibrary(); }
 }
