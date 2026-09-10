@@ -108,3 +108,39 @@ test('GPU display distinguishes engines, unknown readings, inactive rows and mul
   assert.equal(processGpuDisplay({active:false,gpus:[gpu]}).text, '—\n—');
   assert.equal(processGpuDisplay({active:true,gpus:[gpu,gpu]}).text, '2 GPUs\nSee details');
 });
+
+test('column sorting is numeric, stable, non-mutating and keeps missing/inactive rows last', async () => {
+  const { sortProcessRows } = await import('./performance.js');
+  const rows = [
+    {pid:1,active:true,role:'Worker',name:'beta',cpu_percent:9,rss_bytes:200},
+    {pid:2,active:true,role:'Worker',name:'alpha',cpu_percent:100,rss_bytes:10},
+    {pid:3,active:true,role:'Worker',name:'other',cpu_percent:null,rss_bytes:null},
+    {pid:4,active:false,role:'Worker',name:'absent',cpu_percent:null,rss_bytes:null},
+    {pid:5,active:true,role:'Worker',name:'equal',cpu_percent:9,rss_bytes:300},
+  ];
+  const ids = (column, direction) => sortProcessRows(rows,column,direction).map(row => row.pid);
+  assert.deepEqual(ids('cpu','desc'), [2,1,5,3,4]);
+  assert.deepEqual(ids('cpu','asc'), [1,5,2,3,4]);
+  assert.deepEqual(ids('memory','desc'), [5,1,2,3,4]);
+  assert.deepEqual(ids('process','asc'), [4,2,1,5,3]);
+  assert.deepEqual(ids('process','desc'), [3,5,1,2,4]);
+  rows[3].active = true;
+  assert.deepEqual(ids('process','asc'), [4,2,1,5,3]);
+  assert.deepEqual(ids('process','desc'), [3,5,1,2,4]);
+  rows[3].active = false;
+  assert.deepEqual(ids(null,'desc'), [1,2,3,4,5]);
+  assert.deepEqual(rows.map(row => row.pid), [1,2,3,4,5]);
+  rows[0].gpus = [{engines:{SM:null,encode:40}}];
+  rows[1].gpus = [{engines:{render:20}}];
+  assert.deepEqual(ids('gpu','desc'), [1,2,3,5,4]);
+  rows[0].gpus = [{engines:{SM:5,encode:80}}];
+  assert.deepEqual(ids('gpu','desc'), [2,1,3,5,4]);
+  assert.deepEqual(ids('gpu','asc'), [1,2,3,5,4]);
+  rows[0].gpus = [];
+  rows[1].gpus = [{engines:{SM:null},memory_bytes:163 * 1048576}];
+  assert.deepEqual(ids('gpu','desc'), [2,1,3,5,4]);
+  assert.deepEqual(ids('gpu','asc'), [2,1,3,5,4]);
+  rows[0].gpus = [{engines:{SM:null},memory_bytes:100 * 1048576}];
+  assert.deepEqual(ids('gpu','desc'), [2,1,3,5,4]);
+  assert.deepEqual(ids('gpu','asc'), [1,2,3,5,4]);
+});

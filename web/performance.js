@@ -23,13 +23,17 @@ export function graphPoints(values, width = 300, height = 36) {
   }).filter(Boolean).join(' ');
 }
 
+function primaryGpuEngine(gpu) {
+  const engines = Object.entries(gpu.engines || {});
+  return engines.find(([name, value]) => value != null && (name === 'SM' || name === 'render')) || engines.find(([,value]) => value != null) || engines[0];
+}
+
 export function processGpuDisplay(process) {
   if (!process.active || !process.gpus?.length) return { text: '—\n—', detail: 'No GPU measurement attributed to this process' };
   const detail = process.gpus.map(gpu => `${gpu.device} · ${gpu.source}: ${Object.entries(gpu.engines || {}).map(([engine, value]) => `${engine} ${formatPercent(value)}`).join(', ')}; ${gpu.memory_kind}: ${formatBytes(gpu.memory_bytes)}`).join(' | ');
   if (process.gpus.length > 1) return { text: `${process.gpus.length} GPUs\nSee details`, detail };
   const gpu = process.gpus[0];
-  const engines = Object.entries(gpu.engines || {});
-  const primary = engines.find(([name, value]) => value != null && (name === 'SM' || name === 'render')) || engines.find(([,value]) => value != null) || engines[0];
+  const primary = primaryGpuEngine(gpu);
   return { text: `${primary ? `${primary[0]} ${formatPercent(primary[1])}` : '—'}\n${formatBytes(gpu.memory_bytes)}`, detail };
 }
 
@@ -48,6 +52,36 @@ export function mergeProcessRows(previous, current) {
     else rows[slot] = next;
   }
   return rows;
+}
+
+export function sortProcessRows(rows, column, direction = 'desc') {
+  if (!['process', 'cpu', 'memory', 'gpu'].includes(column)) return [...rows];
+  const value = row => {
+    if (column === 'process') return `${row.role} · ${row.name}`;
+    if (column === 'cpu') return row.cpu_percent;
+    if (column === 'memory') return row.rss_bytes;
+    const engines = (row.gpus || []).map(gpu => primaryGpuEngine(gpu)?.[1]).filter(value => typeof value === 'number' && Number.isFinite(value));
+    return engines.length ? Math.max(...engines) : null;
+  };
+  const known = value => column === 'process' || (typeof value === 'number' && Number.isFinite(value));
+  const gpuMemory = row => {
+    const values = (row.gpus || []).map(gpu => gpu.memory_bytes).filter(value => typeof value === 'number' && Number.isFinite(value));
+    return values.length ? values.reduce((sum, value) => sum + value, 0) : null;
+  };
+  return rows.map((row, index) => ({ row, index })).sort((a, b) => {
+    if (column !== 'process' && a.row.active !== b.row.active) return a.row.active ? -1 : 1;
+    const left = value(a.row), right = value(b.row);
+    if (known(left) !== known(right)) return known(left) ? -1 : 1;
+    const comparison = !known(left) ? 0 : column === 'process' ? left.localeCompare(right, 'en', { numeric: true }) : left - right;
+    const sign = direction === 'asc' ? 1 : -1;
+    if (comparison) return comparison * sign;
+    if (column === 'gpu') {
+      const leftMemory = gpuMemory(a.row), rightMemory = gpuMemory(b.row);
+      if (known(leftMemory) !== known(rightMemory)) return known(leftMemory) ? -1 : 1;
+      if (known(leftMemory) && leftMemory !== rightMemory) return (leftMemory - rightMemory) * sign;
+    }
+    return a.index - b.index;
+  }).map(item => item.row);
 }
 
 export function installPerformancePanel() {
@@ -75,7 +109,7 @@ export function installPerformancePanel() {
       </div>
       <svg class="performance-chart" viewBox="0 0 300 36" role="img" aria-label="Recent Tarsier CPU usage"><polyline fill="none" stroke="currentColor" stroke-width="2" /></svg>
       <p class="performance-note">CPU: 100% = one core. <span data-metric="cores"></span> Memory sums process RSS; shared pages can be counted twice.</p>
-      <table class="performance-processes"><caption>Processes · inactive rows retained</caption><thead><tr><th>Process</th><th>CPU</th><th>Memory</th><th title="Per-process GPU engine activity and memory. Hover a cell for all engines and devices.">GPU</th></tr></thead><tbody></tbody></table>
+      <table class="performance-processes"><caption>Processes · inactive rows retained</caption><thead><tr>${[['process','Process'],['cpu','CPU'],['memory','Memory'],['gpu','GPU']].map(([column,label]) => `<th scope="col" data-sort-header="${column}" aria-sort="none"><button type="button" class="performance-sort" data-sort="${column}">${label}</button></th>`).join('')}</tr></thead><tbody></tbody></table>
       <div class="performance-gpus"></div>
       <dl class="performance-latencies"><div><dt>Perception inference</dt><dd data-metric="perception">—</dd></div><div><dt>Last voice inference / pipeline</dt><dd data-metric="voice">—</dd></div></dl>
       <p class="performance-note">Browser CPU is excluded from Tarsier totals. Machine CPU includes all applications. GPU card summaries cover the entire device. GPU process cells show attributed engine activity and GPU buffers; hover for details. Shared DRM buffers or clients may appear in several processes.</p>
@@ -92,8 +126,12 @@ export function installPerformancePanel() {
   let lastAdvance = Date.now();
   let history = [];
   let processRows = [];
+  const sort = {
+    column: ['process', 'cpu', 'memory', 'gpu'].includes(saved.sort?.column) ? saved.sort.column : null,
+    direction: saved.sort?.direction === 'asc' ? 'asc' : 'desc',
+  };
   function persist() {
-    try { localStorage.setItem(key, JSON.stringify({ ...position, visible })); } catch { /* Keep controls usable without storage. */ }
+    try { localStorage.setItem(key, JSON.stringify({ ...position, visible, sort })); } catch { /* Keep controls usable without storage. */ }
   }
   function place() {
     if (!visible) return;
@@ -106,6 +144,39 @@ export function installPerformancePanel() {
     status.textContent = message;
     panel.classList.add('performance-stale');
   }
+  function renderProcessRows() {
+    const rows = sortProcessRows(processRows, sort.column, sort.direction).map(process => {
+      const row = document.createElement('tr');
+      row.className = process.active ? '' : 'performance-process-inactive';
+      row.title = `${process.role} · ${process.name} (${process.pid})${process.active ? '' : ' · Not present in the latest sample'}`;
+      for (const text of [`${process.role} · ${process.name} (${process.pid})`, process.active ? formatPercent(process.cpu_percent) : 'Inactive', formatBytes(process.rss_bytes)]) {
+        const cell = document.createElement('td'); cell.textContent = text; row.append(cell);
+      }
+      const gpu = processGpuDisplay(process);
+      const gpuCell = document.createElement('td');
+      gpuCell.className = 'performance-process-gpu';
+      gpuCell.textContent = gpu.text; gpuCell.title = gpu.detail; row.append(gpuCell);
+      return row;
+    });
+    panel.querySelector('tbody').replaceChildren(...rows);
+  }
+  function updateSortHeaders() {
+    for (const [column, label] of [['process','Process'],['cpu','CPU'],['memory','Memory'],['gpu','GPU']]) {
+      const selected = sort.column === column;
+      const button = panel.querySelector(`[data-sort="${column}"]`);
+      button.textContent = `${label}${selected ? sort.direction === 'asc' ? ' ↑' : ' ↓' : ''}`;
+      button.title = column === 'gpu' ? 'Sort by displayed GPU activity, then GPU memory when activity is equal or unavailable; unavailable values stay last' : `Sort by ${label.toLowerCase()}`;
+      panel.querySelector(`[data-sort-header="${column}"]`).setAttribute('aria-sort', selected ? sort.direction === 'asc' ? 'ascending' : 'descending' : 'none');
+    }
+  }
+  for (const column of ['process','cpu','memory','gpu']) {
+    panel.querySelector(`[data-sort="${column}"]`).addEventListener('click', () => {
+      sort.direction = sort.column === column ? sort.direction === 'asc' ? 'desc' : 'asc' : column === 'process' ? 'asc' : 'desc';
+      sort.column = column;
+      updateSortHeaders(); renderProcessRows(); persist();
+    });
+  }
+  updateSortHeaders();
   function render(data) {
     const resources = data.resources || {};
     if (!resources.sampled_at_ms) { stale('Waiting for the first resource sample…'); return; }
@@ -130,20 +201,7 @@ export function installPerformancePanel() {
     metric('voice', `${formatMs(data.voice_inference_ms)} / ${formatMs(data.voice_pipeline_ms)}`);
     panel.querySelector('polyline').setAttribute('points', graphPoints(history));
     processRows = mergeProcessRows(processRows, resources.processes || []);
-    const rows = processRows.map(process => {
-      const row = document.createElement('tr');
-      row.className = process.active ? '' : 'performance-process-inactive';
-      row.title = `${process.role} · ${process.name} (${process.pid})${process.active ? '' : ' · Not present in the latest sample'}`;
-      for (const text of [`${process.role} · ${process.name} (${process.pid})`, process.active ? formatPercent(process.cpu_percent) : 'Inactive', formatBytes(process.rss_bytes)]) {
-        const cell = document.createElement('td'); cell.textContent = text; row.append(cell);
-      }
-      const gpu = processGpuDisplay(process);
-      const gpuCell = document.createElement('td');
-      gpuCell.className = 'performance-process-gpu';
-      gpuCell.textContent = gpu.text; gpuCell.title = gpu.detail; row.append(gpuCell);
-      return row;
-    });
-    panel.querySelector('tbody').replaceChildren(...rows);
+    renderProcessRows();
     const gpus = (resources.gpus || []).map(gpu => {
       const block = document.createElement('div');
       const title = document.createElement('strong'); title.textContent = gpu.name;

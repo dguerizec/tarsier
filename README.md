@@ -175,7 +175,14 @@ are saved locally in the browser; the panel stays within the viewport on resize.
 stay in their original order. Missing processes remain gray and show `Inactive`,
 with their old measurements cleared. A restarted helper reuses an inactive row
 with the same name and role, so recurring commands such as `pw-dump` do not grow
-the list indefinitely. This row history lasts until the page is reloaded.
+the list indefinitely. This row history lasts until the page is reloaded. Click a column
+header to sort; click again to reverse direction. The choice is remembered and
+applied to each sample. Name sorting ignores process status, keeping names in place
+when helpers stop or restart. Numeric sorts keep inactive rows and unavailable
+values at the bottom; equal values retain their original order. GPU sorting uses
+the displayed engine activity (the highest primary engine activity across multiple
+GPUs), then GPU memory when activity is equal or unavailable. Processes with GPU
+memory readings sort before completely unavailable GPU readings in either direction.
 
 The daemon samples its process and current descendants every two seconds. The
 panel displays their CPU, summed RSS memory, per-process breakdown, machine CPU,
