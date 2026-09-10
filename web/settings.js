@@ -537,27 +537,38 @@ const voiceLibraryFile = document.querySelector('#voice-library-file');
 const voiceLibraryStatus = document.querySelector('#voice-library-status');
 let voiceLibraryBusy = false;
 let voiceLibrary = null;
+let voiceLibraryFocus = null;
 function renderVoiceLibrary() {
-  voiceLibraryShow.checked = voiceLibrary?.show_controls ?? true;
+  const showControls = voiceLibrary?.show_controls ?? true;
+  voiceLibraryShow.textContent = showControls ? 'On' : 'Off';
+  voiceLibraryShow.setAttribute('aria-pressed', String(showControls));
   voiceLibraryShow.disabled = voiceLibraryBusy || !voiceLibrary;
-  voiceLibraryForm.querySelector('button[type="submit"]').disabled = voiceLibraryBusy || !voiceLibrary?.available;
+  voiceLibraryForm.querySelector('button[type="submit"]').disabled = voiceLibraryBusy || !voiceLibrary?.available || !voiceLibraryFile.files.length;
+  document.querySelector('#voice-library-choose').disabled = voiceLibraryBusy || !voiceLibrary?.available;
+  document.querySelector('#voice-library-filename').textContent = voiceLibraryFile.files[0]?.name || 'No file selected';
   voiceLibraryFile.disabled = voiceLibraryBusy || !voiceLibrary?.available;
   document.querySelector('#voice-library-refresh').disabled = voiceLibraryBusy;
   voiceLibraryList.replaceChildren();
   for (const model of voiceLibrary?.models || []) {
     const row = document.createElement('div'); row.className = 'voice-library-row';
     const name = document.createElement('strong'); name.textContent = model.name;
-    const label = document.createElement('label');
-    const toggle = document.createElement('input'); toggle.type = 'checkbox'; toggle.checked = model.enabled;
+    const toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'secondary compact voice-library-toggle';
+    toggle.textContent = model.enabled ? 'On' : 'Off'; toggle.setAttribute('aria-pressed', String(model.enabled));
     toggle.disabled = voiceLibraryBusy; toggle.setAttribute('aria-label', `Enable ${model.name}`);
-    toggle.onchange = () => changeVoiceLibrary('/api/v1/settings/voice', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({model:model.id, enabled:toggle.checked})});
-    label.append(toggle, ' Enabled');
+    toggle.onclick = () => {
+      voiceLibraryFocus = toggle.getAttribute('aria-label');
+      changeVoiceLibrary('/api/v1/settings/voice', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({model:model.id, enabled:!model.enabled})});
+    };
     const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'secondary compact'; remove.textContent = 'Delete';
     remove.disabled = voiceLibraryBusy; remove.setAttribute('aria-label', `Delete ${model.name}`);
     remove.onclick = () => changeVoiceLibrary(`/api/v1/audio/voice/models/${encodeURIComponent(model.id)}`, {method:'DELETE'});
-    row.append(name, label, remove); voiceLibraryList.append(row);
+    row.append(name, toggle, remove); voiceLibraryList.append(row);
   }
   if (voiceLibrary && !voiceLibrary.models.length) voiceLibraryList.textContent = 'No voices imported.';
+  if (!voiceLibraryBusy && voiceLibraryFocus) {
+    [...voiceLibraryList.querySelectorAll('button')].find(button => button.getAttribute('aria-label') === voiceLibraryFocus)?.focus();
+    voiceLibraryFocus = null;
+  }
 }
 async function changeVoiceLibrary(url = '/api/v1/settings/voice', options = {}) {
   if (voiceLibraryBusy) return;
@@ -571,7 +582,7 @@ async function changeVoiceLibrary(url = '/api/v1/settings/voice', options = {}) 
   } catch (error) { voiceLibraryStatus.textContent = error.message; }
   finally { voiceLibraryBusy = false; renderVoiceLibrary(); }
 }
-voiceLibraryShow.onchange = () => changeVoiceLibrary('/api/v1/settings/voice', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({show_controls:voiceLibraryShow.checked})});
+voiceLibraryShow.onclick = () => changeVoiceLibrary('/api/v1/settings/voice', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({show_controls:voiceLibraryShow.getAttribute('aria-pressed') !== 'true'})});
 voiceLibraryForm.onsubmit = async event => {
   event.preventDefault();
   const file = voiceLibraryFile.files[0];
@@ -580,6 +591,9 @@ voiceLibraryForm.onsubmit = async event => {
   }
   await changeVoiceLibrary(`/api/v1/audio/voice/models?name=${encodeURIComponent(file.name)}`, {method:'POST', headers:{'Content-Type':'application/octet-stream'}, body:file});
   voiceLibraryFile.value = '';
+  renderVoiceLibrary();
 };
+document.querySelector('#voice-library-choose').onclick = () => voiceLibraryFile.click();
+voiceLibraryFile.onchange = () => renderVoiceLibrary();
 document.querySelector('#voice-library-refresh').onclick = () => changeVoiceLibrary();
 changeVoiceLibrary();

@@ -84,18 +84,24 @@
       <div class="settings-tab-panel" role="tabpanel" id="settings-voice" aria-labelledby="tab-voice" tabindex="0" hidden>
         <section class="panel" aria-labelledby="voice-library-heading">
           <h2 id="voice-library-heading">Voice conversion</h2>
-          <p><label><input id="voice-library-show" type="checkbox" disabled> Show voice conversion on the main page</label></p>
-          <p class="hint">Hiding the controls turns conversion off. Showing them again does not restart conversion. Enabled voices appear in the main page selector. Disabling or deleting the selected voice turns conversion off.</p>
+          <div class="voice-library-visibility">
+            <div><strong id="voice-library-show-label">Show on main page</strong><p class="hint">Turning this off also stops conversion.</p></div>
+            <button id="voice-library-show" type="button" class="secondary compact voice-library-toggle" aria-labelledby="voice-library-show-label" aria-pressed="true" disabled>On</button>
+          </div>
           <form id="voice-library-import">
-            <label for="voice-library-file">RVC model (.pth)</label>
-            <input id="voice-library-file" type="file" accept=".pth" required disabled>
-            <p class="hint">Up to 128 MiB. Importing does not select the voice. Compatibility is checked when loading.</p>
-            <button type="submit" disabled>Import voice</button>
-            <button id="voice-library-refresh" type="button" class="secondary">Refresh</button>
+            <input id="voice-library-file" type="file" accept=".pth" disabled hidden>
+            <div class="voice-library-upload">
+              <button id="voice-library-choose" type="button" class="secondary" disabled>Choose model</button>
+              <span id="voice-library-filename" class="hint">No file selected</span>
+              <button type="submit" disabled>Import voice</button>
+            </div>
+            <p class="hint">RVC .pth · Up to 128 MiB. Importing does not activate the voice.</p>
           </form>
           <p id="voice-library-status" role="status" aria-live="polite"></p>
+          <div class="voice-library-heading"><h3>Available voices</h3><button id="voice-library-refresh" type="button" class="secondary compact">Refresh</button></div>
+          <p class="hint">Only voices set to On appear in the main page selector.</p>
           <div id="voice-library-list" aria-label="Installed voices"></div>
-          <p class="hint">Deleted models are kept in the model folder’s .trash directory.</p>
+          <p class="hint">Turning off or deleting the selected voice stops conversion. Deleted models are kept in the model folder’s .trash directory.</p>
         </section>
       </div>
       <div class="settings-tab-panel" role="tabpanel" id="settings-devices" aria-labelledby="tab-devices" tabindex="0" hidden>
