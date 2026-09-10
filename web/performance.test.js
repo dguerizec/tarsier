@@ -144,3 +144,13 @@ test('column sorting is numeric, stable, non-mutating and keeps missing/inactive
   assert.deepEqual(ids('gpu','desc'), [2,1,3,5,4]);
   assert.deepEqual(ids('gpu','asc'), [1,2,3,5,4]);
 });
+
+test('worker stages show rates and durations and clear idle or stale values', async () => {
+  const { workerStageRows } = await import('./performance.js');
+  const sample = { received_at_ms:1000, interval_ms:2000, stages:{face:{calls:20,total_ms:400,max_ms:35},depth:{calls:0,total_ms:0,max_ms:null}} };
+  const rows = workerStageRows(sample,2000);
+  assert.deepEqual(rows.find(row => row.label === 'Face'), {label:'Face',active:true,rate:'10.0/s',mean:'20 ms',max:'35 ms'});
+  assert.equal(rows.find(row => row.label === 'Depth pipeline').rate, '0.0/s');
+  assert.ok(workerStageRows(sample,8000).every(row => !row.active && row.mean === '—' && row.rate === '—'));
+  assert.equal(workerStageRows(null).length, rows.length);
+});

@@ -18,6 +18,7 @@ import numpy as np
 
 from .auth import authorize
 from .avatar import VideoIdentityClient
+from .telemetry import timed
 
 LOGGER = logging.getLogger(__name__)
 DEPTH_MODEL_DIRECTORY = "depth-anything-v2-small"
@@ -84,6 +85,7 @@ class DepthEstimator:
     def latest(self) -> DepthEstimate | None:
         return self._latest
 
+    @timed("depth")
     def estimate(self, frame: DepthInputFrame) -> DepthEstimate:
         height, width = frame.frame_bgr.shape[:2]
         input_width = depth_input_width(width, height, self._input_height)
@@ -145,6 +147,7 @@ class DepthMaskRefiner:
         self._foreground_histogram: np.ndarray | None = None
         self._background_histogram: np.ndarray | None = None
 
+    @timed("depth_refine")
     def refine(self, mask: np.ndarray, estimate: DepthEstimate) -> np.ndarray:
         if mask.ndim != 2 or mask.dtype != np.uint8:
             raise ValueError("depth-guided mask must be a two-dimensional uint8 array")
@@ -205,6 +208,7 @@ class DepthPublisher:
         self._url = f"{daemon_url.rstrip('/')}/api/v1/depth/frame"
         self._timeout_seconds = timeout_seconds
 
+    @timed("depth_publish")
     def publish(self, estimate: DepthEstimate) -> None:
         if estimate.values.ndim != 2 or estimate.values.dtype != np.float32:
             raise ValueError("depth values must be a two-dimensional float32 array")

@@ -20,6 +20,7 @@ import numpy as np
 from .auth import authorize
 from .avatar import AvatarInputFrame, AvatarProcessor
 from .depth import DepthInputFrame, DepthProcessor
+from .telemetry import stages, timed
 
 LOGGER = logging.getLogger(__name__)
 POSE_CONSTRAINT_RADIUS = 32
@@ -206,9 +207,12 @@ class MediaPipeDetector:
     ]:
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
-        face_result = self._face.detect_for_video(image, timestamp_ms)
-        gesture_result = self._gesture.recognize_for_video(image, timestamp_ms)
-        pose_result = self._pose.detect_for_video(image, timestamp_ms)
+        with stages.measure("face"):
+            face_result = self._face.detect_for_video(image, timestamp_ms)
+        with stages.measure("hands"):
+            gesture_result = self._gesture.recognize_for_video(image, timestamp_ms)
+        with stages.measure("pose"):
+            pose_result = self._pose.detect_for_video(image, timestamp_ms)
         gesture, confidence = select_gesture(gesture_result.gestures)
         face_landmarks = select_landmarks(face_result.face_landmarks, 1)
         hand_landmarks = select_landmarks(gesture_result.hand_landmarks, 2)
@@ -251,6 +255,7 @@ class MediaPipeSegmenter:
         )
         self._pose_constraints = pose_constraints
 
+    @timed("segmentation")
     def segment(self, frame_bgr: np.ndarray, timestamp_ms: int, rotation: int = 0) -> np.ndarray:
         frame_bgr = rotate_for_inference(frame_bgr, rotation)
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
@@ -277,6 +282,7 @@ class ObservationPublisher:
         self._mask_url = f"{daemon_url.rstrip('/')}/api/v1/perception/mask"
         self._timeout_seconds = timeout_seconds
 
+    @timed("observations_publish")
     def publish(self, observation: Observation) -> None:
         body = json.dumps(asdict(observation), separators=(",", ":")).encode()
         request = urllib.request.Request(
@@ -294,6 +300,7 @@ class ObservationPublisher:
         except urllib.error.URLError as error:
             raise RuntimeError(f"failed to publish observation: {error.reason}") from error
 
+    @timed("mask_publish")
     def publish_mask(self, frame_id: int, captured_at_ms: int, mask: np.ndarray) -> None:
         if mask.ndim != 2 or mask.dtype != np.uint8:
             raise ValueError("segmentation mask must be a two-dimensional uint8 array")
@@ -475,11 +482,12 @@ def capture_mjpeg_frames(source: str, width: int, height: int) -> Iterator[Sourc
     try:
         with urllib.request.urlopen(authorize(request), timeout=5.0) as response:  # noqa: S310
             for headers, encoded in read_mjpeg_parts(response):
-                frame = cv2.imdecode(np.frombuffer(encoded, dtype=np.uint8), cv2.IMREAD_COLOR)
-                if frame is None:
-                    raise RuntimeError("failed to decode an MJPEG frame")
-                if frame.shape[:2] != (height, width):
-                    frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_LINEAR)
+                with stages.measure("decode"):
+                    frame = cv2.imdecode(np.frombuffer(encoded, dtype=np.uint8), cv2.IMREAD_COLOR)
+                    if frame is None:
+                        raise RuntimeError("failed to decode an MJPEG frame")
+                    if frame.shape[:2] != (height, width):
+                        frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_LINEAR)
                 try:
                     frame_id = int(headers["x-tarsier-frame-id"])
                     captured_at_ms = int(headers["x-tarsier-captured-at-ms"])
@@ -564,6 +572,7 @@ def run_worker(
     previous_depths_published = 0
     previous_refined_masks_published = 0
     with ExitStack() as stack:
+        stack.enter_context(stages.publishing(daemon_url))
         segmenter = stack.enter_context(MediaPipeSegmenter(model_dir, pose_constraints))
         observation_processor = stack.enter_context(
             ObservationProcessor(

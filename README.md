@@ -184,6 +184,22 @@ the displayed engine activity (the highest primary engine activity across multip
 GPUs), then GPU memory when activity is equal or unavailable. Processes with GPU
 memory readings sort before completely unavailable GPU readings in either direction.
 
+The expandable **Worker stages** table shows calls per second, mean elapsed time,
+and maximum elapsed time over approximately two-second windows. Fixed rows cover
+JPEG decoding/resizing, face/hands/pose detection, person segmentation, avatar
+tracking/rendering, depth estimation/refinement, and publication to the daemon.
+Idle rows remain visible; samples older than six seconds clear their values.
+These are wall times, including waits, not per-stage CPU percentages or isolated
+GPU kernel timings. Parallel stages overlap; initialization, queue waits and some
+pre/postprocessing are outside the measured stages. Calls include failed attempts.
+The existing perception latency measures only the observation pipeline.
+
+Instrumentation stores only count/sum/max for 13 stages, with no frame history,
+images, or additional GPU synchronization. A separate thread publishes a bounded
+snapshot every two seconds with a one-second timeout. The daemon retains only the
+latest sample outside state events; closing the panel stops browser polling but
+worker counters continue. CPU/RAM overhead is bounded, though not literally zero.
+
 The daemon samples its process and current descendants every two seconds. The
 panel displays their CPU, summed RSS memory, per-process breakdown, machine CPU,
 video FPS, recent perception inference latency, and the last voice timings.

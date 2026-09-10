@@ -1,11 +1,48 @@
 //! Low-frequency local resource samples. CPU 100% means one logical core.
 use crate::{model::unix_ms, runtime::Runtime};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     path::Path,
     time::{Duration, Instant},
 };
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WorkerStage {
+    pub calls: u64,
+    pub total_ms: f64,
+    pub max_ms: Option<f64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WorkerTelemetry {
+    pub pid: u32,
+    pub interval_ms: f64,
+    pub stages: BTreeMap<String, WorkerStage>,
+    #[serde(skip_deserializing)]
+    pub received_at_ms: u64,
+}
+
+impl WorkerTelemetry {
+    pub fn valid(&self) -> bool {
+        const NAMES: &[&str] = &[
+            "decode", "face", "hands", "pose", "segmentation", "observations_publish",
+            "mask_publish", "avatar_tracking", "avatar_render", "avatar_publish",
+            "depth", "depth_refine", "depth_publish",
+        ];
+        self.pid > 0 && self.interval_ms.is_finite() && self.interval_ms > 0.0
+            && self.interval_ms <= 3_600_000.0 && self.stages.len() <= NAMES.len()
+            && self.stages.iter().all(|(name, stage)| {
+                NAMES.contains(&name.as_str()) && stage.calls <= 1_000_000
+                    && stage.total_ms.is_finite() && (0.0..=3_600_000.0).contains(&stage.total_ms)
+                    && if stage.calls == 0 {
+                        stage.total_ms == 0.0 && stage.max_ms.is_none()
+                    } else {
+                        stage.max_ms.is_some_and(|max| max.is_finite() && max >= 0.0 && max <= stage.total_ms)
+                    }
+            })
+    }
+}
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Telemetry {

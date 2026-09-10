@@ -345,6 +345,7 @@ pub fn router_with_controls(
         .route("/api/v1/daemon/restart", post(restart_daemon))
         .route("/api/v1/state", get(current_state))
         .route("/api/v1/telemetry", get(resource_telemetry))
+        .route("/api/v1/perception/telemetry", post(worker_telemetry).layer(DefaultBodyLimit::max(8192)))
         .route("/assets/performance.js", get(|| async {
             ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8"), (header::CACHE_CONTROL, "no-store")], include_str!("../web/performance.js"))
         }))
@@ -1338,10 +1339,23 @@ async fn current_state(State(state): State<ApiState>) -> Json<crate::model::Runt
     Json(state.runtime.state().await)
 }
 
+async fn worker_telemetry(
+    State(state): State<ApiState>,
+    Json(mut sample): Json<crate::telemetry::WorkerTelemetry>,
+) -> StatusCode {
+    if !sample.valid() {
+        return StatusCode::BAD_REQUEST;
+    }
+    sample.received_at_ms = crate::model::unix_ms();
+    state.runtime.set_worker_telemetry(sample).await;
+    StatusCode::NO_CONTENT
+}
+
 async fn resource_telemetry(State(state): State<ApiState>) -> Json<serde_json::Value> {
     let runtime = state.runtime.state().await;
     Json(json!({
         "resources": state.runtime.telemetry().await,
+        "worker_stages": state.runtime.worker_telemetry().await,
         "video_fps": runtime.pipeline.fps,
         "video_running": runtime.pipeline.running,
         "perception_latency_ms": runtime.perception.latency_ms,
@@ -6025,6 +6039,39 @@ mod tests {
             assert_eq!(direction.vector(), vector);
             assert_eq!(direction.as_str(), name);
         }
+    }
+
+    #[tokio::test]
+    async fn worker_stage_samples_are_bounded_cached_and_do_not_emit_state() {
+        let runtime = Runtime::new();
+        let updates = runtime.subscribe_state();
+        let (_tx, rx) = watch::channel(false);
+        let app = router(Config::default(), runtime.clone(), PreviewHub::new(), None, rx);
+        let sample = json!({"pid": 42, "interval_ms": 2000,
+            "stages": {"face": {"calls": 20, "total_ms": 400, "max_ms": 35}}});
+        let send = |value: Value| Request::post("/api/v1/perception/telemetry")
+            .header("content-type", "application/json")
+            .body(Body::from(value.to_string())).unwrap();
+        let response = app.clone().oneshot(send(sample.clone())).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert!(!updates.has_changed().unwrap());
+        assert!(runtime.recent_events().await.is_empty());
+        let cached = runtime.worker_telemetry().await.unwrap();
+        assert_eq!(cached.stages["face"].calls, 20);
+        assert!(cached.received_at_ms > 0);
+        let mut invalid = sample.clone();
+        invalid["interval_ms"] = json!(0);
+        assert_eq!(app.clone().oneshot(send(invalid)).await.unwrap().status(), StatusCode::BAD_REQUEST);
+        let mut invalid = sample.clone();
+        invalid["stages"]["arbitrary"] = sample["stages"]["face"].clone();
+        assert_eq!(app.clone().oneshot(send(invalid)).await.unwrap().status(), StatusCode::BAD_REQUEST);
+        let mut invalid = sample;
+        invalid["stages"]["face"]["total_ms"] = json!(-1);
+        assert_eq!(app.clone().oneshot(send(invalid)).await.unwrap().status(), StatusCode::BAD_REQUEST);
+        let response = app.oneshot(Request::get("/api/v1/telemetry").body(Body::empty()).unwrap()).await.unwrap();
+        let body: Value = serde_json::from_slice(&to_bytes(response.into_body(), 8192).await.unwrap()).unwrap();
+        assert_eq!(body["worker_stages"]["pid"], 42);
+        assert_eq!(body["worker_stages"]["stages"]["face"]["total_ms"], 400.0);
     }
 
     #[tokio::test]

@@ -511,3 +511,10 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .performance-sort { background: transparent; color: inherit; border: 0; padding: 2px 0; font: inherit; font-weight: 650; cursor: pointer; white-space: nowrap; }
 .performance-sort:hover, .performance-sort:focus-visible { color: #80dac7; }
 .performance-processes th[aria-sort="ascending"], .performance-processes th[aria-sort="descending"] { color: #80dac7; }
+
+.performance-stages summary { cursor: pointer; font-weight: 650; margin-top: 12px; }
+.performance-stage-scroll { max-height: 240px; overflow: auto; }
+.performance-stages table { width: 100%; border-collapse: collapse; font-size: 11px; font-variant-numeric: tabular-nums; }
+.performance-stages th, .performance-stages td { padding: 4px 3px; text-align: right; border-bottom: 1px solid #283748; }
+.performance-stages th:first-child, .performance-stages td:first-child { text-align: left; }
+.performance-stages .performance-process-inactive { color: #8492a5; }

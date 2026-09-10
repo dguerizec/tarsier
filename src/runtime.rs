@@ -15,6 +15,7 @@ pub struct Runtime {
     history: Arc<RwLock<VecDeque<SemanticEvent>>>,
     sequence: Arc<std::sync::atomic::AtomicU64>,
     telemetry: Arc<RwLock<crate::telemetry::Telemetry>>,
+    worker_telemetry: Arc<RwLock<Option<crate::telemetry::WorkerTelemetry>>>,
 }
 
 impl Runtime {
@@ -29,6 +30,7 @@ impl Runtime {
             history: Arc::new(RwLock::new(VecDeque::with_capacity(EVENT_HISTORY_LIMIT))),
             sequence: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             telemetry: Arc::new(RwLock::new(Default::default())),
+            worker_telemetry: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -42,6 +44,14 @@ impl Runtime {
 
     pub async fn set_telemetry(&self, sample: crate::telemetry::Telemetry) {
         *self.telemetry.write().await = sample;
+    }
+
+    pub async fn worker_telemetry(&self) -> Option<crate::telemetry::WorkerTelemetry> {
+        self.worker_telemetry.read().await.clone()
+    }
+
+    pub async fn set_worker_telemetry(&self, sample: crate::telemetry::WorkerTelemetry) {
+        *self.worker_telemetry.write().await = Some(sample);
     }
 
     pub async fn update(&self, mutate: impl FnOnce(&mut RuntimeState)) {

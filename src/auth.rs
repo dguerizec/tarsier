@@ -218,6 +218,7 @@ impl Auth {
                         "/api/v1/perception/input.mjpeg"
                             | "/api/v1/perception/observations"
                             | "/api/v1/perception/mask"
+                            | "/api/v1/perception/telemetry"
                             | "/api/v1/avatar/frame"
                             | "/api/v1/depth/frame"
                     );
@@ -1298,6 +1299,7 @@ mod tests {
         for path in [
             "/api/v1/perception/input.mjpeg",
             "/api/v1/perception/observations",
+            "/api/v1/perception/telemetry",
             "/api/v1/perception/mask",
             "/api/v1/avatar/frame",
             "/api/v1/depth/frame",

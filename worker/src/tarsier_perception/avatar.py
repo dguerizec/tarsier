@@ -19,6 +19,7 @@ import mediapipe as mp
 import numpy as np
 
 from .auth import authorize
+from .telemetry import stages, timed
 
 LOGGER = logging.getLogger(__name__)
 
@@ -150,6 +151,7 @@ class MediaPipeFaceCropper:
         )
         self._temporal_crop = TemporalFaceCrop()
 
+    @timed("avatar_tracking")
     def crop(self, frame_bgr: np.ndarray, timestamp_ms: int) -> np.ndarray | None:
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
@@ -191,6 +193,7 @@ class MediaPipeAvatarTracker:
             )
         )
 
+    @timed("avatar_tracking")
     def track(self, frame_bgr: np.ndarray, timestamp_ms: int):  # noqa: ANN201
         from .avatar_motion import motion_from_mediapipe
 
@@ -215,6 +218,7 @@ class AvatarPublisher:
         self._url = f"{daemon_url.rstrip('/')}/api/v1/avatar/frame"
         self._timeout_seconds = timeout_seconds
 
+    @timed("avatar_publish")
     def publish(
         self,
         engine: str,
@@ -492,7 +496,9 @@ class AvatarProcessor:
             )
 
             def render_portrait(frame: AvatarInputFrame) -> np.ndarray:
-                return engine.render(tracker.track(frame.frame_bgr, frame.timestamp_ms))
+                motion = tracker.track(frame.frame_bgr, frame.timestamp_ms)
+                with stages.measure("avatar_render"):
+                    return engine.render(motion)
 
             return render_portrait
 
@@ -520,11 +526,12 @@ class AvatarProcessor:
             driving = cropper.crop(frame.frame_bgr, frame.timestamp_ms)
             if driving is None:
                 return None
-            animated, portrait = switcher.render(driving)
-            self._rendered_source_revision = portrait.revision
-            return compose_avatar_frame(
-                animated, self._width, self._height,
-            )
+            with stages.measure("avatar_render"):
+                animated, portrait = switcher.render(driving)
+                self._rendered_source_revision = portrait.revision
+                return compose_avatar_frame(
+                    animated, self._width, self._height,
+                )
 
         return render_liveportrait
 

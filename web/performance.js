@@ -84,6 +84,28 @@ export function sortProcessRows(rows, column, direction = 'desc') {
   }).map(item => item.row);
 }
 
+const WORKER_STAGES = [
+  ['decode', 'Decode / resize'], ['face', 'Face'], ['hands', 'Hands / gestures'],
+  ['pose', 'Pose'], ['segmentation', 'Person mask'],
+  ['observations_publish', 'Send observations'], ['mask_publish', 'Send mask'],
+  ['avatar_tracking', 'Avatar tracking'], ['avatar_render', 'Avatar render'],
+  ['avatar_publish', 'Send avatar'], ['depth', 'Depth pipeline'],
+  ['depth_refine', 'Depth mask refinement'], ['depth_publish', 'Send depth'],
+];
+
+export function workerStageRows(sample, now = Date.now()) {
+  const fresh = sample && sample.interval_ms > 0 && now - sample.received_at_ms <= 6000;
+  return WORKER_STAGES.map(([name, label]) => {
+    const stage = fresh ? sample.stages?.[name] : null;
+    return {
+      label, active: Boolean(stage?.calls),
+      rate: stage ? `${(stage.calls * 1000 / sample.interval_ms).toFixed(1)}/s` : '—',
+      mean: stage?.calls ? formatMs(stage.total_ms / stage.calls) : '—',
+      max: stage?.calls ? formatMs(stage.max_ms) : '—',
+    };
+  });
+}
+
 export function installPerformancePanel() {
   const toggle = document.querySelector('#performance-toggle');
   if (!toggle) return;
@@ -111,6 +133,7 @@ export function installPerformancePanel() {
       <p class="performance-note">CPU: 100% = one core. <span data-metric="cores"></span> Memory sums process RSS; shared pages can be counted twice.</p>
       <table class="performance-processes"><caption>Processes · inactive rows retained</caption><thead><tr>${[['process','Process'],['cpu','CPU'],['memory','Memory'],['gpu','GPU']].map(([column,label]) => `<th scope="col" data-sort-header="${column}" aria-sort="none"><button type="button" class="performance-sort" data-sort="${column}">${label}</button></th>`).join('')}</tr></thead><tbody></tbody></table>
       <div class="performance-gpus"></div>
+      <details class="performance-stages" open><summary>Worker stages</summary><p class="performance-note" data-stage-status></p><div class="performance-stage-scroll"><table><thead><tr><th>Stage</th><th>Calls/s</th><th>Mean</th><th>Max</th></tr></thead><tbody data-stage-rows></tbody></table></div><p class="performance-note">Elapsed time per call, including waits; not CPU time. Parallel stages overlap. No calls means idle or not yet completed. Depth includes preprocessing and GPU readback.</p></details>
       <dl class="performance-latencies"><div><dt>Perception inference</dt><dd data-metric="perception">—</dd></div><div><dt>Last voice inference / pipeline</dt><dd data-metric="voice">—</dd></div></dl>
       <p class="performance-note">Browser CPU is excluded from Tarsier totals. Machine CPU includes all applications. GPU card summaries cover the entire device. GPU process cells show attributed engine activity and GPU buffers; hover for details. Shared DRM buffers or clients may appear in several processes.</p>
     </div>`;
@@ -200,6 +223,19 @@ export function installPerformancePanel() {
     metric('perception', data.perception_age_ms == null || data.perception_age_ms > 5000 ? 'No recent sample' : formatMs(data.perception_latency_ms));
     metric('voice', `${formatMs(data.voice_inference_ms)} / ${formatMs(data.voice_pipeline_ms)}`);
     panel.querySelector('polyline').setAttribute('points', graphPoints(history));
+    const sample = data.worker_stages;
+    const stageFresh = sample && Date.now() - sample.received_at_ms <= 6000;
+    panel.querySelector('[data-stage-status]').textContent = stageFresh
+      ? `PID ${sample.pid} · last ${(sample.interval_ms / 1000).toFixed(1)} s`
+      : 'No recent worker stage sample';
+    panel.querySelector('[data-stage-rows]').replaceChildren(...workerStageRows(sample).map(stage => {
+      const row = document.createElement('tr');
+      if (!stage.active) row.className = 'performance-process-inactive';
+      for (const text of [stage.label, stage.rate, stage.mean, stage.max]) {
+        const cell = document.createElement('td'); cell.textContent = text; row.append(cell);
+      }
+      return row;
+    }));
     processRows = mergeProcessRows(processRows, resources.processes || []);
     renderProcessRows();
     const gpus = (resources.gpus || []).map(gpu => {
