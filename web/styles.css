@@ -454,3 +454,5 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .device-reservation-row { display: flex; align-items: center; gap: 1rem; padding: .7rem 0; border-bottom: 1px solid var(--panel-edge); }
 .device-reservation-row span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .device-reservation-row button { flex: 0 0 auto; min-width: 4.5rem; }
+
+#settings-avatars .panel.is-drag-over { border-color: var(--green); box-shadow: inset 0 0 0 1px var(--green); background: #b7ef7a0c; }
