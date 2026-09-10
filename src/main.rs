@@ -26,6 +26,7 @@ mod scenario;
 mod settings;
 mod service;
 mod telemetry;
+mod telemetry_record;
 mod gpu_process;
 mod utterances;
 mod video_clients;
@@ -87,6 +88,8 @@ enum Command {
         #[arg(long, default_value = "http://127.0.0.1:8742")]
         url: String,
     },
+    /// Record resource and worker-stage samples to a bounded JSONL file.
+    TelemetryRecord(telemetry_record::Options),
     /// Manage the optional master password locally, including forgotten-password recovery.
     Auth {
         #[command(subcommand)]
@@ -156,6 +159,7 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
+        Command::TelemetryRecord(options) => telemetry_record::run(options).await,
         Command::Status { url } => {
             let client = reqwest::Client::new();
             let mut request = client.get(format!("{url}/api/v1/state"));

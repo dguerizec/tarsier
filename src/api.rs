@@ -1351,11 +1351,47 @@ async fn worker_telemetry(
     StatusCode::NO_CONTENT
 }
 
+fn telemetry_pipeline_context(runtime: &crate::model::RuntimeState, config: &Config) -> Value {
+    let effects = &runtime.video_effects;
+    let depth_usage = if !config.depth.enabled {
+        None
+    } else if effects.output_mode == VideoOutputMode::DepthMap {
+        Some("depth-map")
+    } else if effects.output_mode == VideoOutputMode::Camera && effects.background_enabled {
+        Some("mask-refinement")
+    } else {
+        None
+    };
+    json!({
+        "observed_at_ms": crate::model::unix_ms(),
+        "daemon_started_at_ms": runtime.started_at_ms,
+        "identity": video_identity(effects.output_mode, effects.avatar_engine),
+        "background": {"enabled":effects.background_enabled,"selected_effect":effects.background_effect},
+        "video": {"running":runtime.pipeline.running,"enabled":runtime.pipeline.enabled,
+            "source":runtime.pipeline.source,"width":runtime.pipeline.width,"height":runtime.pipeline.height,
+            "target_fps":config.video.fps,"actual_fps":runtime.pipeline.fps,
+            "output_muted":runtime.pipeline.output_muted,"camera_reserved":runtime.pipeline.camera_reserved,
+            "transform":effects.transform},
+        "perception": {"enabled":config.perception.enabled,"connected":runtime.perception.worker_connected,
+            "source":config.perception.source,"width":config.perception.width,"height":config.perception.height,
+            "target_fps":config.perception.fps,"mask_target_fps":config.perception.mask_fps},
+        "avatar": {"enabled":config.avatar.enabled,"target_fps":config.avatar.fps,
+            "compile":config.avatar.compile,"available":effects.avatar_available},
+        "depth": {"enabled":config.depth.enabled,"requested_usage":depth_usage,
+            "target_fps":config.depth.fps,"input_height":config.depth.input_height,"available":effects.depth_available},
+        "tracking": {"face_enabled":runtime.camera.face_tracking.enabled,
+            "hands_enabled":runtime.camera.hands_tracking.enabled,
+            "auto_zoom_enabled":runtime.camera.face_tracking.auto_zoom.enabled},
+        "voice": {"enabled":runtime.audio_voice.enabled,"ready":runtime.audio_voice.ready},
+    })
+}
+
 async fn resource_telemetry(State(state): State<ApiState>) -> Json<serde_json::Value> {
     let runtime = state.runtime.state().await;
     Json(json!({
         "resources": state.runtime.telemetry().await,
         "worker_stages": state.runtime.worker_telemetry().await,
+        "pipeline_context": telemetry_pipeline_context(&runtime, &state.config),
         "video_fps": runtime.pipeline.fps,
         "video_running": runtime.pipeline.running,
         "perception_latency_ms": runtime.perception.latency_ms,
@@ -6038,6 +6074,33 @@ mod tests {
             let direction: PanTiltDirection = serde_json::from_value(json!(name)).unwrap();
             assert_eq!(direction.vector(), vector);
             assert_eq!(direction.as_str(), name);
+        }
+    }
+
+    #[test]
+    fn telemetry_context_tracks_selected_pipeline_modes() {
+        let mut runtime = crate::model::RuntimeState::default();
+        let mut config = Config::default();
+        config.depth.enabled = true;
+        let context = telemetry_pipeline_context(&runtime, &config);
+        assert_eq!(context["identity"], "camera");
+        assert_eq!(context["background"]["enabled"], false);
+        assert!(context["depth"]["requested_usage"].is_null());
+        runtime.video_effects.background_enabled = true;
+        for effect in [BackgroundEffect::Blur, BackgroundEffect::PixelParty, BackgroundEffect::GreenScreen] {
+            runtime.video_effects.background_effect = effect;
+            let context = telemetry_pipeline_context(&runtime, &config);
+            assert_eq!(context["background"]["selected_effect"], json!(effect));
+            assert_eq!(context["depth"]["requested_usage"], "mask-refinement");
+        }
+        runtime.video_effects.output_mode = VideoOutputMode::DepthMap;
+        assert_eq!(telemetry_pipeline_context(&runtime, &config)["identity"], "depth-map");
+        runtime.video_effects.output_mode = VideoOutputMode::ComicAvatar;
+        for (engine, identity) in [(AvatarEngine::Portrait3d, "portrait3d"), (AvatarEngine::Liveportrait, "liveportrait")] {
+            runtime.video_effects.avatar_engine = Some(engine);
+            let context = telemetry_pipeline_context(&runtime, &config);
+            assert_eq!(context["identity"], identity);
+            assert!(context["depth"]["requested_usage"].is_null());
         }
     }
 

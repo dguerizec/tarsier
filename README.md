@@ -200,6 +200,42 @@ snapshot every two seconds with a one-second timeout. The daemon retains only th
 latest sample outside state events; closing the panel stops browser polling but
 worker counters continue. CPU/RAM overhead is bounded, though not literally zero.
 
+To keep an observation session, use the read-only recorder (the daemon otherwise
+retains only the latest detailed snapshot):
+
+```sh
+tarsier telemetry-record --output telemetry.jsonl --duration 600 --interval 2
+```
+
+When authentication is enabled, supply an API-scoped token through
+`TARSIER_API_TOKEN`, as for `tarsier status`. The recorder never writes the token
+or HTTP response error bodies. `--url` selects another daemon. Files are created
+with user-only permissions and existing files are rejected. The default limits
+are ten minutes and 64 MiB (`--max-mib`); Ctrl-C stops early. It does not start,
+restart, or change the camera or daemon.
+
+Each JSONL line has `schema_version: 1`, `kind` and `recorded_at_ms`. Sample lines
+store the complete `/api/v1/telemetry` response in `data`, including `resources`
+and `worker_stages`. Every line also has `pipeline_context`: the observed camera,
+background enablement and selected effect, depth-map/LivePortrait/Personal 3D
+identity, dimensions, target/actual video cadence, worker cadences, depth usage,
+tracking, mute and voice enablement. The context comes from the same telemetry
+response, not a separate settings request. Its `observed_at_ms` identifies when
+it was read; measurement windows may straddle a mode change.
+
+`pipeline_context_current` is true for a sample with context from that poll. Error
+and stop lines retain the last known context with this flag false; the initial
+start marker has null context until the first successful response. This prevents
+connection failures from silently presenting old configuration as current.
+Start/stop markers delimit the session; connection failures
+produce error lines and recording resumes on subsequent polls. Authentication
+errors stop immediately. A size-limited file may omit the final stop marker.
+Source timestamps are preserved: repeated or stale API snapshots are not new
+measurements and should be identified by their source timestamps during analysis.
+Lines are flushed as they are written; only one response (at most 1 MiB) is held
+at a time. JSONL needs no database dependency and can be imported into SQLite
+later for comparisons across sessions.
+
 The daemon samples its process and current descendants every two seconds. The
 panel displays their CPU, summed RSS memory, per-process breakdown, machine CPU,
 video FPS, recent perception inference latency, and the last voice timings.
