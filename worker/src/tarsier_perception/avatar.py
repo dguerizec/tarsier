@@ -113,30 +113,23 @@ def crop_face_square(
 
 
 def compose_avatar_frame(
-    source_bgr: np.ndarray,
     animated_bgr: np.ndarray,
     width: int,
     height: int,
 ) -> np.ndarray:
-    base = cv2.resize(source_bgr, (width, height), interpolation=cv2.INTER_AREA)
-    square_size = min(width, height)
+    source_height, source_width = animated_bgr.shape[:2]
+    scale = min(width / source_width, height / source_height)
+    fitted_width = max(1, min(width, round(source_width * scale)))
+    fitted_height = max(1, min(height, round(source_height * scale)))
     animated = cv2.resize(
         animated_bgr,
-        (square_size, square_size),
+        (fitted_width, fitted_height),
         interpolation=cv2.INTER_CUBIC,
     )
-    left = (width - square_size) // 2
-    top = (height - square_size) // 2
-    feather = max(1, square_size // 32)
-    alpha = np.ones((square_size, square_size), dtype=np.float32)
-    ramp = np.linspace(0.0, 1.0, feather, dtype=np.float32)
-    alpha[:, :feather] *= ramp
-    alpha[:, -feather:] *= ramp[::-1]
-    alpha[:feather, :] *= ramp[:, None]
-    alpha[-feather:, :] *= ramp[::-1, None]
-    alpha = alpha[..., None]
-    region = base[top : top + square_size, left : left + square_size]
-    region[:] = np.clip(animated * alpha + region * (1.0 - alpha), 0, 255).astype(np.uint8)
+    base = np.zeros((height, width, 3), dtype=np.uint8)
+    left = (width - fitted_width) // 2
+    top = (height - fitted_height) // 2
+    base[top : top + fitted_height, left : left + fitted_width] = animated
     return cv2.cvtColor(base, cv2.COLOR_BGR2BGRA)
 
 
@@ -530,7 +523,7 @@ class AvatarProcessor:
             animated, portrait = switcher.render(driving)
             self._rendered_source_revision = portrait.revision
             return compose_avatar_frame(
-                portrait.source.image_bgr, animated, self._width, self._height,
+                animated, self._width, self._height,
             )
 
         return render_liveportrait

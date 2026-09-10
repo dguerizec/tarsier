@@ -261,16 +261,23 @@ def test_face_crop_geometry_resets_after_a_tracking_gap() -> None:
     assert reacquired == FaceCropGeometry(200.0, 180.0, 120.0)
 
 
-def test_avatar_composition_returns_full_size_bgrx_frame() -> None:
+def test_avatar_composition_centers_image_with_opaque_black_bars() -> None:
     import numpy as np
 
-    source = np.full((9, 16, 3), 10, dtype=np.uint8)
-    animated = np.full((8, 8, 3), 200, dtype=np.uint8)
-    output = compose_avatar_frame(source, animated, 16, 9)
-    assert output.shape == (9, 16, 4)
-    assert output.dtype == np.uint8
-    assert output[4, 8, :3].tolist() == [200, 200, 200]
-    assert output[4, 0, :3].tolist() == [10, 10, 10]
+    for source_shape, output_size, region in [
+        ((8, 8), (16, 9), (0, 9, 3, 12)),
+        ((8, 8), (9, 16), (3, 12, 0, 9)),
+        ((8, 16), (16, 16), (4, 12, 0, 16)),
+        ((8, 16), (16, 8), (0, 8, 0, 16)),
+    ]:
+        animated = np.full((*source_shape, 3), 200, dtype=np.uint8)
+        width, height = output_size
+        output = compose_avatar_frame(animated, width, height)
+        expected = np.zeros((height, width, 4), dtype=np.uint8)
+        expected[:, :, 3] = 255
+        top, bottom, left, right = region
+        expected[top:bottom, left:right, :3] = 200
+        np.testing.assert_array_equal(output, expected)
 
 
 def test_avatar_identity_client_reads_the_selected_engine(monkeypatch) -> None:  # noqa: ANN001
