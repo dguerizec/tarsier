@@ -343,6 +343,7 @@ pub fn router_with_controls(
         .route("/assets/styles.css", get(styles_css))
         .route("/api/v1/health", get(health))
         .route("/api/v1/daemon/restart", post(restart_daemon))
+        .route("/api/v1/perception/delegates", post(set_perception_delegate))
         .route("/api/v1/state", get(current_state))
         .route("/api/v1/telemetry", get(resource_telemetry))
         .route("/api/v1/perception/telemetry", post(worker_telemetry).layer(DefaultBodyLimit::max(8192)))
@@ -1239,6 +1240,53 @@ async fn set_network_settings(
     (StatusCode::ACCEPTED, Json(json!({"restarting": true}))).into_response()
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum DelegateModel { Face, Hands, Pose, Segmentation, AvatarFace }
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DelegateRequest {
+    model: DelegateModel,
+    delegate: crate::config::MediaPipeDelegate,
+}
+
+async fn set_perception_delegate(
+    State(state): State<ApiState>,
+    Json(request): Json<DelegateRequest>,
+) -> Response {
+    let _guard = state.video_output_control.lock().await;
+    if state.recorder.status().await.active {
+        return (StatusCode::CONFLICT, Json(json!({"error": "Stop recording before changing inference devices"}))).into_response();
+    }
+    let (Some(restart), Some(settings)) = (&state.daemon_restart, &state.user_settings) else {
+        return (StatusCode::CONFLICT, Json(json!({"error": "Inference changes require a supervised daemon and persistent settings"}))).into_response();
+    };
+    let mut sender = restart.sender.lock().await;
+    if sender.as_ref().is_none_or(|sender| sender.is_closed()) {
+        return (StatusCode::CONFLICT, Json(json!({"error": "Daemon restart is unavailable or already in progress"}))).into_response();
+    }
+    let mut delegates = state.config.perception.delegates.clone();
+    let selected = match request.model {
+        DelegateModel::Face => &mut delegates.face,
+        DelegateModel::Hands => &mut delegates.hands,
+        DelegateModel::Pose => &mut delegates.pose,
+        DelegateModel::Segmentation => &mut delegates.segmentation,
+        DelegateModel::AvatarFace => &mut delegates.avatar_face,
+    };
+    if *selected == request.delegate {
+        return Json(json!({"restarting": false})).into_response();
+    }
+    *selected = request.delegate;
+    if let Err(error) = settings.set_perception_delegates(delegates).await {
+        return user_settings_error(error);
+    }
+    if sender.take().unwrap().send(()).is_err() {
+        return (StatusCode::CONFLICT, Json(json!({"error": "Daemon restart control is unavailable"}))).into_response();
+    }
+    (StatusCode::ACCEPTED, Json(json!({"restarting": true}))).into_response()
+}
+
 async fn app_js() -> impl IntoResponse {
     (
         [
@@ -1392,6 +1440,7 @@ async fn resource_telemetry(State(state): State<ApiState>) -> Json<serde_json::V
     Json(json!({
         "resources": state.runtime.telemetry().await,
         "worker_stages": state.runtime.worker_telemetry().await,
+        "delegate_controls_available": state.daemon_restart.is_some() && state.user_settings.is_some(),
         "pipeline_context": telemetry_pipeline_context(&runtime, &state.config),
         "video_fps": runtime.pipeline.fps,
         "video_running": runtime.pipeline.running,
@@ -6157,6 +6206,36 @@ mod tests {
         assert_eq!(body["resources"]["process_gpu_status"], "not_collected");
         assert!(body["perception_age_ms"].is_null());
         assert!(runtime.recent_events().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn delegate_controls_persist_only_the_requested_model_and_restart() {
+        let mut config = Config::default();
+        config.perception.enabled = false;
+        config.perception.delegates.face = crate::config::MediaPipeDelegate::Gpu;
+        let path = std::env::temp_dir().join(format!("tarsier-delegates-{:032x}/settings.json", rand::random::<u128>()));
+        let fallback = UserSettings::from_config(&config);
+        let (settings, _) = UserSettingsStore::load(path.clone(), fallback.clone()).await.unwrap();
+        let (restart_tx, restart_rx) = oneshot::channel();
+        let (_tx, rx) = watch::channel(false);
+        let app = router_with_controls(config, Runtime::new(), PreviewHub::new(), None,
+            ApiOptions { user_settings: Some(settings), daemon_restart: Some(DaemonRestart::new(restart_tx)), ..ApiOptions::default() }, rx);
+        let request = |body: &'static str| Request::post("/api/v1/perception/delegates")
+            .header("content-type", "application/json").body(Body::from(body)).unwrap();
+        for invalid in [r#"{"model":"unknown","delegate":"gpu"}"#, r#"{"model":"pose","delegate":"cuda"}"#] {
+            assert_eq!(app.clone().oneshot(request(invalid)).await.unwrap().status(), StatusCode::UNPROCESSABLE_ENTITY);
+        }
+        assert_eq!(app.clone().oneshot(request(r#"{"model":"face","delegate":"gpu"}"#)).await.unwrap().status(), StatusCode::OK);
+        assert!(!path.exists());
+        assert_eq!(app.clone().oneshot(request(r#"{"model":"pose","delegate":"gpu"}"#)).await.unwrap().status(), StatusCode::ACCEPTED);
+        tokio::time::timeout(Duration::from_secs(1), restart_rx).await.unwrap().unwrap();
+        assert_eq!(app.oneshot(request(r#"{"model":"face","delegate":"cpu"}"#)).await.unwrap().status(), StatusCode::CONFLICT);
+        let (_, restored) = UserSettingsStore::load(path.clone(), fallback).await.unwrap();
+        let delegates = restored.perception_delegates.unwrap();
+        assert_eq!(delegates.face, crate::config::MediaPipeDelegate::Gpu);
+        assert_eq!(delegates.pose, crate::config::MediaPipeDelegate::Gpu);
+        assert_eq!(delegates.hands, crate::config::MediaPipeDelegate::Cpu);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[tokio::test]

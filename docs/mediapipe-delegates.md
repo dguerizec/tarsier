@@ -2,7 +2,15 @@
 
 MediaPipe acceleration is selected independently for five task instances in the
 Tarsier configuration file. All entries default to `cpu`; omitted entries keep
-that default. Restart the daemon after changing them.
+that default. Restart the daemon after editing the file.
+
+The floating Performance panel also provides CPU/GPU buttons under **Inference
+devices**. A click saves the selection in user settings and briefly restarts the
+supervised daemon. The selected buttons reflect the configuration loaded by the
+current daemon. Changes are rejected while recording. Once set through the UI,
+the saved delegate configuration takes precedence over the TOML defaults.
+`POST /api/v1/perception/delegates` accepts one `model` and `delegate` choice; it
+requires operator authentication and preserves the other models.
 
 ```toml
 [perception.delegates]

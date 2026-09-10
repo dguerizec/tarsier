@@ -23,6 +23,7 @@ test('panel hides without polling, persists drag position, and resumes when show
   class Element {
     constructor() { this.listeners = new Map(); this.nodes = new Map(); this.style = {}; this.attributes = {}; this.offsetWidth = 390; this.offsetHeight = 500; this.children = []; this.classList = { add() {}, remove() {} }; }
     querySelector(selector) { if (!this.nodes.has(selector)) this.nodes.set(selector, new Element()); return this.nodes.get(selector); }
+    querySelectorAll() { return []; }
     setAttribute(name, value) { this.attributes[name] = value; }
     addEventListener(name, callback) { this.listeners.set(name, callback); }
     emit(name, event = {}) { this.listeners.get(name)?.(event); }
@@ -164,4 +165,18 @@ test('GPU label stays on SM when fresh activity is unavailable', async () => {
   assert.match(display.detail, /No new process activity sample/);
   gpu.engines.SM = 0; gpu.activity_status = 'sampled';
   assert.ok(processGpuDisplay({active:true,gpus:[gpu]}).text.startsWith('SM 0.0%'));
+});
+
+import { delegateChangeApplied, DELEGATE_MODELS } from './performance.js';
+test('delegate selection is confirmed only by a new daemon with the requested setting', () => {
+  const pending = { model: 'pose', delegate: 'gpu', startedAt: 100 };
+  const context = { daemon_started_at_ms: 100, perception: { requested_delegates: { pose: 'gpu' } } };
+  assert.equal(delegateChangeApplied(pending, context), false);
+  context.daemon_started_at_ms = 200;
+  assert.equal(delegateChangeApplied(pending, context), true);
+  context.perception.requested_delegates.pose = 'cpu';
+  assert.equal(delegateChangeApplied(pending, context), false);
+  assert.equal(delegateChangeApplied(pending, null), false);
+  assert.equal(delegateChangeApplied(pending, { perception: { requested_delegates: { pose: 'gpu' } } }), false);
+  assert.equal(DELEGATE_MODELS.length, 5);
 });

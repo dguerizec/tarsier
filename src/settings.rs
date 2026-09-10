@@ -134,6 +134,8 @@ pub struct UserSettings {
     #[serde(default)]
     pub network_lan_access: Option<bool>,
     #[serde(default)]
+    pub perception_delegates: Option<crate::config::MediaPipeDelegates>,
+    #[serde(default)]
     pub video_resolution: Option<VideoResolution>,
     #[serde(default)]
     pub video_transform: crate::video_transform::VideoTransform,
@@ -173,6 +175,7 @@ impl UserSettings {
             audio: AudioSettings::default(),
             version: SETTINGS_VERSION,
             network_lan_access: None,
+            perception_delegates: None,
             video_resolution: None,
             video_transform: Default::default(),
             video_identity: identity_from_mode(config.video.output_mode, config.avatar.engine),
@@ -376,6 +379,10 @@ impl UserSettingsStore {
             settings.audio_input_reservations = input_reservations;
         })
         .await
+    }
+
+    pub async fn set_perception_delegates(&self, delegates: crate::config::MediaPipeDelegates) -> Result<()> {
+        self.replace(|settings| settings.perception_delegates = Some(delegates)).await
     }
 
     pub async fn set_network_lan_access(&self, enabled: bool) -> Result<()> {

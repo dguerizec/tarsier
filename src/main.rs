@@ -213,6 +213,9 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
         devices::apply_camera(&mut config, camera);
         config.audio.capture_selected_only = true;
     }
+    if let Some(delegates) = &user_settings.perception_delegates {
+        config.perception.delegates = delegates.clone();
+    }
     if let Some(lan_access) = user_settings.network_lan_access {
         config.server.bind.set_ip(if lan_access {
             std::net::Ipv4Addr::UNSPECIFIED.into()

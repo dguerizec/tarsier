@@ -116,6 +116,17 @@ export function workerStageRows(sample, now = Date.now()) {
   });
 }
 
+export const DELEGATE_MODELS = [
+  ['face', 'Face'], ['hands', 'Hands / gestures'], ['pose', 'Pose'],
+  ['segmentation', 'Person mask'], ['avatar_face', 'Avatar face'],
+];
+
+export function delegateChangeApplied(pending, context) {
+  return Boolean(pending && Number.isFinite(context?.daemon_started_at_ms)
+    && context.daemon_started_at_ms !== pending.startedAt
+    && context?.perception?.requested_delegates?.[pending.model] === pending.delegate);
+}
+
 export function installPerformancePanel() {
   const toggle = document.querySelector('#performance-toggle');
   if (!toggle) return;
@@ -143,6 +154,11 @@ export function installPerformancePanel() {
       <p class="performance-note">CPU: 100% = one core. <span data-metric="cores"></span> Memory sums process RSS; shared pages can be counted twice.</p>
       <table class="performance-processes"><caption>Processes · inactive rows retained</caption><thead><tr>${[['process','Process'],['cpu','CPU'],['memory','Memory'],['gpu','GPU']].map(([column,label]) => `<th scope="col" data-sort-header="${column}" aria-sort="none"><button type="button" class="performance-sort" data-sort="${column}">${label}</button></th>`).join('')}</tr></thead><tbody></tbody></table>
       <div class="performance-gpus"></div>
+      <details class="performance-delegates" open><summary>Inference devices</summary>
+        <p class="performance-note">Each change is saved and briefly restarts Tarsier.</p>
+        ${DELEGATE_MODELS.map(([model,label]) => `<div class="performance-delegate-row"><span>${label}</span><div role="group" aria-label="${label} inference device">${['cpu','gpu'].map(device => `<button type="button" data-delegate-model="${model}" data-delegate="${device}" aria-pressed="false" disabled>${device.toUpperCase()}</button>`).join('')}</div></div>`).join('')}
+        <p class="performance-note" data-delegate-status role="status">Waiting for configuration…</p>
+      </details>
       <details class="performance-stages" open><summary>Worker stages</summary><p class="performance-note" data-stage-status></p><div class="performance-stage-scroll"><table><thead><tr><th>Stage</th><th>Calls/s</th><th>Mean</th><th>Max</th></tr></thead><tbody data-stage-rows></tbody></table></div><p class="performance-note">Elapsed time per call, including waits; not CPU time. Parallel stages overlap. No calls means idle or not yet completed. Depth includes preprocessing and GPU readback.</p></details>
       <dl class="performance-latencies"><div><dt>Perception inference</dt><dd data-metric="perception">—</dd></div><div><dt>Last voice inference / pipeline</dt><dd data-metric="voice">—</dd></div></dl>
       <p class="performance-note">Browser CPU is excluded from Tarsier totals. Machine CPU includes all applications. GPU card summaries cover the entire device. GPU process cells show attributed engine activity and GPU buffers; hover for details. Shared DRM buffers or clients may appear in several processes.</p>
@@ -159,6 +175,49 @@ export function installPerformancePanel() {
   let lastAdvance = Date.now();
   let history = [];
   let processRows = [];
+  let delegateContext = null;
+  let delegateAvailable = false;
+  let pendingDelegate = null;
+  let delegateMessage = '';
+  function renderDelegates() {
+    const active = delegateContext?.perception?.requested_delegates || {};
+    for (const button of panel.querySelectorAll('[data-delegate]')) {
+      button.setAttribute('aria-pressed', String(active[button.dataset.delegateModel] === button.dataset.delegate));
+      button.disabled = Boolean(pendingDelegate) || !delegateAvailable || !active[button.dataset.delegateModel];
+    }
+    panel.querySelector('[data-delegate-status]').textContent = pendingDelegate
+      ? 'Applying… waiting for Tarsier to restart.'
+      : delegateMessage || (delegateAvailable ? 'Selected devices are loaded by the daemon.' : 'Changes require a supervised daemon with persistent settings.');
+  }
+  for (const button of panel.querySelectorAll('[data-delegate]')) {
+    button.addEventListener('click', async () => {
+      const model = button.dataset.delegateModel, delegate = button.dataset.delegate;
+      if (pendingDelegate || !delegateAvailable || delegateContext?.perception?.requested_delegates?.[model] === delegate) return;
+      const request = { model, delegate, startedAt: delegateContext.daemon_started_at_ms, at: Date.now() };
+      pendingDelegate = request; delegateMessage = ''; renderDelegates();
+      const timeout = setTimeout(() => {
+        if (pendingDelegate === request) {
+          pendingDelegate = null; delegateMessage = 'Restart not confirmed. Check the current selection before retrying.'; renderDelegates();
+        }
+      }, 30000);
+      try {
+        const response = await fetch('/api/v1/perception/delegates', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model, delegate }), signal: AbortSignal.timeout(8000),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || `Change failed (HTTP ${response.status})`);
+        if (!result.restarting && pendingDelegate === request) { pendingDelegate = null; clearTimeout(timeout); }
+      } catch (error) {
+        if (pendingDelegate === request) {
+          // The service can disconnect after accepting the change. Polling checks the new instance.
+          delegateMessage = error.message;
+          if (error.name !== 'TypeError' && error.name !== 'TimeoutError') { pendingDelegate = null; clearTimeout(timeout); }
+        }
+      }
+      renderDelegates();
+    });
+  }
   const sort = {
     column: ['process', 'cpu', 'memory', 'gpu'].includes(saved.sort?.column) ? saved.sort.column : null,
     direction: saved.sort?.direction === 'asc' ? 'asc' : 'desc',
@@ -211,6 +270,12 @@ export function installPerformancePanel() {
   }
   updateSortHeaders();
   function render(data) {
+    delegateContext = data.pipeline_context;
+    delegateAvailable = data.delegate_controls_available === true;
+    if (delegateChangeApplied(pendingDelegate, delegateContext)) {
+      pendingDelegate = null; delegateMessage = 'Applied.';
+    }
+    renderDelegates();
     const resources = data.resources || {};
     if (!resources.sampled_at_ms) { stale('Waiting for the first resource sample…'); return; }
     if (resources.sampled_at_ms !== lastSample) {

@@ -518,3 +518,11 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .performance-stages th, .performance-stages td { padding: 4px 3px; text-align: right; border-bottom: 1px solid #283748; }
 .performance-stages th:first-child, .performance-stages td:first-child { text-align: left; }
 .performance-stages .performance-process-inactive { color: #8492a5; }
+
+.performance-delegates { margin: 12px 0; }
+.performance-delegates summary { cursor: pointer; font-weight: 600; }
+.performance-delegate-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 6px 0; }
+.performance-delegate-row [role="group"] { display: flex; gap: 4px; }
+.performance-delegate-row button { padding: 4px 9px; font-size: 11px; background: #223343; color: #dfe8ef; }
+.performance-delegate-row button[aria-pressed="true"] { background: #b6ed78; color: #0e1908; }
+.performance-delegate-row button:disabled { opacity: .5; cursor: default; }
