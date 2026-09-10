@@ -340,9 +340,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 #token-form fieldset { margin: 0; min-width: 0; }
 #token-form legend { color: var(--muted); margin-bottom: .4rem; }
 .token-destinations { display: flex; gap: .4rem; }
-.token-destinations label { display: inline-flex; align-items: center; gap: .45rem; min-height: 2.65rem; padding: .55rem .65rem; border: 1px solid var(--panel-edge); border-radius: .5rem; font-size: .85rem; cursor: pointer; }
-.token-destinations label:has(:checked) { border-color: #71944f; background: #b7ef7a0c; }
-#token-form input[type="checkbox"] { width: 1rem; height: 1rem; margin: 0; accent-color: var(--green); flex-shrink: 0; }
+.token-destinations button { min-width: 4.5rem; min-height: 2.65rem; }
 #token-create { min-height: 2.65rem; white-space: nowrap; }
 #password-form > button, #new-token > button { margin: .3rem .25rem .3rem 0; }
 #password-disable { background: #301c19; color: var(--red); }
@@ -352,8 +350,10 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .token-details { display: grid; gap: .3rem; min-width: 0; }
 .token-details strong { font-size: .9rem; font-weight: 600; overflow-wrap: anywhere; }
 .token-details time { color: var(--muted); font-size: .75rem; }
-.token-scopes { display: flex; gap: .35rem; }
-.token-scopes span { font-size: .68rem; font-weight: 600; letter-spacing: .04em; padding: .25rem .5rem; border: 1px solid var(--panel-edge); border-radius: .35rem; color: var(--muted); }
+.token-scopes { display: grid; grid-template-columns: repeat(2, 3.25rem); gap: .35rem; }
+.token-scopes [data-destination="api"] { grid-column: 1; grid-row: 1; }
+.token-scopes [data-destination="mcp"] { grid-column: 2; grid-row: 1; }
+.token-scopes span { text-align: center; font-size: .68rem; font-weight: 600; letter-spacing: .04em; padding: .25rem .5rem; border: 1px solid var(--panel-edge); border-radius: .35rem; color: var(--muted); }
 #token-status:empty { display: none; }
 @media (max-width: 600px) {
   #token-form { grid-template-columns: minmax(0, 1fr) auto; }
@@ -446,3 +446,10 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 #voice-library-filename { flex: 1; min-width: 8rem; overflow-wrap: anywhere; }
 #voice-library-status:empty { display: none; }
 @media (max-width: 520px) { .voice-library-row { flex-wrap: wrap; } .voice-library-row strong { flex-basis: 100%; } }
+
+.settings-file-picker { display: flex; align-items: center; gap: .8rem; flex-wrap: wrap; }
+.settings-file-picker button { flex: 0 0 auto; }
+.settings-file-picker .hint { min-width: 0; overflow-wrap: anywhere; }
+.device-reservation-row { display: flex; align-items: center; gap: 1rem; padding: .7rem 0; border-bottom: 1px solid var(--panel-edge); }
+.device-reservation-row span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.device-reservation-row button { flex: 0 0 auto; min-width: 4.5rem; }

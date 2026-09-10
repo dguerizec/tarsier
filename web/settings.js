@@ -101,6 +101,14 @@ load().catch(error => { status.textContent = error.message; });
 
 const passwordForm = document.querySelector("#password-form");
 const tokenForm = document.querySelector("#token-form");
+for (const name of ['api', 'mcp']) {
+  const button = tokenForm.elements[name];
+  button.onclick = () => button.setAttribute('aria-pressed', String(button.getAttribute('aria-pressed') !== 'true'));
+}
+tokenForm.addEventListener('reset', () => {
+  tokenForm.elements.api.setAttribute('aria-pressed', 'true');
+  tokenForm.elements.mcp.setAttribute('aria-pressed', 'false');
+});
 const authStatus = document.querySelector("#auth-status");
 const tokenStatus = document.querySelector("#token-status");
 let authState;
@@ -157,6 +165,7 @@ async function loadAuth() {
       for (const destination of token.destinations) {
         const badge = document.createElement("span");
         badge.textContent = destination.toUpperCase();
+        badge.dataset.destination = destination;
         scope.append(badge);
       }
       item.append(label, scope, revoke); list.append(item);
@@ -197,7 +206,7 @@ tokenForm.addEventListener("submit", async event => {
   event.preventDefault();
   const button = document.querySelector("#token-create"); button.disabled = true;
   try {
-    const destinations = ["api", "mcp"].filter(name => tokenForm.elements[name].checked);
+    const destinations = ["api", "mcp"].filter(name => tokenForm.elements[name].getAttribute("aria-pressed") === "true");
     if (!destinations.length) throw new Error("Select at least one destination.");
     const data = await authRequest("tokens", {name: tokenForm.elements.name.value, destinations});
     document.querySelector("#token-value").value = data.token;
@@ -250,12 +259,17 @@ async function loadDevices() {
     if (!microphones.some(mic => mic.id === id)) microphones.push({id, name: `Disconnected · ${id}`});
   }
   for (const mic of microphones) {
-    const label = document.createElement('label');
-    const row = document.createElement('p');
-    const input = document.createElement('input');
-    input.type = 'checkbox'; input.value = mic.id; input.dataset.label = mic.name;
-    input.checked = devicesState.input_reservations[mic.id] ?? devicesState.reserve_new_inputs;
-    label.append(input, document.createTextNode(` ${mic.name}`)); row.append(label); microphoneList.append(row);
+    const row = document.createElement('div'); row.className = 'device-reservation-row';
+    const name = document.createElement('span'); name.textContent = mic.name;
+    const button = document.createElement('button'); button.type = 'button'; button.className = 'secondary compact'; button.dataset.source = mic.id;
+    button.setAttribute('aria-label', `Automatically reserve ${mic.name}`);
+    const render = locked => {
+      button.setAttribute('aria-pressed', String(locked));
+      button.textContent = locked ? 'Lock' : 'Share';
+    };
+    render(devicesState.input_reservations[mic.id] ?? devicesState.reserve_new_inputs);
+    button.onclick = () => render(button.getAttribute('aria-pressed') !== 'true');
+    row.append(name, button); microphoneList.append(row);
   }
   setDevicesPending(false);
   devicesStatus.textContent = devicesState.can_apply ? '' : 'Device controls or persistent settings are unavailable.';
@@ -267,7 +281,7 @@ devicesRefresh.addEventListener('click', () => {
 devicesForm.addEventListener('submit', async event => {
   event.preventDefault();
   if (devicesPending || devicesSave.disabled) return;
-  const input_reservations = Object.fromEntries([...microphoneList.querySelectorAll('input')].map(input => [input.value, input.checked]));
+  const input_reservations = Object.fromEntries([...microphoneList.querySelectorAll('button[data-source]')].map(button => [button.dataset.source, button.getAttribute('aria-pressed') === 'true']));
   const body = {camera: cameraSelect.value, input_reservations};
   setDevicesPending(true); devicesStatus.textContent = 'Applying devices…';
   try {
@@ -353,6 +367,7 @@ muteMediaForm.addEventListener('submit', async event => {
     if (!response.ok) throw new Error(result.error || 'Could not upload replacement');
     muteMediaState = result;
     muteMediaFile.value = '';
+    muteMediaFile.dispatchEvent(new Event('change'));
     muteMediaStatus.textContent = 'Saved. This media will be shown whenever video output is muted.';
   } catch (error) { muteMediaStatus.textContent = error.message; }
   finally { muteMediaPending = false; renderMuteMedia(); }
@@ -597,3 +612,31 @@ document.querySelector('#voice-library-choose').onclick = () => voiceLibraryFile
 voiceLibraryFile.onchange = () => renderVoiceLibrary();
 document.querySelector('#voice-library-refresh').onclick = () => changeVoiceLibrary();
 changeVoiceLibrary();
+
+
+// Keep native file selection, with consistent buttons and a readable selection label.
+for (const [id, caption] of [
+  ['mute-media-file', 'Choose media'],
+  ['import-liveportrait-file', 'Choose image'],
+  ['import-portrait3d-files', 'Choose folder'],
+]) {
+  const input = document.getElementById(id);
+  const picker = document.createElement('div'); picker.className = 'settings-file-picker';
+  const choose = document.createElement('button'); choose.type = 'button'; choose.className = 'secondary'; choose.textContent = caption;
+  const selection = document.createElement('span'); selection.className = 'hint'; selection.setAttribute('aria-live', 'polite');
+  const refresh = () => {
+    choose.disabled = input.disabled;
+    const files = [...input.files];
+    selection.textContent = !files.length ? 'No file selected' : input.webkitdirectory
+      ? `${files[0].webkitRelativePath.split('/')[0]} · ${files.length} files` : files[0].name;
+  };
+  choose.onclick = () => input.click();
+  input.hidden = true;
+  // Import handlers validate the selected files and report errors inline.
+  input.required = false;
+  picker.append(choose, selection); input.after(picker);
+  input.addEventListener('change', refresh);
+  input.form?.addEventListener('reset', () => queueMicrotask(refresh));
+  new MutationObserver(refresh).observe(input, {attributes:true, attributeFilter:['disabled']});
+  refresh();
+}
