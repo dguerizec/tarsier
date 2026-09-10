@@ -174,11 +174,20 @@ impl PreviewHub {
         self.snapshot_tx.borrow().clone()
     }
 
-    pub(crate) fn latest_photo(&self) -> Option<CapturedImage> {
-        self.photo_tx
-            .borrow()
-            .clone()
-            .filter(|frame| unix_ms().saturating_sub(frame.frame.captured_at_ms) <= 1000)
+    pub(crate) async fn capture_photo(&self) -> Option<CapturedImage> {
+        // A subscriber enables the photo branch only for the lifetime of this
+        // request. Wait for a new frame instead of reusing the last saved JPEG.
+        let mut frames = self.photo_tx.subscribe();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                frames.changed().await.ok()?;
+                if let Some(frame) = frames.borrow_and_update().clone() {
+                    if unix_ms().saturating_sub(frame.frame.captured_at_ms) <= 1000 {
+                        return Some(frame);
+                    }
+                }
+            }
+        }).await.ok().flatten()
     }
 
     pub(crate) fn publish_photo(&self, frame: CapturedImage) {
@@ -671,6 +680,19 @@ impl ActivePipeline {
                 gst::PadProbeReturn::Ok
             });
 
+        // Keep buffers out of conversion and JPEG encoding until a photo is
+        // requested. Events still flow so caps and source changes propagate.
+        let photo_demand = preview.photo_tx.clone();
+        pipeline.by_name("photo_queue").context("photo queue is missing")?
+            .static_pad("src").context("photo queue source is missing")?
+            .add_probe(gst::PadProbeType::BUFFER, move |_, _| {
+                if photo_demand.receiver_count() > 0 {
+                    gst::PadProbeReturn::Ok
+                } else {
+                    gst::PadProbeReturn::Drop
+                }
+            });
+
         let photo_sink = pipeline
             .by_name("photo")
             .context("photo appsink is missing")?
@@ -955,8 +977,8 @@ fn pipeline_description(config: &VideoConfig, shared_dimensions: Option<(u32, u3
         config.preview_quality
     );
     branches.push_str(
-        " stream. ! queue leaky=downstream max-size-buffers=1 ! videoconvert ! jpegenc quality=95 ! \
-         appsink name=photo max-buffers=1 drop=true sync=false",
+        " stream. ! queue name=photo_queue leaky=downstream max-size-buffers=1 ! videoconvert ! jpegenc quality=95 ! \
+         appsink name=photo max-buffers=1 drop=true sync=false async=false",
     );
     if config.loopback_enabled {
         branches.push_str(
@@ -1461,6 +1483,17 @@ mod tests {
         assert_eq!(state.pipeline.restart_count, 0);
         assert_eq!(control.camera_source(), config.input_device);
         assert!(preview.latest().is_some());
+        assert!(preview.photo_tx.borrow().is_none(), "idle capture must not encode photos");
+        let photo = preview.capture_photo().await.expect("on-demand photo");
+        assert!(photo.frame.bytes.starts_with(&[0xff, 0xd8]));
+        let decoded = image::load_from_memory(&photo.jpeg().unwrap()).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (64, 48));
+        // Let any already-started frame finish, then ensure the branch is idle.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let photo_id = preview.photo_tx.borrow().as_ref().unwrap().frame.frame_id;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        assert_eq!(preview.photo_tx.borrow().as_ref().unwrap().frame.frame_id, photo_id);
+        assert!(preview.capture_photo().await.unwrap().frame.frame_id > photo_id);
         if let Some(source) = preview.shared_source() {
             use std::os::unix::fs::FileExt;
             let path = source.strip_prefix("shm://").unwrap().split('#').next().unwrap();

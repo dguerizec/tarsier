@@ -239,16 +239,15 @@ mod tests {
         assert!(frames.publish(&pixels[..20], 2, 123459, 0).is_err());
         let source = frames.source().to_owned();
         drop(frames);
-        assert!(
-            File::open(
-                source
-                    .strip_prefix("shm://")
-                    .unwrap()
-                    .split('#')
-                    .next()
-                    .unwrap()
-            )
-            .is_err()
-        );
+        // Other tests may reuse the closed descriptor number immediately.
+        // A surviving reader keeps the original inode alive for comparison.
+        use std::os::unix::fs::MetadataExt;
+        if let Ok(reused) = File::open(
+            source.strip_prefix("shm://").unwrap().split('#').next().unwrap(),
+        ) {
+            let original = reader.metadata().unwrap();
+            let current = reused.metadata().unwrap();
+            assert_ne!((original.dev(), original.ino()), (current.dev(), current.ino()));
+        }
     }
 }

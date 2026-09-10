@@ -170,3 +170,30 @@ active and JPEG decode counters stayed zero. Snapshots for the four effect modes
 were inspected; this is static output validation, not exhaustive browser/video
 QA. The authenticated diagnostic MJPEG endpoint also returned a JPEG on demand.
 Initial effects were restored and replay remains selected.
+
+## On-demand full-resolution photos (2026-09-10)
+
+The photo branch now drops buffers before conversion/JPEG encoding when no photo
+request is waiting. A request waits for a new processed image, with a one-second
+fresh-frame timeout. JPEG quality 95, full resolution and capture metadata remain
+unchanged. Preview and recording paths remain independent.
+
+Private evidence: `local-test-media/photo-demand-20260910/`. The current replay
+was left in depth-map mode, with its remembered background selection and delegates
+unchanged. Before and after each contain 24 samples over 48 seconds, following
+15 seconds stabilization, with shared-memory perception. No compilation or photo
+request overlapped those windows. These sequential desktop samples are not a
+randomized experiment; CPU 100% means one logical core.
+
+| Measurement | Continuous photo encoding | On-demand photo encoding |
+|---|---:|---:|
+| Daemon CPU | 125.36% | 116.48% |
+| Total Tarsier CPU | 248.79% | 241.27% |
+| Output FPS | 30.00 | 30.00 |
+
+Two live API captures completed in 42 and 31 ms, produced 1280x720 JPEGs with EXIF,
+and one depth-map photo was visually inspected. The 307 Rust tests passed (five
+ignored), including idle-photo suppression, successive fresh captures, JPEG
+validity/dimensions and missing/stale-frame rejection. The shared-buffer lifetime
+test also now tolerates unrelated concurrent reuse of a closed descriptor number
+while checking that the original buffer is no longer owned by that descriptor.

@@ -2808,7 +2808,7 @@ async fn recent_events(State(state): State<ApiState>) -> Json<Vec<crate::model::
 }
 
 async fn take_photo(State(state): State<ApiState>) -> Response {
-    let Some(frame) = state.preview.latest_photo() else {
+    let Some(frame) = state.preview.capture_photo().await else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({"error": "No fresh camera frame is available"})),

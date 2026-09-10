@@ -456,7 +456,10 @@ daemon restart; the page reconnects automatically. In 4K, output uses the real
 camera with background effects, avatar/depth output, rotation, and output
 mirroring disabled. Select a lower resolution to enable those controls again.
 The browser preview remains downscaled; the virtual camera output and photos
-use the selected full resolution.
+use the selected full resolution. Photo requests enable JPEG encoding only long
+enough to capture a fresh frame; no full-resolution photo JPEGs are encoded while
+idle. A request may wait up to one second for a fresh frame and returns an error
+if capture is unavailable.
 
 Tarsier atomically persists the selected video identity, background switch and
 effect, exclusive Face or Hands tracking preference, and dependent Auto zoom preference in
