@@ -388,7 +388,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .liveportrait-choose { position: absolute; top: .45rem; right: .4rem; display: grid; place-items: center; width: 2rem; height: 2rem; padding: .3rem; }
 #portrait3d-dialog, #liveportrait-dialog { width: min(38rem, calc(100vw - 2rem)); max-height: calc(100dvh - 2rem); }
 #portrait3d-form, #liveportrait-form { display: grid; gap: .8rem; }
-.portrait-gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: .75rem; }
+.portrait-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(160px, 100%), 1fr)); gap: .75rem; }
 .portrait-option { position: relative; cursor: pointer; }
 .portrait-option input { position: absolute; opacity: 0; width: 1px; height: 1px; }
 .portrait-card { display: grid; gap: .4rem; height: 100%; align-content: start; border: 2px solid var(--panel-edge); padding: .5rem; border-radius: .7rem; box-sizing: border-box; }
