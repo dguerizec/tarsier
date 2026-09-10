@@ -1217,11 +1217,6 @@ modelChoose.addEventListener("click", async () => {
       const name = document.createElement("span");
       name.textContent = model.name;
       card.append(image, name);
-      if (model.selected) {
-        const badge = document.createElement("small");
-        badge.textContent = "Selected model";
-        card.append(badge);
-      }
       input.addEventListener("change", () => {
         selectedModelId = model.id;
         modelSave.disabled = modelPending || model.selected;
@@ -1301,11 +1296,6 @@ portraitChoose.addEventListener("click", async () => {
       const name = document.createElement("span");
       name.textContent = portrait.name;
       card.append(image, name);
-      if (portrait.selected) {
-        const badge = document.createElement("small");
-        badge.textContent = "Selected avatar";
-        card.append(badge);
-      }
       image.addEventListener("error", () => {
         input.disabled = true;
         card.classList.add("portrait-unavailable");
