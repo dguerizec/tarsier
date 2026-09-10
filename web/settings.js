@@ -447,9 +447,8 @@ function avatarLibraryCard(item, kind) {
   name.textContent = item.name;
   card.append(image, placeholder, name);
   if (item.selected) {
-    const selected = document.createElement('small');
-    selected.textContent = 'Selected';
-    card.append(selected);
+    card.classList.add('is-selected');
+    card.setAttribute('aria-label', `${item.name}, selected`);
   }
   if (kind === 'portrait3d') {
     const generate = placeholder;
