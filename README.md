@@ -1493,3 +1493,6 @@ limited to 128 MiB; model compatibility is checked when the worker loads a voice
 
 MediaPipe CPU/GPU selection per task and comparison guidance are documented in
 [MediaPipe delegates](docs/mediapipe-delegates.md).
+
+The private gesture-video fixture and offline CPU/GPU replay command are described
+in [Perception testing](docs/perception-testing.md).
