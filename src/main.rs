@@ -9,6 +9,7 @@ mod portrait_models;
 mod camera;
 mod config;
 mod devices;
+mod doctor;
 mod effects;
 mod face_tracking;
 mod hands_tracking;
@@ -23,6 +24,7 @@ mod recording;
 mod runtime;
 mod scenario;
 mod settings;
+mod service;
 mod utterances;
 mod video_clients;
 mod video_transform;
@@ -47,6 +49,31 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Install and enable this binary as the single user service.
+    Install {
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// Start or restart the installed service immediately.
+        #[arg(long)]
+        now: bool,
+        /// Explicitly replace a different or unmanaged installation.
+        #[arg(long)]
+        replace: bool,
+    },
+    /// Remove the managed service, preserving settings and media.
+    Uninstall {
+        /// Stop the running service before removing it.
+        #[arg(long)]
+        now: bool,
+    },
+    /// Diagnose the installation without opening the physical camera.
+    Doctor {
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// Attempt safe repairs, without sudo or stopping processes.
+        #[arg(long)]
+        fix: bool,
+    },
     /// Run the local daemon and web control surface.
     Serve {
         /// TOML configuration file. Built-in safe defaults are used when omitted.
@@ -90,6 +117,13 @@ async fn main() -> Result<()> {
         .init();
 
     match Cli::parse().command {
+        Command::Install {
+            config,
+            now,
+            replace,
+        } => service::install(config, now, replace).await,
+        Command::Uninstall { now } => service::uninstall(now).await,
+        Command::Doctor { config, fix } => doctor::run(config, fix).await,
         Command::Serve { config } => {
             audit::init()?;
             let result = serve(config).await;

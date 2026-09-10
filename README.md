@@ -166,6 +166,63 @@ The physical camera and any existing `/dev/video42` must be free before the daem
 The example uses the stable `/dev/v4l/by-id/...-video-index0` camera symlink so
 a manual restart still finds the device after USB re-enumeration.
 
+## Service installation and diagnostics
+
+Run these commands as your regular user from the project directory. Installation
+registers the current executable and working directory; it does not copy the
+binary, workers, models, or assets. Keep those paths available. Rebuilding that
+binary updates what the service will use on its next restart.
+
+```sh
+./target/release/tarsier install --config ~/.config/tarsier/main.toml
+./target/release/tarsier doctor
+./target/release/tarsier doctor --fix
+```
+
+`install` creates and enables one `tarsier.service` in the user systemd directory.
+It preserves the configuration path, settings/authentication file paths, and
+command search path, without storing authentication tokens. Omit `--config` to
+use the same built-in defaults as `serve`. Relative worker/model paths resolve
+from the directory where installation was run.
+
+- Add `--now` to start or restart the service immediately. Without it, the
+  running process is left alone.
+- Add `--replace` to explicitly replace a different binary, configuration, or
+  unmanaged unit. A currently running transient service requires both
+  `--replace --now` to migrate to a permanent unit.
+- Dev and release share the same service name. To switch versions, invoke the
+  desired binary with `install --config ... --replace --now`. A separate daemon
+  outside that service must be stopped before an immediate installation.
+- `uninstall` disables and removes a managed unit, preserving the executable,
+  settings, authentication, and media. A running service requires
+  `uninstall --now`. Externally edited or unrecognized units are not removed.
+
+User services normally start at login. For startup before login, the user manager
+must have lingering enabled (`loginctl enable-linger USER`, subject to system
+permissions). Tarsier reports this setting but does not change it. The loopback
+kernel module must also be loaded by the system; neither installation nor doctor
+runs `sudo`, installs packages, or changes group membership.
+
+`doctor` uses the managed installation's configuration and paths when available.
+Use `--config FILE` to diagnose another configuration from the current directory.
+It reads saved camera choices without creating or migrating settings, checks
+video-device permissions, GStreamer elements, worker/audio utilities, systemd
+state, visible daemon processes, HTTP health, and virtual-camera clients. It does
+not capture from or move the physical camera. HTTP authentication is reported as
+an unverified health check unless `TARSIER_API_TOKEN` is supplied. A nonzero exit
+status means at least one check failed; warnings describe optional setup or
+unverified conditions. Model loading, inference, and physical capture quality
+require a running-daemon test.
+
+`doctor --fix` currently has one repair: create the configured virtual camera if
+missing, using the same bounded creation routine as daemon startup. It never
+replaces a device, stops another process, installs a service, or elevates
+privileges. Other findings include an explanation for manual remediation.
+
+The CLI lifecycle checks can be run after building with
+`python3 tools/test-service-cli.py`; they use a temporary home and a fake service
+manager and leave the real service untouched.
+
 ## Quick start
 
 Install the locked Python environment, local OpenGL renderer, depth runtime,

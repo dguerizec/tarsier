@@ -357,7 +357,7 @@ impl Drop for VirtualVideoOutput {
     }
 }
 
-async fn ensure_virtual_video_device(device: &str, utility: &str) -> Result<()> {
+pub(crate) async fn ensure_virtual_video_device(device: &str, utility: &str) -> Result<()> {
     if Path::new(device).try_exists()? {
         return Ok(());
     }
