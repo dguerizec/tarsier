@@ -247,6 +247,18 @@ pub fn router_with_controls(
             axum::routing::delete(delete_avatar),
         )
         .route("/assets/avatar-delete.js", get(avatar_delete_js))
+        .route(
+            "/assets/events.js",
+            get(|| async {
+                (
+                    [
+                        (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+                        (header::CACHE_CONTROL, "no-store"),
+                    ],
+                    include_str!("../web/events.js"),
+                )
+            }),
+        )
         .route("/api/v1/settings/avatars/liveportrait", post(import_liveportrait)
             .layer(DefaultBodyLimit::max(crate::avatar_source::MAX_UPLOAD_BYTES)))
         .route("/api/v1/settings/avatars/portrait3d", post(import_portrait3d)
@@ -634,7 +646,13 @@ async fn delete_avatar(
     })
     .await
     {
-        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Ok(())) => {
+            state
+                .runtime
+                .emit("avatar.library.changed", "api", None, json!({"kind": kind}))
+                .await;
+            StatusCode::NO_CONTENT.into_response()
+        }
         Ok(Err(error)) => command_error(error),
         Err(error) => command_error(error.into()),
     }
@@ -674,9 +692,28 @@ async fn import_liveportrait(
             .into_response();
     };
     let directory = library.join("liveportrait");
-    match tokio::task::spawn_blocking(move || crate::avatar_import::import_image(&directory, &query.name, &body)).await {
-        Ok(Ok(())) => (StatusCode::CREATED, Json(json!({"message": "Portrait imported. Choose it from LivePortrait in the preview."}))).into_response(),
-        Ok(Err(error)) => (StatusCode::BAD_REQUEST, Json(json!({"error": error.to_string()}))).into_response(),
+    match tokio::task::spawn_blocking(move || {
+        crate::avatar_import::import_image(&directory, &query.name, &body)
+    })
+    .await
+    {
+        Ok(Ok(())) => {
+            state
+                .runtime
+                .emit(
+                    "avatar.library.changed",
+                    "api",
+                    None,
+                    json!({"kind": "liveportrait"}),
+                )
+                .await;
+            (StatusCode::CREATED, Json(json!({"message": "Portrait imported. Choose it from LivePortrait in the preview."}))).into_response()
+        }
+        Ok(Err(error)) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": error.to_string()})),
+        )
+            .into_response(),
         Err(error) => command_error(error.into()),
     }
 }
@@ -712,7 +749,18 @@ async fn import_portrait3d(State(state): State<ApiState>, mut multipart: Multipa
     }
     .await;
     match result {
-        Ok(prepared) => (StatusCode::CREATED, Json(prepared)).into_response(),
+        Ok(prepared) => {
+            state
+                .runtime
+                .emit(
+                    "avatar.library.changed",
+                    "api",
+                    None,
+                    json!({"kind": "portrait3d"}),
+                )
+                .await;
+            (StatusCode::CREATED, Json(prepared)).into_response()
+        }
         Err(error) => (
             StatusCode::BAD_REQUEST,
             Json(json!({"error": error.to_string()})),
@@ -840,6 +888,15 @@ async fn set_portrait3d_model(
         return command_error(error);
     }
     *state.portrait3d_model.lock().await = model.path.clone();
+    state
+        .runtime
+        .emit(
+            "avatar.library.changed",
+            "api",
+            None,
+            json!({"kind": "portrait3d"}),
+        )
+        .await;
     Json(model).into_response()
 }
 
@@ -931,7 +988,18 @@ async fn set_liveportrait_source(
     }
     let mut portrait = state.liveportrait.lock().await;
     portrait.select(path);
-    (StatusCode::ACCEPTED, Json(portrait.clone())).into_response()
+    let result = portrait.clone();
+    drop(portrait);
+    state
+        .runtime
+        .emit(
+            "avatar.library.changed",
+            "api",
+            None,
+            json!({"kind": "liveportrait"}),
+        )
+        .await;
+    (StatusCode::ACCEPTED, Json(result)).into_response()
 }
 
 async fn liveportrait_status(
@@ -4944,7 +5012,7 @@ async fn stream_events(
                         break;
                     }
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => break,
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             },
             changed = states.changed() => {
@@ -6915,9 +6983,11 @@ mod tests {
             .await
             .unwrap();
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let runtime = Runtime::new();
+        let mut events = runtime.subscribe_events();
         let app = router_with_controls(
             config,
-            Runtime::new(),
+            runtime,
             PreviewHub::new(),
             None,
             ApiOptions {
@@ -6967,6 +7037,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+        let event = events.try_recv().unwrap();
+        assert_eq!(event.kind, "avatar.library.changed");
+        assert_eq!(event.data["kind"], "portrait3d");
         let (_, restored) = UserSettingsStore::load(path, fallback).await.unwrap();
         assert_eq!(restored.portrait3d_model, Some(model.clone()));
         let response = app
@@ -7075,6 +7148,7 @@ mod tests {
         preview
             .effects()
             .publish_avatar(AvatarFrame::new(9, unix_ms(), 2, 1, vec![9; 8]).unwrap());
+        let mut events = runtime.subscribe_events();
         let runtime_before_selection = serde_json::to_value(runtime.state().await).unwrap();
         let response = app
             .clone()
@@ -7087,6 +7161,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let event = events.try_recv().unwrap();
+        assert_eq!(event.kind, "avatar.library.changed");
+        assert_eq!(event.data["kind"], "liveportrait");
         assert_eq!(preview.effects().latest_avatar().unwrap().frame_id, 9);
         assert_eq!(
             serde_json::to_value(runtime.state().await).unwrap(),

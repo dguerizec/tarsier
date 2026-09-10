@@ -1,3 +1,4 @@
+import { events as eventClient, observeVisible, subscribeVisibleRefresh } from "/assets/events.js";
 import { avatarDeleteButton } from "/assets/avatar-delete.js";
 import { createDaemonMonitor } from "/assets/daemon-monitor.js";
 import { installPreviewDrag, sourcePanTiltDirection } from "/assets/preview-drag.js";
@@ -1033,9 +1034,8 @@ async function loadPresets() {
 }
 
 function connect() {
-  const protocol = location.protocol === "https:" ? "wss" : "ws";
-  const socket = new WebSocket(`${protocol}://${location.host}/api/v1/events`);
-  socket.addEventListener("open", () => {
+  const subscriptions = [];
+  subscriptions.push(eventClient.subscribe("connected", () => {
     socketConnected = true;
     pipelineWasRunning = false;
     connection.textContent = "Live";
@@ -1043,17 +1043,11 @@ function connect() {
     syncDaemonRestartControl();
     refreshPreview();
     pipelineWasRunning = true;
-  });
-  socket.addEventListener("message", ({ data }) => {
-    const message = JSON.parse(data);
-    if (message.type === "state") render(message.data);
-    if (message.type === "recording") {
-      recordingState = message.data;
-      renderRecording();
-    }
-    if (message.type === "event") appendEvent(message.data);
-  });
-  socket.addEventListener("close", () => {
+  }));
+  subscriptions.push(eventClient.subscribe("state", render));
+  subscriptions.push(eventClient.subscribe("recording", data => { recordingState = data; renderRecording(); }));
+  subscriptions.push(eventClient.subscribe("event", appendEvent));
+  subscriptions.push(eventClient.subscribe("disconnected", () => {
     clearHeldDirections();
     socketConnected = false;
     recordingState = null;
@@ -1064,14 +1058,13 @@ function connect() {
     connection.textContent = "Reconnecting";
     connection.className = "status status-off";
     syncDaemonRestartControl();
-    fetch("/api/v1/auth/status", { cache: "no-store" })
-      .then(response => response.json())
-      .then(auth => {
-        if (auth.enabled && !auth.admin) location.assign("/login");
-        else setTimeout(connect, 1000);
-      })
-      .catch(() => setTimeout(connect, 1000));
-  });
+  }));
+  return () => {
+    subscriptions.forEach(unsubscribe => unsubscribe());
+    clearHeldDirections();
+    socketConnected = false;
+    stopPreview();
+  };
 }
 
 connection.addEventListener("click", () => {
@@ -1189,16 +1182,26 @@ async function setOutputMode(identity) {
 }
 
 modelChoose.append(createElement(FolderOpen, { width: 16, height: 16, "aria-hidden": "true", focusable: "false" }));
-modelChoose.addEventListener("click", async () => {
+let currentModelId = null;
+modelChoose.addEventListener("click", () => {
   modelError.hidden = true;
   modelGallery.textContent = "Loading models…";
   selectedModelId = null;
   modelSave.disabled = true;
+  currentModelId = null;
   modelDialog.showModal();
+});
+async function refreshModelGallery(signal) {
   try {
-    const response = await fetch("/api/v1/video/portrait3d/models", { cache: "no-store" });
+    const response = await fetch("/api/v1/video/portrait3d/models", { cache: "no-store", signal });
     if (!response.ok) throw new Error(`Could not load models (${response.status})`);
     const models = await response.json();
+    if (signal.aborted) return;
+    const current = models.find(model => model.selected)?.id || null;
+    if (current !== currentModelId || !models.some(model => model.id === selectedModelId)) selectedModelId = current;
+    currentModelId = current;
+    modelSave.disabled = modelPending || !selectedModelId || selectedModelId === currentModelId;
+    modelError.hidden = true;
     modelGallery.replaceChildren();
     for (const model of models) {
       const label = document.createElement("label");
@@ -1207,7 +1210,7 @@ modelChoose.addEventListener("click", async () => {
       input.type = "radio";
       input.name = "portrait3d-model";
       input.value = model.id;
-      input.checked = model.selected;
+      input.checked = model.id === selectedModelId;
       const card = document.createElement("span");
       card.className = "portrait-card";
       const image = document.createElement("img");
@@ -1235,11 +1238,13 @@ modelChoose.addEventListener("click", async () => {
     }
     if (!models.length) modelGallery.textContent = "No exported 3D models available.";
   } catch (error) {
+    if (signal.aborted) return;
     modelGallery.replaceChildren();
     modelError.textContent = error instanceof Error ? error.message : String(error);
     modelError.hidden = false;
   }
-});
+}
+subscribeVisibleRefresh(modelDialog, "event:avatar.library.changed", refreshModelGallery, console.error);
 modelCancel.addEventListener("click", () => modelDialog.close());
 modelDialog.addEventListener("cancel", (event) => {
   if (modelPending) event.preventDefault();
@@ -1275,19 +1280,26 @@ $("#portrait3d-form").addEventListener("submit", async (event) => {
 });
 
 portraitChoose.append(createElement(FolderOpen, { width: 16, height: 16, "aria-hidden": "true", focusable: "false" }));
-portraitChoose.addEventListener("click", async () => {
+portraitChoose.addEventListener("click", () => {
   portraitError.hidden = true;
   portraitGallery.replaceChildren();
   portraitGalleryStatus.textContent = "Loading avatars…";
   selectedPortraitId = currentPortraitId = null;
   portraitSave.disabled = true;
   portraitDialog.showModal();
+});
+async function refreshPortraitGallery(signal) {
   try {
-    const response = await fetch("/api/v1/video/liveportrait/source", { cache: "no-store" });
+    const response = await fetch("/api/v1/video/liveportrait/source", { cache: "no-store", signal });
     if (!response.ok) throw new Error(`Could not load avatars (${response.status})`);
     const portraits = await response.json();
-    currentPortraitId = portraits.find((portrait) => portrait.selected)?.id || null;
-    selectedPortraitId = currentPortraitId;
+    if (signal.aborted) return;
+    const current = portraits.find(portrait => portrait.selected)?.id || null;
+    if (current !== currentPortraitId || !portraits.some(portrait => portrait.id === selectedPortraitId)) selectedPortraitId = current;
+    currentPortraitId = current;
+    portraitSave.disabled = portraitPending || !selectedPortraitId || selectedPortraitId === currentPortraitId;
+    portraitError.hidden = true;
+    portraitGallery.replaceChildren();
     for (const portrait of portraits) {
       const label = document.createElement("label");
       label.className = "portrait-option";
@@ -1295,7 +1307,7 @@ portraitChoose.addEventListener("click", async () => {
       input.type = "radio";
       input.name = "portrait-source";
       input.value = portrait.id;
-      input.checked = portrait.selected;
+      input.checked = portrait.id === selectedPortraitId;
       const card = document.createElement("span");
       card.className = "portrait-card";
       const image = document.createElement("img");
@@ -1328,11 +1340,13 @@ portraitChoose.addEventListener("click", async () => {
     }
     portraitGalleryStatus.textContent = portraits.length ? "" : "No avatars found. Add PNG or JPEG images to assets/avatars/.";
   } catch (error) {
+    if (signal.aborted) return;
     portraitGalleryStatus.textContent = "";
     portraitError.textContent = error instanceof Error ? error.message : String(error);
     portraitError.hidden = false;
   }
-});
+}
+subscribeVisibleRefresh(portraitDialog, "event:avatar.library.changed", refreshPortraitGallery, console.error);
 portraitCancel.addEventListener("click", () => portraitDialog.close());
 portraitDialog.addEventListener("cancel", (event) => {
   if (portraitPending) event.preventDefault();
@@ -1986,7 +2000,7 @@ setInterval(() => state && render(state), 500);
 setSkeletonEnabled(skeletonEnabled);
 loadRecentEvents().catch(console.error);
 loadPresets().catch(console.error);
-connect();
+observeVisible(document.body, connect);
 daemonMonitor.start();
 
 let photoStatusKey = null;

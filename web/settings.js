@@ -1,3 +1,4 @@
+import { subscribeVisibleRefresh } from "/assets/events.js";
 import { avatarDeleteButton } from "/assets/avatar-delete.js";
 import { createDaemonMonitor } from "/assets/daemon-monitor.js";
 createDaemonMonitor().start();
@@ -479,10 +480,11 @@ function avatarLibraryCard(item, kind) {
   return card;
 }
 
-async function loadAvatarLibrary() {
-  const response = await fetch('/api/v1/settings/avatars', {cache: 'no-store'});
+async function loadAvatarLibrary(signal) {
+  const response = await fetch('/api/v1/settings/avatars', {cache: 'no-store', signal});
   if (!response.ok) throw new Error('Could not load avatar library. Refresh to try again.');
   const result = await response.json();
+  if (signal?.aborted) return;
   avatarCanImport = result.can_import;
   for (const kind of ['liveportrait', 'portrait3d']) {
     const library = document.querySelector(`#${kind}-library`);
@@ -589,7 +591,8 @@ document.addEventListener('paste', event => {
   event.preventDefault();
   importPortraitFiles(files);
 });
-loadAvatarLibrary().catch(error => { avatarLibraryStatus.textContent = error.message; });
+subscribeVisibleRefresh(document.querySelector('#settings-avatars'), 'event:avatar.library.changed', loadAvatarLibrary,
+  error => { avatarLibraryStatus.textContent = error.message; });
 
 
 const voiceLibraryList = document.querySelector('#voice-library-list');
