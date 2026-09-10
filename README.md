@@ -168,6 +168,27 @@ a manual restart still finds the device after USB re-enumeration.
 
 ## Service installation and diagnostics
 
+Build the release binaries and install them into `~/.local/bin`:
+
+```sh
+make build
+make install
+```
+
+`make install` builds first, then installs `tarsier` and `tarsier-mcp` with
+executable permissions. Existing executables are replaced atomically so running
+processes can finish using the previous version. Add `~/.local/bin` to your
+`PATH` if needed. Override `PREFIX` (default `~/.local`), `BINDIR` (default
+`$(PREFIX)/bin`), or `DESTDIR` for a different installation location, for example
+`make install PREFIX=/opt/tarsier`. `CARGO` and `CARGO_TARGET_DIR` are configurable.
+
+Installing binaries does not change or restart the systemd service. To point
+the service at the installed release, run from the project directory:
+
+```sh
+~/.local/bin/tarsier install --config ~/.config/tarsier/main.toml --replace --now
+```
+
 Run these commands as your regular user from the project directory. Installation
 registers the current executable and working directory; it does not copy the
 binary, workers, models, or assets. Keep those paths available. Rebuilding that
