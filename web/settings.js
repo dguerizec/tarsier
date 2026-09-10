@@ -437,11 +437,12 @@ function avatarLibraryCard(item, kind) {
   image.src = imageUrl;
   image.alt = '';
   image.loading = 'lazy';
-  const placeholder = document.createElement('div');
+  const placeholder = document.createElement(kind === 'portrait3d' ? 'button' : 'div');
   placeholder.className = 'avatar-preview-placeholder';
-  placeholder.textContent = 'Preview unavailable';
+  placeholder.textContent = kind === 'portrait3d' ? 'Generate preview' : 'Preview unavailable';
   placeholder.hidden = true;
   image.addEventListener('error', () => { image.hidden = true; placeholder.hidden = false; });
+  image.addEventListener('load', () => { image.hidden = false; placeholder.hidden = true; });
   const name = document.createElement('strong');
   name.textContent = item.name;
   card.append(image, placeholder, name);
@@ -451,10 +452,10 @@ function avatarLibraryCard(item, kind) {
     card.append(selected);
   }
   if (kind === 'portrait3d') {
-    const generate = document.createElement('button');
+    const generate = placeholder;
     generate.type = 'button';
-    generate.className = 'secondary';
-    generate.textContent = 'Generate preview';
+    generate.classList.add('secondary');
+    generate.setAttribute('aria-label', `Generate preview for ${item.name}`);
     generate.addEventListener('click', async () => {
       if (avatarImportPending) return;
       avatarImportPending = true;
@@ -466,14 +467,12 @@ function avatarLibraryCard(item, kind) {
         if (!response.ok) throw new Error(result.error || 'Could not generate preview');
         avatarLibraryStatus.textContent = result.preview ? 'Preview generated.' : 'Preview unavailable. You can try again later.';
         if (result.preview) {
-          image.hidden = false;
-          placeholder.hidden = true;
+          image.loading = 'eager';
           image.src = `${imageUrl}?v=${Date.now()}`;
         }
       } catch (error) { avatarLibraryStatus.textContent = error.message; }
       finally { avatarImportPending = false; updateAvatarImportControls(); }
     });
-    card.append(generate);
   }
   return card;
 }
