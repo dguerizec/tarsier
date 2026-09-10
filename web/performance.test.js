@@ -130,7 +130,7 @@ test('column sorting is numeric, stable, non-mutating and keeps missing/inactive
   rows[3].active = false;
   assert.deepEqual(ids(null,'desc'), [1,2,3,4,5]);
   assert.deepEqual(rows.map(row => row.pid), [1,2,3,4,5]);
-  rows[0].gpus = [{engines:{SM:null,encode:40}}];
+  rows[0].gpus = [{engines:{encode:40}}];
   rows[1].gpus = [{engines:{render:20}}];
   assert.deepEqual(ids('gpu','desc'), [1,2,3,5,4]);
   rows[0].gpus = [{engines:{SM:5,encode:80}}];
@@ -153,4 +153,15 @@ test('worker stages show rates and durations and clear idle or stale values', as
   assert.equal(rows.find(row => row.label === 'Depth pipeline').rate, '0.0/s');
   assert.ok(workerStageRows(sample,8000).every(row => !row.active && row.mean === '—' && row.rate === '—'));
   assert.equal(workerStageRows(null).length, rows.length);
+});
+
+
+test('GPU label stays on SM when fresh activity is unavailable', async () => {
+  const { processGpuDisplay } = await import('./performance.js');
+  const gpu = {device:'NVIDIA GPU 0',source:'NVML',engines:{SM:null,encode:4,decode:null},memory_bytes:100,memory_kind:'framebuffer memory',activity_status:'no_new_sample'};
+  const display = processGpuDisplay({active:true,gpus:[gpu]});
+  assert.ok(display.text.startsWith('SM —'));
+  assert.match(display.detail, /No new process activity sample/);
+  gpu.engines.SM = 0; gpu.activity_status = 'sampled';
+  assert.ok(processGpuDisplay({active:true,gpus:[gpu]}).text.startsWith('SM 0.0%'));
 });

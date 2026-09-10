@@ -1,10 +1,10 @@
-//! Per-process GPU metrics from NVIDIA pmon and standard DRM fdinfo counters.
+//! Per-process GPU metrics from persistent NVML and standard DRM fdinfo counters.
 use crate::{model::unix_ms, telemetry::ProcessUsage};
 use serde::Serialize;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     path::Path,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 #[derive(Clone, Debug, Serialize)]
@@ -15,6 +15,10 @@ pub struct Usage {
     pub memory_bytes: Option<u64>,
     pub memory_kind: &'static str,
     pub sampled_at_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activity_status: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activity_sample_at_ms: Option<u64>,
 }
 
 #[derive(Default)]
@@ -45,7 +49,7 @@ fn parse_fdinfo(text: &str) -> Option<Client> {
         .get("drm-driver")
         .is_some_and(|driver| driver.starts_with("nvidia"))
     {
-        return None; // NVIDIA is collected through pmon, including graphics contexts.
+        return None; // NVIDIA is collected through NVML, including graphics contexts.
     }
     let mut client = Client {
         id: fields.get("drm-client-id")?.to_string(),
@@ -89,60 +93,6 @@ fn parse_fdinfo(text: &str) -> Option<Client> {
     Some(client)
 }
 
-pub fn parse_pmon(text: &str) -> Option<HashMap<u32, Vec<Usage>>> {
-    let mut header = Vec::new();
-    let mut result: HashMap<u32, Vec<Usage>> = HashMap::new();
-    for line in text.lines() {
-        let fields: Vec<_> = line.split_whitespace().collect();
-        if fields.starts_with(&["#", "gpu", "pid"]) {
-            header = fields[1..].to_vec();
-            continue;
-        }
-        if line.trim_start().starts_with('#') || header.is_empty() {
-            continue;
-        }
-        let get = |key: &str| {
-            header
-                .iter()
-                .position(|s| *s == key)
-                .and_then(|i| fields.get(i))
-                .copied()
-        };
-        let Some(pid) = get("pid").and_then(|s| s.parse::<u32>().ok()) else {
-            continue;
-        };
-        let mut engines = BTreeMap::new();
-        for (column, name) in [
-            ("sm", "SM"),
-            ("enc", "encode"),
-            ("dec", "decode"),
-            ("jpg", "JPEG"),
-            ("ofa", "optical flow"),
-        ] {
-            if let Some(value) = get(column) {
-                engines.insert(
-                    name.into(),
-                    value
-                        .parse::<f64>()
-                        .ok()
-                        .filter(|n| n.is_finite() && (0.0..=100.0).contains(n)),
-                );
-            }
-        }
-        result.entry(pid).or_default().push(Usage {
-            device: format!("NVIDIA GPU {}", get("gpu")?),
-            source: "nvidia-smi pmon",
-            engines,
-            memory_bytes: get("fb")
-                .and_then(|v| v.parse::<u64>().ok())
-                .and_then(|v| v.checked_mul(1048576)),
-            memory_kind: "framebuffer memory",
-            sampled_at_ms: unix_ms(),
-        });
-    }
-    (!header.is_empty()).then_some(result)
-}
-
 type CounterKey = (u32, u64, String, String, String);
 #[derive(Default)]
 pub struct Collector {
@@ -178,6 +128,8 @@ impl Collector {
                         device: client.device.clone(),
                         source: "DRM fdinfo",
                         engines: BTreeMap::new(),
+                        activity_status: None,
+                        activity_sample_at_ms: None,
                         memory_bytes: None,
                         memory_kind: client.memory_kind,
                         sampled_at_ms: unix_ms(),
@@ -220,30 +172,16 @@ impl Collector {
         self.previous = next;
         result
     }
-    pub async fn sample(
+    pub fn sample(
         &mut self,
         processes: &[ProcessUsage],
-        nvidia: bool,
+        nvidia: HashMap<u32, Vec<Usage>>,
+        nvml_supported: bool,
     ) -> (HashMap<u32, Vec<Usage>>, &'static str) {
         let mut result = self.drm(Path::new("/proc"), processes);
-        let mut supported = !result.is_empty();
-        if nvidia {
-            let mut command = tokio::process::Command::new("nvidia-smi");
-            command
-                .args(["pmon", "-c", "1", "-s", "um"])
-                .kill_on_drop(true);
-            if let Ok(Ok(output)) =
-                tokio::time::timeout(Duration::from_secs(3), command.output()).await
-                && output.status.success()
-                && let Some(rows) = parse_pmon(&String::from_utf8_lossy(&output.stdout))
-            {
-                supported = true;
-                for process in processes {
-                    if let Some(rows) = rows.get(&process.pid) {
-                        result.entry(process.pid).or_default().extend(rows.clone());
-                    }
-                }
-            }
+        let supported = !result.is_empty() || nvml_supported;
+        for (pid, usages) in nvidia {
+            result.entry(pid).or_default().extend(usages);
         }
         // Recheck identity after driver queries: never attribute a recycled PID.
         result.retain(|pid, _| {
@@ -274,6 +212,7 @@ pub fn current_start(pid: u32) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
     #[test]
     fn drm_deduplicates_descriptors_and_computes_capacity_normalized_deltas() {
         let root =
@@ -315,7 +254,15 @@ mod tests {
     async fn live_nvidia_attributes_only_the_requested_cuda_process() {
         use tokio::io::AsyncBufReadExt;
         let mut child = tokio::process::Command::new("worker/.venv/bin/python")
-            .args(["-u", "-c", "import torch,time; x=torch.ones(1048576,device='cuda'); torch.cuda.synchronize(); print('ready',flush=True); time.sleep(20)"])
+            .args(["-u", "-c", "import torch,time
+x=torch.ones((2048,2048),device='cuda')
+torch.cuda.synchronize()
+print('ready',flush=True)
+end=time.monotonic()+8
+while time.monotonic()<end:
+ y=x@x
+ torch.cuda.synchronize()
+ time.sleep(.01)"])
             .stdout(std::process::Stdio::piped()).kill_on_drop(true).spawn().unwrap();
         let pid = child.id().unwrap();
         let mut reader = tokio::io::BufReader::new(child.stdout.take().unwrap()).lines();
@@ -333,13 +280,26 @@ mod tests {
             rss_bytes: 0,
             gpus: Vec::new(),
         };
-        let (result, status) = Collector::default().sample(&[process], true).await;
-        assert_eq!(status, "available");
+        let mut nvidia_collector = crate::nvml_telemetry::Collector::default();
+        nvidia_collector.sample(std::slice::from_ref(&process));
+        let mut result = HashMap::new();
+        for _ in 0..3 {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            let nvidia = nvidia_collector.sample(std::slice::from_ref(&process));
+            let (sample, status) = Collector::default().sample(std::slice::from_ref(&process), nvidia.processes, nvidia.supported);
+            assert_eq!(status, "available");
+            result = sample;
+            if result.get(&pid).is_some_and(|usages| usages.iter().any(|gpu| gpu.engines.get("SM").copied().flatten().is_some_and(|value| value > 0.0))) {
+                break;
+            }
+        }
+        assert!(result[&pid].iter().any(|gpu| gpu.activity_status == Some("sampled")
+            && gpu.engines.get("SM").copied().flatten().is_some_and(|value| value > 0.0)));
         assert_eq!(result.len(), 1);
         assert!(
             result[&pid]
                 .iter()
-                .any(|gpu| gpu.source == "nvidia-smi pmon"
+                .any(|gpu| gpu.source == "NVML"
                     && gpu.memory_bytes.is_some_and(|bytes| bytes > 0))
         );
         println!(
@@ -350,20 +310,6 @@ mod tests {
         child.wait().await.unwrap();
     }
 
-    #[test]
-    fn nvidia_columns_are_named_and_missing_values_stay_unknown() {
-        let data=parse_pmon("# gpu pid type sm mem enc dec fb command\n0 42 C 25 8 - 0 120 python\n0 99 G - - - - - app\n").unwrap();
-        assert_eq!(data[&42][0].engines["SM"], Some(25.0));
-        assert_eq!(data[&42][0].engines["encode"], None);
-        assert_eq!(data[&42][0].memory_bytes, Some(120 * 1048576));
-        assert_eq!(data[&99][0].memory_bytes, None);
-        assert!(parse_pmon("Not supported").is_none());
-        assert!(
-            parse_pmon("# gpu pid type sm fb command\n0 - - - - -\n")
-                .unwrap()
-                .is_empty()
-        );
-    }
     #[test]
     fn fdinfo_uses_resident_memory_once_and_reads_engine_capacity() {
         let client=parse_fdinfo("drm-driver: i915\ndrm-client-id: 2\ndrm-pdev: 0000:00:02.0\ndrm-engine-render: 100000000 ns\ndrm-engine-capacity-render: 2\ndrm-memory-system: 100 KiB\ndrm-resident-system: 12 KiB\ndrm-total-system: 100 KiB\n").unwrap();

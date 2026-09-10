@@ -21,6 +21,7 @@ gstreamer = "0.25.3"
 gstreamer-app = "0.25.2"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 nix = { version = "0.31", features = ["fs", "ioctl"] }
+nvml-wrapper = "0.13.0"
 rand = "0.8"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 rmcp = { version = "3.2", features = ["server", "transport-io", "schemars"] }

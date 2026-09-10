@@ -25,12 +25,22 @@ export function graphPoints(values, width = 300, height = 36) {
 
 function primaryGpuEngine(gpu) {
   const engines = Object.entries(gpu.engines || {});
-  return engines.find(([name, value]) => value != null && (name === 'SM' || name === 'render')) || engines.find(([,value]) => value != null) || engines[0];
+  return engines.find(([name]) => name === 'SM' || name === 'render') || engines.find(([,value]) => value != null) || engines[0];
+}
+
+function gpuActivityNote(gpu) {
+  return {
+    sampled: 'Fresh driver activity sample',
+    no_new_sample: 'No new process activity sample from NVML; unavailable is not a measured zero',
+    warming_up: 'Waiting for a sample after identifying this process',
+    unsupported: 'Per-process activity is not supported by this driver/device',
+    unavailable: 'Per-process activity query failed',
+  }[gpu.activity_status] || '';
 }
 
 export function processGpuDisplay(process) {
   if (!process.active || !process.gpus?.length) return { text: '—\n—', detail: 'No GPU measurement attributed to this process' };
-  const detail = process.gpus.map(gpu => `${gpu.device} · ${gpu.source}: ${Object.entries(gpu.engines || {}).map(([engine, value]) => `${engine} ${formatPercent(value)}`).join(', ')}; ${gpu.memory_kind}: ${formatBytes(gpu.memory_bytes)}`).join(' | ');
+  const detail = process.gpus.map(gpu => `${gpu.device} · ${gpu.source}: ${Object.entries(gpu.engines || {}).map(([engine, value]) => `${engine} ${formatPercent(value)}`).join(', ')}; ${gpu.memory_kind}: ${formatBytes(gpu.memory_bytes)}${gpu.activity_status ? `; ${gpuActivityNote(gpu)}` : ''}`).join(' | ');
   if (process.gpus.length > 1) return { text: `${process.gpus.length} GPUs\nSee details`, detail };
   const gpu = process.gpus[0];
   const primary = primaryGpuEngine(gpu);
@@ -214,7 +224,7 @@ export function installPerformancePanel() {
       return;
     }
     panel.classList.remove('performance-stale');
-    status.textContent = resources.partial ? 'Sampled every 2 s · some processes inaccessible' : 'Sampled every 2 s · GPU every 6 s';
+    status.textContent = resources.partial ? 'Sampled every 2 s · some processes inaccessible' : 'CPU and GPU sampled every 2 s';
     metric('cpu', formatPercent(resources.cpu_percent));
     metric('memory', formatBytes(resources.rss_bytes));
     metric('host', formatPercent(resources.host_cpu_percent));

@@ -299,67 +299,13 @@ fn drm_gpus() -> Vec<GpuUsage> {
     result
 }
 
-fn parse_nvidia(text: &str) -> Vec<GpuUsage> {
-    text.lines()
-        .filter_map(|line| {
-            let fields: Vec<_> = line.split(',').map(str::trim).collect();
-            if fields.len() != 4 {
-                return None;
-            }
-            let value = |i: usize| {
-                fields[i]
-                    .parse::<f64>()
-                    .ok()
-                    .filter(|n| n.is_finite() && *n >= 0.0)
-            };
-            Some(GpuUsage {
-                name: fields[0].into(),
-                scope: "device",
-                busy_percent: value(1).filter(|n| *n <= 100.0),
-                memory_used_bytes: value(2).map(|n| (n * 1048576.0) as u64),
-                memory_total_bytes: value(3).map(|n| (n * 1048576.0) as u64),
-                source: "nvidia-smi",
-                note: value(1).is_none().then(|| "Activity unavailable".into()),
-            })
-        })
-        .collect()
-}
-
-async fn gpu_sample() -> Vec<GpuUsage> {
-    let mut gpus = drm_gpus();
-    if gpus.iter().any(|g| g.name.starts_with("NVIDIA")) {
-        let mut command = tokio::process::Command::new("nvidia-smi");
-        command
-            .args([
-                "--query-gpu=name,utilization.gpu,memory.used,memory.total",
-                "--format=csv,noheader,nounits",
-            ])
-            .kill_on_drop(true);
-        if let Ok(Ok(output)) = tokio::time::timeout(Duration::from_secs(2), command.output()).await
-            && output.status.success()
-        {
-            let nvidia = parse_nvidia(&String::from_utf8_lossy(&output.stdout));
-            if !nvidia.is_empty() {
-                gpus.retain(|g| !g.name.starts_with("NVIDIA"));
-                gpus.extend(nvidia);
-            }
-        }
-    }
-    gpus
-}
-
 pub fn start(runtime: Runtime, mut shutdown: tokio::sync::watch::Receiver<bool>) {
     tokio::spawn(async move {
         let mut sampler = Sampler::default();
         let mut interval = tokio::time::interval(Duration::from_secs(2));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let mut gpus = Vec::new();
-        let mut gpu_at = None;
-        let mut last_gpu = None;
         let mut process_collector = crate::gpu_process::Collector::default();
-        let mut process_gpus = HashMap::new();
-        let mut process_identities = HashMap::new();
-        let mut process_gpu_status = "unavailable";
+        let mut nvidia = crate::nvml_telemetry::Collector::default();
         loop {
             tokio::select! {
                 _ = shutdown.changed() => break,
@@ -368,36 +314,26 @@ pub fn start(runtime: Runtime, mut shutdown: tokio::sync::watch::Receiver<bool>)
             if *shutdown.borrow() {
                 break;
             }
-            let Ok((returned, mut sample)) = tokio::task::spawn_blocking(move || {
-                let sample = sampler.sample(Path::new("/proc"), std::process::id());
-                (sampler, sample)
-            })
-            .await
-            else {
-                break;
-            };
-            sampler = returned;
-            if last_gpu.is_none_or(|at: Instant| at.elapsed() >= Duration::from_secs(6)) {
-                gpus = gpu_sample().await;
-                let nvidia = gpus.iter().any(|gpu| gpu.name.starts_with("NVIDIA"));
-                (process_gpus, process_gpu_status) =
-                    process_collector.sample(&sample.processes, nvidia).await;
-                process_identities = sample
-                    .processes
-                    .iter()
-                    .map(|p| (p.pid, p.start_ticks))
-                    .collect();
-                gpu_at = Some(unix_ms());
-                last_gpu = Some(Instant::now());
-            }
-            for process in &mut sample.processes {
-                if process_identities.get(&process.pid) == Some(&process.start_ticks) {
+            let Ok((returned, returned_process, returned_nvidia, sample)) = tokio::task::spawn_blocking(move || {
+                let mut sample = sampler.sample(Path::new("/proc"), std::process::id());
+                let nvidia_sample = nvidia.sample(&sample.processes);
+                let mut gpus = drm_gpus();
+                if !nvidia_sample.devices.is_empty() {
+                    gpus.retain(|gpu| !gpu.name.starts_with("NVIDIA"));
+                    gpus.extend(nvidia_sample.devices);
+                }
+                let (process_gpus, status) = process_collector.sample(&sample.processes, nvidia_sample.processes, nvidia_sample.supported);
+                for process in &mut sample.processes {
                     process.gpus = process_gpus.get(&process.pid).cloned().unwrap_or_default();
                 }
-            }
-            sample.process_gpu_status = process_gpu_status;
-            sample.gpus = gpus.clone();
-            sample.gpu_sampled_at_ms = gpu_at;
+                sample.process_gpu_status = status;
+                sample.gpus = gpus;
+                sample.gpu_sampled_at_ms = Some(unix_ms());
+                (sampler, process_collector, nvidia, sample)
+            }).await else { break; };
+            sampler = returned;
+            process_collector = returned_process;
+            nvidia = returned_nvidia;
             runtime.set_telemetry(sample).await;
         }
     });
@@ -474,11 +410,5 @@ mod tests {
         assert_eq!(host_ticks("cpu 10 0 20 60 10 0 0 0 9 0\n"), Some((100, 70)));
         assert!(parse_stat(1, "broken", 4096).is_none());
     }
-    #[test]
-    fn nvidia_unavailable_is_not_zero() {
-        let gpu = parse_nvidia("Example GPU, N/A, 12, 1024");
-        assert_eq!(gpu[0].busy_percent, None);
-        assert_eq!(gpu[0].memory_used_bytes, Some(12 * 1048576));
-        assert!(parse_nvidia("bad output").is_empty());
-    }
+
 }

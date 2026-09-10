@@ -28,6 +28,7 @@ mod service;
 mod telemetry;
 mod telemetry_record;
 mod gpu_process;
+mod nvml_telemetry;
 mod utterances;
 mod video_clients;
 mod video_transform;

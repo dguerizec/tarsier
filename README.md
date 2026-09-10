@@ -248,13 +248,13 @@ samples and detached/reparented workers are not accounted for. Browser processes
 are outside the Tarsier total. These are measurements, not resource limits.
 
 GPU utilization and VRAM are device-wide: AMD counters are read from DRM sysfs
-when exposed; NVIDIA uses a bounded `nvidia-smi` query at most once every six
-seconds. Unsupported counters, including Intel activity not exposed through
+when exposed; NVIDIA uses a persistent, dynamically loaded NVML connection.
+CPU and GPU are sampled every two seconds without spawning `nvidia-smi` processes. Unsupported counters, including Intel activity not exposed through
 these interfaces, display as unavailable rather than zero.
 
 Per-process GPU activity and memory are collected separately: NVIDIA uses a
-bounded `nvidia-smi pmon` sample (compute and graphics processes, up to the first
-four supported devices), and Intel/AMD use standard DRM fdinfo when their driver
+persistent NVML queries (compute and graphics contexts are merged by PID without
+counting their framebuffer memory twice), and Intel/AMD use standard DRM fdinfo when their driver
 exposes it. Cells show an engine activity percentage and GPU memory; hover for
 all engines, devices, units and data sources. SM/render, encode and decode remain
 separate measures and are not added into a synthetic utilization percentage.
@@ -266,6 +266,18 @@ buffers, not dedicated VRAM. Shared clients/buffers can appear in several proces
 so per-process memory must not be summed as unique GPU memory. Process identity is
 checked using PID and start time before cached measurements are attributed.
 Missing, unsupported and first-sample counters remain unavailable, never zero.
+NVML queries retain the last driver timestamp for each GPU. Process activity
+reports use the newest valid sample returned since the preceding query; they are
+not whole-window averages. The driver reports processes with nonzero activity,
+so it may provide no new sample for a listed process. Such cases remain unknown,
+with `activity_status: "no_new_sample"`; unsupported queries and process warmup
+are distinct statuses. Explicit reported zero remains zero. Stale samples older
+than six seconds are rejected, and `activity_sample_at_ms` preserves the actual
+driver timestamp. The main NVIDIA engine label stays SM even when unavailable.
+See [NVML process utilization](https://docs.nvidia.com/deploy/nvml-api/api/group__nvmlDeviceQueries.html).
+The library is optional at runtime; Intel/AMD continue using DRM without NVIDIA
+software. Initialization failures retry at most once per minute.
+
 The format follows the [kernel DRM client usage statistics](https://www.kernel.org/doc/html/v6.9/gpu/drm-usage-stats.html).
 
 The loopback-only, read-only `GET /api/v1/telemetry` endpoint serves cached samples and
