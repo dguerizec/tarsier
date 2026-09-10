@@ -55,3 +55,40 @@ on this clip after scalarizing GPU RGBA masks (MediaPipe 1.0.1, RTX 3070).
 
 The mask fix was also inspected in the live preview with Camera + Pixel Party
 and GPU pose active: the subject was visible in front of the background.
+
+## Full-pipeline replay comparison (2026-09-10)
+
+The local run is stored in `local-test-media/full-pipeline-cpu-gpu-20260910/`:
+`report.md`, `comparison.json`, per-strategy `summary.json` and raw JSONL files,
+plus the measurement and analysis scripts. These files remain private and ignored
+by Git. The run used commit `7a46944`, the debug daemon, RTX 3070, 1280x720 at
+30 fps and the fixed gesture clip through the new file input pipeline.
+
+Both strategies used CPU selfie segmentation and CPU avatar face tracking.
+The GPU strategy moved only observation face, hands and pose to GPU. Each of six
+conditions had at least 15 seconds of stabilization and 84 seconds of sampling
+at two-second intervals: 504 valid samples total, with no worker restarts during
+measurement. Plain video was repeated at the end of each strategy.
+
+| Mode | Total CPU, CPU delegates → GPU delegates | Output fps, CPU → GPU |
+|---|---:|---:|
+| Plain video | 160.7% → 142.6% | 30.0 → 30.0 |
+| Pixel Party | 277.9% → 271.3% | 23.9 → 27.9 |
+| Depth map | 299.6% → 296.0% | 30.1 → 30.0 |
+| Personal 3D | 349.3% → 319.3% | 29.9 → 30.0 |
+| LivePortrait | 324.7% → 340.3% | 30.0 → 30.0 |
+| Plain video repeat | 162.2% → 143.4% | 30.0 → 30.0 |
+
+CPU 100% means one logical core; totals exclude the browser. Plain-video worker
+CPU fell from 73.2% to 55.0%. Personal 3D's CPU reduction came with fewer avatar
+render calls (22.5/s → 20.5/s); LivePortrait also rendered slightly less often
+(7.9/s → 7.6/s). Output FPS includes repeated frames, so the avatar results do
+not establish an unconditional GPU benefit. GPU contention is one possible cause
+of the regressions, not a conclusion isolated by this experiment.
+
+This is a sequential comparison on one desktop, with uncontrolled external load
+and preview clients. Windows cover approximately two clip loops, without exact
+frame alignment. NVML process activity remains sparse in some modes; missing
+samples are not zero. RSS includes models retained from earlier scenarios.
+See the local report for stage timings, memory, GPU sample counts and limits.
+The original delegates and effects were restored; the video remains selected.
