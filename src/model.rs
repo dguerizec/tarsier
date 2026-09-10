@@ -395,6 +395,7 @@ pub struct PipelineState {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct PerceptionState {
+    pub active_models: crate::perception_demand::Models,
     pub worker_connected: bool,
     pub error: Option<String>,
     pub frame_id: Option<u64>,
@@ -445,6 +446,8 @@ pub struct ScenarioActivation {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PerceptionObservation {
+    #[serde(default = "crate::perception_demand::Models::all")]
+    pub active_models: crate::perception_demand::Models,
     pub frame_id: u64,
     pub captured_at_ms: u64,
     #[serde(default)]

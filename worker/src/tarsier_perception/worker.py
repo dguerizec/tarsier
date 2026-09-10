@@ -9,7 +9,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Iterator
 from contextlib import ExitStack, suppress
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO
 
@@ -73,6 +73,9 @@ class Observation:
     gesture: str | None
     confidence: float
     latency_ms: float
+    active_models: dict[str, bool] = field(
+        default_factory=lambda: dict.fromkeys(("face", "hands", "pose"), True)
+    )
     image_width: int = 0
     image_height: int = 0
 
@@ -170,8 +173,32 @@ class MediaPipeDetector:
     def __init__(
         self, model_dir: Path, minimum_confidence: float, delegates: Delegates = DEFAULT_DELEGATES
     ) -> None:
+        self._model_dir = model_dir
+        self._minimum_confidence = minimum_confidence
+        self._delegates = delegates
+        self._gesture = self._face = self._pose = None
+        self.active_models = dict.fromkeys(("face", "hands", "pose"), False)
+        self._last_used = dict.fromkeys(self.active_models, 0.0)
+
+    def set_demand(self, models: dict[str, bool]) -> None:
+        now = time.monotonic()
+        for model, attr in (("face", "_face"), ("hands", "_gesture"), ("pose", "_pose")):
+            task = getattr(self, attr)
+            if models[model]:
+                self._last_used[model] = now
+                if task is None:
+                    setattr(self, attr, getattr(self, "_create_" + model)())
+            elif task is not None and now - self._last_used[model] >= 2.0:
+                task.close()
+                setattr(self, attr, None)
+        self.active_models = models.copy()
+
+    def _create_hands(self):
         vision = mp.tasks.vision
-        self._gesture = vision.GestureRecognizer.create_from_options(
+        model_dir = self._model_dir
+        minimum_confidence = self._minimum_confidence
+        delegates = self._delegates
+        return vision.GestureRecognizer.create_from_options(
             vision.GestureRecognizerOptions(
                 base_options=base_options(
                     model_dir / "gesture_recognizer.task", delegates.hands
@@ -186,7 +213,13 @@ class MediaPipeDetector:
                 ),
             )
         )
-        self._face = vision.FaceLandmarker.create_from_options(
+
+    def _create_face(self):
+        vision = mp.tasks.vision
+        model_dir = self._model_dir
+        minimum_confidence = self._minimum_confidence
+        delegates = self._delegates
+        return vision.FaceLandmarker.create_from_options(
             vision.FaceLandmarkerOptions(
                 base_options=base_options(model_dir / "face_landmarker.task", delegates.face),
                 running_mode=vision.RunningMode.VIDEO,
@@ -196,7 +229,13 @@ class MediaPipeDetector:
                 min_tracking_confidence=minimum_confidence,
             )
         )
-        self._pose = vision.PoseLandmarker.create_from_options(
+
+    def _create_pose(self):
+        vision = mp.tasks.vision
+        model_dir = self._model_dir
+        minimum_confidence = self._minimum_confidence
+        delegates = self._delegates
+        return vision.PoseLandmarker.create_from_options(
             vision.PoseLandmarkerOptions(
                 base_options=base_options(
                     model_dir / "pose_landmarker_lite.task", delegates.pose
@@ -210,6 +249,7 @@ class MediaPipeDetector:
             )
         )
 
+
     def detect(
         self, frame_bgr: np.ndarray, timestamp_ms: int
     ) -> tuple[
@@ -220,20 +260,27 @@ class MediaPipeDetector:
         float,
         np.ndarray,
     ]:
-        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
-        with stages.measure("face"):
-            face_result = self._face.detect_for_video(image, timestamp_ms)
-        with stages.measure("hands"):
-            gesture_result = self._gesture.recognize_for_video(image, timestamp_ms)
-        with stages.measure("pose"):
-            pose_result = self._pose.detect_for_video(image, timestamp_ms)
-        gesture, confidence = select_gesture(gesture_result.gestures)
-        face_landmarks = select_landmarks(face_result.face_landmarks, 1)
-        hand_landmarks = select_landmarks(gesture_result.hand_landmarks, 2)
-        pose_landmarks = select_landmarks(pose_result.pose_landmarks, 1)
         height, width = frame_bgr.shape[:2]
-        pose_mask = encode_segmentation_mask(pose_result.segmentation_masks, width, height)
+        face_landmarks, hand_landmarks, pose_landmarks = [], [], []
+        gesture, confidence = None, 0.0
+        pose_mask = np.zeros((height, width), dtype=np.uint8)
+        if any(self.active_models.values()):
+            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+            if self.active_models["face"]:
+                with stages.measure("face"):
+                    result = self._face.detect_for_video(image, timestamp_ms)
+                face_landmarks = select_landmarks(result.face_landmarks, 1)
+            if self.active_models["hands"]:
+                with stages.measure("hands"):
+                    result = self._gesture.recognize_for_video(image, timestamp_ms)
+                gesture, confidence = select_gesture(result.gestures)
+                hand_landmarks = select_landmarks(result.hand_landmarks, 2)
+            if self.active_models["pose"]:
+                with stages.measure("pose"):
+                    result = self._pose.detect_for_video(image, timestamp_ms)
+                pose_landmarks = select_landmarks(result.pose_landmarks, 1)
+                pose_mask = encode_segmentation_mask(result.segmentation_masks, width, height)
         return (
             face_landmarks,
             hand_landmarks,
@@ -244,9 +291,11 @@ class MediaPipeDetector:
         )
 
     def close(self) -> None:
-        self._gesture.close()
-        self._face.close()
-        self._pose.close()
+        for attr in ("_gesture", "_face", "_pose"):
+            task = getattr(self, attr)
+            if task is not None:
+                task.close()
+                setattr(self, attr, None)
 
     def __enter__(self) -> MediaPipeDetector:
         return self
@@ -417,11 +466,15 @@ class ObservationProcessor:
 
     def _run(self) -> None:
         try:
+            from .demand import DetectionDemandClient
+
+            demand = DetectionDemandClient(self._daemon_url)
             publisher = ObservationPublisher(self._daemon_url)
             with MediaPipeDetector(
                 self._model_dir, self._minimum_confidence, self._delegates
             ) as detector:
                 while (frame := self._frames.get()) is not None:
+                    detector.set_demand(demand.models())
                     inference_started = time.perf_counter()
                     (
                         face_landmarks,
@@ -443,6 +496,7 @@ class ObservationProcessor:
                     observation = Observation(
                         frame_id=frame.frame_id,
                         captured_at_ms=frame.captured_at_ms,
+                        active_models=detector.active_models.copy(),
                         face_detected=bool(face_landmarks),
                         face_landmarks=face_landmarks,
                         hand_detected=bool(hand_landmarks),

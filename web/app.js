@@ -84,7 +84,7 @@ const photoStatus = $("#photo-status");
 const preview = $("#preview");
 const overlay = $("#landmark-overlay");
 const overlayContext = overlay.getContext("2d");
-const skeletonToggle = $("#skeleton-toggle");
+const skeletonToggles = Object.fromEntries(["face", "hands", "pose"].map(model => [model, $(`#skeleton-${model}`)]));
 const outputModeInputs = [...document.querySelectorAll("[data-output-mode]")];
 const backgroundToggle = $("#background-toggle");
 const backgroundEffectInputs = [...document.querySelectorAll("[data-background-effect]")];
@@ -97,10 +97,10 @@ const autoZoomToggle = $("#auto-zoom-toggle");
 const imageSettingsGroups = $("#image-settings-groups");
 const panTiltButtons = [...document.querySelectorAll("[data-pan-tilt]")];
 let state = null;
-let skeletonEnabled = (
-  localStorage.getItem("tarsier.skeletons")
-  ?? localStorage.getItem("tarsier.handSkeleton")
-) === "true";
+const legacySkeletons = (localStorage.getItem("tarsier.skeletons") ?? localStorage.getItem("tarsier.handSkeleton")) === "true";
+const skeletonModels = Object.fromEntries(["face", "hands", "pose"].map(model => [
+  model, (localStorage.getItem(`tarsier.skeleton.${model}`) ?? String(legacySkeletons)) === "true",
+]));
 let previewMirrorEnabled = localStorage.getItem("tarsier.previewMirror") === "true";
 let socketConnected = false;
 let pipelineWasRunning = null;
@@ -473,7 +473,7 @@ function drawSkeletons(
   }
   overlayContext.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
   overlayContext.clearRect(0, 0, bounds.width, bounds.height);
-  if (!skeletonEnabled || state?.video_effects?.output_mode !== "camera") return;
+  if (!Object.values(skeletonModels).some(Boolean) || state?.video_effects?.output_mode !== "camera") return;
 
   const sourceWidth = preview.naturalWidth || 16;
   const sourceHeight = preview.naturalHeight || 9;
@@ -496,7 +496,7 @@ function drawSkeletons(
   overlayContext.shadowColor = "rgba(9, 13, 11, 0.9)";
   overlayContext.shadowBlur = 4;
 
-  if (poseLandmarks.length === 33) {
+  if (skeletonModels.pose && poseLandmarks.length === 33) {
     const points = project(poseLandmarks);
     const visible = (point) => point.visibility == null || point.visibility >= 0.5;
     overlayContext.lineWidth = 3.5;
@@ -521,7 +521,7 @@ function drawSkeletons(
     }
   }
 
-  if (faceLandmarks.length === 478) {
+  if (skeletonModels.face && faceLandmarks.length === 478) {
     const points = project(faceLandmarks);
     overlayContext.lineWidth = 1.4;
     overlayContext.strokeStyle = "rgba(112, 218, 255, 0.85)";
@@ -544,7 +544,7 @@ function drawSkeletons(
   }
 
   const handColors = ["rgba(183, 239, 122, 0.9)", "rgba(240, 196, 105, 0.9)"];
-  const handCount = handLandmarks.length / 21;
+  const handCount = skeletonModels.hands ? handLandmarks.length / 21 : 0;
   if (Number.isInteger(handCount) && handCount >= 1 && handCount <= 2) {
     for (let handIndex = 0; handIndex < handCount; handIndex += 1) {
       const points = project(handLandmarks.slice(handIndex * 21, (handIndex + 1) * 21));
@@ -569,11 +569,19 @@ function drawSkeletons(
   }
 }
 
-function setSkeletonEnabled(enabled) {
-  skeletonEnabled = enabled;
-  localStorage.setItem("tarsier.skeletons", String(enabled));
-  skeletonToggle.setAttribute("aria-pressed", String(enabled));
-  skeletonToggle.title = enabled ? "Hide skeletons" : "Show skeletons";
+function syncDetectionDemand() {
+  const visible = socketConnected && !document.hidden && state?.video_effects?.output_mode === "camera";
+  eventClient.setPerceptionDemand(Object.fromEntries(Object.entries(skeletonModels).map(([model, enabled]) => [model, visible && enabled])));
+}
+
+function setSkeletonEnabled(model, enabled) {
+  skeletonModels[model] = enabled;
+  localStorage.setItem(`tarsier.skeleton.${model}`, String(enabled));
+  const button = skeletonToggles[model];
+  button.setAttribute("aria-pressed", String(enabled));
+  const label = model === "pose" ? "body" : model;
+  button.title = `${enabled ? "Hide" : "Show"} ${label} landmarks. Detection may remain active for gestures or other consumers.`;
+  syncDetectionDemand();
   drawSkeletons();
 }
 
@@ -826,7 +834,8 @@ function renderOutputMode(videoEffects) {
   }
   modelChoose.disabled = modelPending || !socketConnected;
   portraitChoose.disabled = portraitPending || !socketConnected;
-  skeletonToggle.disabled = identity !== "camera";
+  Object.values(skeletonToggles).forEach(button => { button.disabled = identity !== "camera"; });
+  syncDetectionDemand();
   const status = outputModeError
     ? "Change failed"
     : outputModePending ? "Switching…"
@@ -945,7 +954,7 @@ function render(next) {
   takePhoto.disabled = photoPending || !socketConnected || !pipeline.running;
   renderRecording();
   $("#worker").textContent = perception.worker_connected ? `Frame ${perception.frame_id}` : "Worker offline";
-  $("#gesture").textContent = perception.gesture || "No gesture";
+  $("#gesture").textContent = perception.active_models?.hands === false ? "Hand detection inactive" : perception.gesture || "No gesture";
   $("#confidence").textContent = gestureDetail(perception);
   $("#gesture-icon").classList.toggle("active", perception.gesture === "open_palm");
   const phone = perception.phone_near_mouth || {};
@@ -1037,6 +1046,7 @@ function connect() {
   const subscriptions = [];
   subscriptions.push(eventClient.subscribe("connected", () => {
     socketConnected = true;
+    syncDetectionDemand();
     pipelineWasRunning = false;
     connection.textContent = "Live";
     connection.className = "status status-on";
@@ -1060,6 +1070,7 @@ function connect() {
     syncDaemonRestartControl();
   }));
   return () => {
+    eventClient.setPerceptionDemand({});
     subscriptions.forEach(unsubscribe => unsubscribe());
     clearHeldDirections();
     socketConnected = false;
@@ -1109,7 +1120,9 @@ $("#demo-trigger").addEventListener("click", async () => {
   await fetch("/api/v1/scenarios/open-palm-demo/trigger", { method: "POST" });
 });
 
-skeletonToggle.addEventListener("click", () => setSkeletonEnabled(!skeletonEnabled));
+for (const [model, button] of Object.entries(skeletonToggles)) {
+  button.addEventListener("click", () => setSkeletonEnabled(model, !skeletonModels[model]));
+}
 async function setBackground(enabled, effect) {
   if (backgroundPending || !state) return;
   backgroundPending = true;
@@ -1987,7 +2000,7 @@ for (const [button, icon] of [[faceTrackingToggle, ScanFace], [handsTrackingTogg
 
 cameraPowerToggle.append(createElement(Power, { width: 18, height: 18, "aria-hidden": "true", focusable: "false" }));
 
-for (const [button, icon] of [[$("#preview-mirror"), FlipHorizontal2], [skeletonToggle, Bone]]) {
+for (const [button, icon] of [[$("#preview-mirror"), FlipHorizontal2], [skeletonToggles.face, ScanFace], [skeletonToggles.hands, Hand], [skeletonToggles.pose, Bone]]) {
   button.append(createElement(icon, { width: 15, height: 15, "aria-hidden": "true", focusable: "false" }));
 }
 $("#preview-mirror").addEventListener("click", () => setPreviewMirror(!previewMirrorEnabled));
@@ -1997,7 +2010,7 @@ renderVideoOutput();
 buildImageSettingsUi();
 setInterval(() => state && render(state), 500);
 
-setSkeletonEnabled(skeletonEnabled);
+for (const [model, enabled] of Object.entries(skeletonModels)) setSkeletonEnabled(model, enabled);
 loadRecentEvents().catch(console.error);
 loadPresets().catch(console.error);
 observeVisible(document.body, connect);

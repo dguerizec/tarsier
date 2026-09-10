@@ -38,6 +38,7 @@ use crate::{
 
 #[derive(Clone)]
 struct ApiState {
+    detection_demand: crate::perception_demand::Registry,
     video_applications: crate::video_clients::Monitor,
     auth: Option<crate::auth::Auth>,
     recorder: crate::recording::Recorder,
@@ -202,6 +203,7 @@ pub fn router_with_controls(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(&config.avatar.source_image),
     )));
     let state = ApiState {
+        detection_demand: crate::perception_demand::Registry::default(),
         avatar_library: options.avatar_library.or_else(crate::avatar_import::default_library),
         avatar_import_control: Arc::new(tokio::sync::Semaphore::new(1)),
         portrait3d_model: Arc::new(Mutex::new(
@@ -345,6 +347,7 @@ pub fn router_with_controls(
         .route("/assets/styles.css", get(styles_css))
         .route("/api/v1/health", get(health))
         .route("/api/v1/daemon/restart", post(restart_daemon))
+        .route("/api/v1/perception/demand", get(perception_demand))
         .route("/api/v1/perception/delegates", post(set_perception_delegate))
         .route("/api/v1/state", get(current_state))
         .route("/api/v1/telemetry", get(resource_telemetry))
@@ -1477,7 +1480,7 @@ fn telemetry_pipeline_context(runtime: &crate::model::RuntimeState, config: &Con
             "output_muted":runtime.pipeline.output_muted,"camera_reserved":runtime.pipeline.camera_reserved,
             "transform":effects.transform},
         "perception": {"enabled":config.perception.enabled,"connected":runtime.perception.worker_connected,
-            "source":config.perception.source,
+            "source":config.perception.source,"active_models":runtime.perception.active_models,
             "input_transport": if !config.perception.supervise_worker { "external" } else if config.perception.source == crate::config::PerceptionSource::Device { "device" } else { config.perception.transport.as_str() },"width":config.perception.width,"height":config.perception.height,
             "target_fps":config.perception.fps,"mask_target_fps":config.perception.mask_fps,
             "requested_delegates":config.perception.delegates},
@@ -4106,13 +4109,20 @@ async fn trigger_scenario(
 
 async fn perception_observation(
     State(state): State<ApiState>,
-    Json(observation): Json<PerceptionObservation>,
+    Json(mut observation): Json<PerceptionObservation>,
 ) -> Response {
     if let Some(response) =
         reject_stale_worker_update(&state, Some(observation.captured_at_ms)).await
     {
         return response;
     }
+    // Inactive models must never retain landmarks or trigger gestures from old data.
+    if !observation.active_models.face { observation.face_detected = false; observation.face_landmarks.clear(); }
+    if !observation.active_models.hands {
+        observation.hand_detected = false; observation.hand_landmarks.clear();
+        observation.gesture = None; observation.confidence = 0.0;
+    }
+    if !observation.active_models.pose { observation.pose_detected = false; observation.pose_landmarks.clear(); }
     if observation.confidence.is_nan() || !(0.0..=1.0).contains(&observation.confidence) {
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -4150,6 +4160,13 @@ async fn perception_observation(
             runtime.perception.worker_connected = true;
             runtime.perception.error = None;
             runtime.perception.frame_id = Some(observation.frame_id);
+            runtime.perception.active_models = observation.active_models;
+            if !observation.active_models.hands {
+                runtime.perception.last_hand_at_ms = None;
+                runtime.perception.peak_gesture = None;
+                runtime.perception.peak_gesture_confidence = None;
+                runtime.perception.peak_gesture_at_ms = None;
+            }
             runtime.perception.face_detected = observation.face_detected;
             runtime.perception.face_landmarks = if observation.face_detected {
                 observation.face_landmarks.clone()
@@ -5117,6 +5134,22 @@ async fn set_virtual_audio_locked(state: ApiState, request: VirtualAudioRequest)
     Json(state.runtime.state().await.audio_virtual).into_response()
 }
 
+async fn perception_demand(State(state): State<ApiState>) -> Json<crate::perception_demand::Models> {
+    let runtime = state.runtime.state().await;
+    Json(crate::perception_demand::internal(&state.config, &runtime).union(state.detection_demand.models()))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DemandSubscription {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(default)]
+    models: crate::perception_demand::Models,
+    #[serde(default)]
+    events: Vec<String>,
+}
+
 async fn events_socket(
     headers: HeaderMap,
     websocket: WebSocketUpgrade,
@@ -5129,6 +5162,7 @@ async fn events_socket(
             state.shutdown,
             state.recorder,
             state.auth,
+            state.detection_demand,
             headers,
         )
     })
@@ -5140,8 +5174,10 @@ async fn stream_events(
     mut shutdown: watch::Receiver<bool>,
     recorder: crate::recording::Recorder,
     auth: Option<crate::auth::Auth>,
+    demand: crate::perception_demand::Registry,
     headers: HeaderMap,
 ) {
+    let demand_lease = demand.lease();
     let (mut sender, mut receiver) = socket.split();
     let mut events = runtime.subscribe_events();
     let mut states = runtime.subscribe_state();
@@ -5201,6 +5237,20 @@ async fn stream_events(
             },
             incoming = receiver.next() => match incoming {
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                Some(Ok(Message::Text(text))) => {
+                    let request = if text.len() <= 4096 { serde_json::from_str::<DemandSubscription>(&text).ok() } else { None };
+                    let models = request.filter(|r| r.kind == "perception.subscribe" && r.events.len() <= 16)
+                        .and_then(|r| r.events.iter().try_fold(r.models, |models, event| {
+                            crate::perception_demand::Models::event(event).map(|required| models.union(required))
+                        }));
+                    let payload = if let Some(models) = models {
+                        demand_lease.replace(models);
+                        json!({"type":"perception.subscription", "data":models})
+                    } else {
+                        json!({"type":"perception.subscription.error", "data":"Invalid detection subscription"})
+                    };
+                    if sender.send(Message::Text(payload.to_string().into())).await.is_err() { break; }
+                },
                 _ => {}
             }
         }
@@ -5257,6 +5307,25 @@ mod tests {
                 .status(),
             StatusCode::SERVICE_UNAVAILABLE
         );
+    }
+
+    #[tokio::test]
+    async fn inactive_observations_clear_landmarks_gestures_and_activity() {
+        let runtime = Runtime::new();
+        runtime.update(|s| { s.pipeline.enabled = true; s.pipeline.running = true; }).await;
+        let (_shutdown, receiver) = watch::channel(false);
+        let app = router(Config::default(), runtime.clone(), PreviewHub::new(), None, receiver);
+        let response = app.oneshot(Request::post("/api/v1/perception/observations")
+            .header("content-type", "application/json")
+            .body(Body::from(json!({"frame_id":1,"captured_at_ms":unix_ms(),
+                "active_models":{"face":false,"hands":false,"pose":false},
+                "face_detected":true,"hand_detected":true,"pose_detected":true,
+                "gesture":"open_palm","confidence":1.0}).to_string())).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let state = runtime.state().await;
+        assert_eq!(state.perception.active_models, crate::perception_demand::Models::default());
+        assert!(!state.perception.face_detected && !state.perception.hand_detected && !state.perception.pose_detected);
+        assert!(state.perception.gesture.is_none() && state.perception.last_hand_at_ms.is_none());
     }
 
     #[tokio::test]

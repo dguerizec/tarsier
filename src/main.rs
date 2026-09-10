@@ -17,6 +17,7 @@ mod media_metadata;
 mod model;
 mod mute_media;
 mod perception;
+mod perception_demand;
 mod phone_gesture;
 mod pipeline;
 mod shared_frames;

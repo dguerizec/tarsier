@@ -102,9 +102,9 @@ observation consumers are not requesting extra work.
 
 | Task | Plain video | Camera + background | Depth map | Personal 3D / LivePortrait | Current scheduling |
 |---|---|---|---|---|---|
-| Observation face | Not needed by image effect | Not needed by image effect | Not needed by image effect | Not needed by image effect | Always with observation thread |
-| Hands + gesture recognition | Not needed by image effect | Not needed by image effect | Not needed by image effect | Not needed by image effect | Always with observation thread |
-| Pose + pose mask | Not needed by image effect | Required by current mask constraint | Not needed by image effect | Not needed by image effect | Always with observation thread |
+| Observation face | Not needed by image effect | Not needed by image effect | Not needed by image effect | Not needed by image effect | Union of internal and live subscription demand |
+| Hands + gesture recognition | Not needed by image effect | Not needed by image effect | Not needed by image effect | Not needed by image effect | Union of internal and live subscription demand |
+| Pose + pose mask | Not needed by image effect | Required by current mask constraint | Not needed by image effect | Not needed by image effect | Union of internal and live subscription demand |
 | Selfie segmentation | Not needed | Required | Not needed | Not needed | Only camera identity with background enabled |
 | Depth estimation | Not needed | Mask refinement, when configured | Required | Not needed | Already conditional |
 | Depth mask refinement | Not needed | When depth is configured | Not needed | Not needed | Already conditional |
@@ -167,3 +167,6 @@ Measured costs and the private replay data are linked from
 The default local frame transport now uses a shared buffer; see
 [Shared-frame transport](shared-frame-transport.md) for ownership, synchronization
 and the explicit MJPEG comparison option.
+
+Observation models now have independent demand and resource lifetimes; see
+[Perception demand](perception-demand.md) for UI controls and external subscriptions.

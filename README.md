@@ -1513,3 +1513,6 @@ back. Source file URIs are included in telemetry for reproducible comparisons.
 
 The supervised local worker uses [shared-frame transport](docs/shared-frame-transport.md)
 to avoid JPEG encoding and decoding between the daemon and perception.
+
+[Observation model demand](docs/perception-demand.md) independently controls face,
+hands and body detection for internal features, preview traces and external clients.

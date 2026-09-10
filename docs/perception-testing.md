@@ -197,3 +197,28 @@ ignored), including idle-photo suppression, successive fresh captures, JPEG
 validity/dimensions and missing/stale-frame rejection. The shared-buffer lifetime
 test also now tolerates unrelated concurrent reuse of a closed descriptor number
 while checking that the original buffer is no longer owned by that descriptor.
+
+## Independent observation demand (2026-09-11)
+
+Private evidence: `local-test-media/detection-demand-20260911/`. The live checker
+used the recorded gesture replay, temporarily disabled the phone detector and
+configured scenarios, and disabled the camera background to isolate model demand.
+It exercised all eight face/hands/pose combinations, requiring two distinct worker
+telemetry windows with matching inference counters for each. It also verified
+two concurrent consumers, removal of one consumer, an open-palm event subscription
+requesting hands only, and complete demand release on disconnect. Original TOML,
+physical camera selection, microphone reservations and green background were
+restored after testing. No performance speedup is claimed from these short checks.
+
+Validation: 310 Rust tests passed (five ignored), 82 Python tests, Ruff and 36
+JavaScript tests. Tests cover model resource grace periods, independent inference,
+empty results when inactive, demand caching/failure fallback, lease replacement
+and cleanup, internal dependencies, worker authorization and inactive observation
+sanitization. The worker still receives frames and publishes observation heartbeats
+when all three observation models are inactive.
+
+Headless Chrome validation passed for legacy all-skeleton preference migration,
+independent Face/Hands/Body controls, persistence through reload, and demand
+release/resume on page hide/show. The served preview was inspected with only face
+landmarks displayed; no page errors occurred. Those browser controls were tested
+in an isolated browser context, leaving the user's browser preferences intact.

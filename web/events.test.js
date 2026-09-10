@@ -10,6 +10,8 @@ function fixture(authorize = async () => true) {
       const handlers = new Map();
       const socket = {
         readyState: 0,
+        sent: [],
+        send(value) { this.sent.push(JSON.parse(value)); },
         addEventListener(type, callback) { handlers.set(type, callback); },
         fire(type, value) { return handlers.get(type)?.(value); },
         close() { this.closed = true; return this.fire('close'); },
@@ -165,4 +167,24 @@ test('an open picker refreshes on library changes and stops when closed', async 
     release(); await flush();
     stop();
   } finally { Object.assign(globalThis, previous); }
+});
+
+
+test('model demand is replaced and restored when a socket reconnects', async () => {
+  const {client, sockets, timers} = fixture();
+  client.setPerceptionDemand({hands: true}, ['gesture.open_palm.held']);
+  const off = client.subscribe('state', () => {});
+  sockets[0].readyState = 1;
+  sockets[0].fire('open');
+  assert.deepEqual(sockets[0].sent[0].models, {hands: true});
+  client.setPerceptionDemand({face: true});
+  assert.deepEqual(sockets[0].sent.at(-1).models, {face: true});
+  await sockets[0].fire('close');
+  [...timers][0]();
+  sockets[1].readyState = 1;
+  sockets[1].fire('open');
+  assert.deepEqual(sockets[1].sent[0].models, {face: true});
+  client.setPerceptionDemand({});
+  assert.deepEqual(sockets[1].sent.at(-1).models, {});
+  off();
 });

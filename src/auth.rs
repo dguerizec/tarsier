@@ -211,7 +211,7 @@ impl Auth {
         if let Some(token) = bearer(headers) {
             let hash = digest(token);
             if hash == self.worker_hash {
-                return (path == "/api/v1/video/identity" && method == "GET")
+                return (matches!(path, "/api/v1/video/identity" | "/api/v1/perception/demand") && method == "GET")
                     || (path == "/api/v1/video/liveportrait/status" && method == "POST")
                     || matches!(
                         path,
@@ -1343,6 +1343,7 @@ mod tests {
             "/api/v1/avatar/frame",
             "/api/v1/depth/frame",
             "/api/v1/video/identity",
+            "/api/v1/perception/demand",
         ] {
             assert!(fixture.auth.allowed(&headers, path, "GET").await);
         }

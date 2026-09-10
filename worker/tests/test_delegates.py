@@ -35,8 +35,10 @@ def test_models_receive_independent_delegates(monkeypatch):
     vision = mp.tasks.vision
     for name in ("FaceLandmarker", "GestureRecognizer", "PoseLandmarker", "ImageSegmenter"):
         monkeypatch.setattr(getattr(vision, name), "create_from_options", capture(name))
-    with MediaPipeDetector(Path("models"), .5, Delegates(face="gpu", hands="cpu", pose="gpu")):
-        pass
+    with MediaPipeDetector(
+        Path("models"), .5, Delegates(face="gpu", hands="cpu", pose="gpu")
+    ) as detector:
+        detector.set_demand(dict.fromkeys(("face", "hands", "pose"), True))
     with MediaPipeSegmenter(Path("models"), PoseConstraintStore()):
         pass
     enum = mp.tasks.BaseOptions.Delegate

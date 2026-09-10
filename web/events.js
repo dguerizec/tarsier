@@ -15,6 +15,10 @@ export function createEventClient({
   let retry = null;
   let generation = 0;
   let reconnecting = false;
+  let perceptionDemand = null;
+  const sendDemand = () => {
+    if (socket?.readyState === 1 && perceptionDemand) socket.send(JSON.stringify(perceptionDemand));
+  };
   const emit = (type, value) => {
     for (const callback of [...(listeners.get(type) || [])]) {
       try { callback(value); } catch (error) { console.error(error); }
@@ -24,7 +28,7 @@ export function createEventClient({
     if (socket || retry !== null || reconnecting || !listeners.size) return;
     const current = openSocket();
     socket = current;
-    current.addEventListener('open', () => { if (socket === current) emit('connected'); });
+    current.addEventListener('open', () => { if (socket === current) { sendDemand(); emit('connected'); } });
     current.addEventListener('message', ({data}) => {
       if (socket !== current) return;
       let message;
@@ -67,7 +71,13 @@ export function createEventClient({
       }
     };
   }
-  return {subscribe};
+  function setPerceptionDemand(models = {}, events = []) {
+    const next = {type: 'perception.subscribe', models, events};
+    if (JSON.stringify(next) === JSON.stringify(perceptionDemand)) return;
+    perceptionDemand = next;
+    sendDemand();
+  }
+  return {subscribe, setPerceptionDemand};
 }
 
 export const events = createEventClient();

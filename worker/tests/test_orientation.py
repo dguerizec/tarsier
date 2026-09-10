@@ -27,6 +27,9 @@ def test_observation_processor_detects_upright_and_publishes_source_coordinates(
     published, masks = [], []
 
     class Detector:
+        def set_demand(self, models):
+            self.active_models = models
+
         def __init__(self, *_):
             pass
 
@@ -42,6 +45,10 @@ def test_observation_processor_detects_upright_and_publishes_source_coordinates(
             points = [worker.Landmark(0.2, 0.3, 0.1, 0.9)]
             return points, points, points, "open_palm", 0.95, upright_mask
 
+    from tarsier_perception.demand import DetectionDemandClient
+    monkeypatch.setattr(
+        DetectionDemandClient, "models", lambda _: dict.fromkeys(("face", "hands", "pose"), True)
+    )
     monkeypatch.setattr(worker, "MediaPipeDetector", Detector)
     monkeypatch.setattr(
         worker, "ObservationPublisher", lambda _: SimpleNamespace(publish=published.append)

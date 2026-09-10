@@ -230,6 +230,7 @@ pub(crate) fn phone_fixture(at: u64) -> PerceptionObservation {
         }
     }
     PerceptionObservation {
+        active_models: crate::perception_demand::Models::all(),
         frame_id: at,
         captured_at_ms: at,
         image_width: 1000,
