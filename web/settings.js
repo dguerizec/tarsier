@@ -1,3 +1,4 @@
+import { avatarDeleteButton } from "/assets/avatar-delete.js";
 import { createDaemonMonitor } from "/assets/daemon-monitor.js";
 createDaemonMonitor().start();
 
@@ -422,7 +423,7 @@ function updateAvatarImportControls() {
     }
   }
   avatarRefresh.disabled = avatarImportPending;
-  for (const button of document.querySelectorAll('#portrait3d-library button')) {
+  for (const button of document.querySelectorAll('#portrait3d-library button, #liveportrait-library button')) {
     button.disabled = avatarImportPending || !avatarCanImport;
   }
 }
@@ -446,6 +447,8 @@ function avatarLibraryCard(item, kind) {
   const name = document.createElement('strong');
   name.textContent = item.name;
   card.append(image, placeholder, name);
+  const remove = avatarDeleteButton(item, kind, loadAvatarLibrary);
+  if (remove) card.append(remove);
   if (item.selected) {
     card.classList.add('is-selected');
     card.setAttribute('aria-label', `${item.name}, selected`);

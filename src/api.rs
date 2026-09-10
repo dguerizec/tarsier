@@ -242,6 +242,11 @@ pub fn router_with_controls(
         .route("/", get(index))
         .route("/settings", get(settings_page))
         .route("/api/v1/settings/avatars", get(avatar_library_settings))
+        .route(
+            "/api/v1/settings/avatars/{kind}/{id}",
+            axum::routing::delete(delete_avatar),
+        )
+        .route("/assets/avatar-delete.js", get(avatar_delete_js))
         .route("/api/v1/settings/avatars/liveportrait", post(import_liveportrait)
             .layer(DefaultBodyLimit::max(crate::avatar_source::MAX_UPLOAD_BYTES)))
         .route("/api/v1/settings/avatars/portrait3d", post(import_portrait3d)
@@ -517,8 +522,11 @@ async fn portrait_catalog(state: &ApiState) -> anyhow::Result<Vec<crate::avatar_
         directories.push(settings.portrait_directory());
     }
     let current = state.liveportrait.lock().await.source.clone();
-    tokio::task::spawn_blocking(move || crate::avatar_source::catalog(&directories, &current))
-        .await?
+    let mut portraits =
+        tokio::task::spawn_blocking(move || crate::avatar_source::catalog(&directories, &current))
+            .await??;
+    filter_deleted_avatars(state, "liveportrait", &mut portraits)?;
+    Ok(portraits)
 }
 
 async fn model_catalog(state: &ApiState) -> anyhow::Result<Vec<crate::avatar_source::Portrait>> {
@@ -534,8 +542,102 @@ async fn model_catalog(state: &ApiState) -> anyhow::Result<Vec<crate::avatar_sou
     if let Some(settings) = &state.user_settings {
         directories.push(settings.portrait_directory().join("models"));
     }
-    tokio::task::spawn_blocking(move || crate::portrait_models::catalog(&directories, &current))
-        .await?
+    let mut models = tokio::task::spawn_blocking(move || {
+        crate::portrait_models::catalog(&directories, &current)
+    })
+    .await??;
+    filter_deleted_avatars(state, "portrait3d", &mut models)?;
+    Ok(models)
+}
+
+async fn avatar_delete_js() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        include_str!("../web/avatar-delete.js"),
+    )
+}
+
+fn filter_deleted_avatars(
+    state: &ApiState,
+    kind: &str,
+    items: &mut Vec<crate::avatar_source::Portrait>,
+) -> anyhow::Result<()> {
+    if let Some(library) = &state.avatar_library {
+        let deleted = library.join(".deleted").join(kind);
+        let mut visible = Vec::new();
+        for item in items.drain(..) {
+            if !deleted.join(&item.id).try_exists()? {
+                visible.push(item);
+            }
+        }
+        *items = visible;
+    }
+    Ok(())
+}
+
+async fn delete_avatar(
+    State(state): State<ApiState>,
+    axum::extract::Path((kind, id)): axum::extract::Path<(String, String)>,
+) -> Response {
+    // Serialize with selection so an avatar cannot become active during removal.
+    let _selection = state.portrait_selection_control.lock().await;
+    let Ok(_permit) = state.avatar_import_control.try_acquire() else {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "Another avatar operation is in progress"})),
+        )
+            .into_response();
+    };
+    let Some(library) = &state.avatar_library else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "Avatar storage is unavailable"})),
+        )
+            .into_response();
+    };
+    let items = match kind.as_str() {
+        "liveportrait" => portrait_catalog(&state).await,
+        "portrait3d" => model_catalog(&state).await,
+        _ => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let items = match items {
+        Ok(items) => items,
+        Err(error) => return command_error(error),
+    };
+    let Some(item) = items.into_iter().find(|item| item.id == id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "This avatar is no longer available"})),
+        )
+            .into_response();
+    };
+    if item.selected {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "Choose another avatar before deleting the selected one."})),
+        )
+            .into_response();
+    }
+    // A persistent tombstone also supports bundled and externally configured assets
+    // without modifying their original files or breaking repository resources.
+    let directory = library.join(".deleted").join(&kind);
+    match tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        crate::avatar_import::private_directory(&directory)?;
+        std::fs::write(
+            directory.join(item.id),
+            item.path.to_string_lossy().as_bytes(),
+        )?;
+        Ok(())
+    })
+    .await
+    {
+        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Err(error)) => command_error(error),
+        Err(error) => command_error(error.into()),
+    }
 }
 
 async fn avatar_library_settings(State(state): State<ApiState>) -> Response {
@@ -6495,6 +6597,123 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn avatar_deletion_persists_and_protects_selection() {
+        let library =
+            std::env::temp_dir().join(format!("tarsier-delete-{:032x}", rand::random::<u128>()));
+        std::fs::create_dir_all(library.join("liveportrait")).unwrap();
+        let source = library.join("liveportrait/removable.png");
+        std::fs::write(&source, b"fixture").unwrap();
+        let model = library.join("portrait3d/removable-model");
+        std::fs::create_dir_all(&model).unwrap();
+        std::fs::write(model.join("mesh.npz"), b"fixture").unwrap();
+        std::fs::write(
+            model.join("manifest.json"),
+            r#"{"schema_version":1,"revision":"Removable model","draws":[{}]}"#,
+        )
+        .unwrap();
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let make_app = || {
+            router_with_controls(
+                Config::default(),
+                Runtime::new(),
+                PreviewHub::new(),
+                None,
+                ApiOptions {
+                    avatar_library: Some(library.clone()),
+                    ..ApiOptions::default()
+                },
+                shutdown_rx.clone(),
+            )
+        };
+        let app = make_app();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/settings/avatars")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let catalog: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let portraits = catalog["liveportrait"].as_array().unwrap();
+        let selected = portraits
+            .iter()
+            .find(|item| item["selected"] == true)
+            .unwrap();
+        let removable = portraits
+            .iter()
+            .find(|item| item["name"] == "removable.png")
+            .unwrap();
+        for (id, expected) in [
+            (selected["id"].as_str().unwrap(), StatusCode::CONFLICT),
+            ("unknown", StatusCode::NOT_FOUND),
+            (removable["id"].as_str().unwrap(), StatusCode::NO_CONTENT),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::delete(format!("/api/v1/settings/avatars/liveportrait/{id}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+        }
+        let model = catalog["portrait3d"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["name"] == "Removable model")
+            .unwrap();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::delete(format!(
+                    "/api/v1/settings/avatars/portrait3d/{}",
+                    model["id"].as_str().unwrap()
+                ))
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert!(source.exists());
+        let response = make_app()
+            .oneshot(
+                Request::get("/api/v1/settings/avatars")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let catalog: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(
+            !catalog["liveportrait"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["name"] == "removable.png")
+        );
+        assert!(
+            !catalog["portrait3d"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["name"] == "Removable model")
+        );
+        std::fs::remove_dir_all(library).unwrap();
     }
 
     #[tokio::test]

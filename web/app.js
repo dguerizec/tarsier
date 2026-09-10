@@ -1,3 +1,4 @@
+import { avatarDeleteButton } from "/assets/avatar-delete.js";
 import { createDaemonMonitor } from "/assets/daemon-monitor.js";
 import { installPreviewDrag, sourcePanTiltDirection } from "/assets/preview-drag.js";
 import { syncAudioCapture } from "/assets/audio.js";
@@ -1222,7 +1223,15 @@ modelChoose.addEventListener("click", async () => {
         modelSave.disabled = modelPending || model.selected;
       });
       label.append(input, card);
-      modelGallery.append(label);
+      const wrapper = document.createElement("div");
+      wrapper.className = "avatar-picker-card";
+      wrapper.append(label);
+      const remove = avatarDeleteButton(model, "portrait3d", () => {
+        wrapper.remove();
+        if (selectedModelId === model.id) { selectedModelId = null; modelSave.disabled = true; }
+      });
+      if (remove) wrapper.append(remove);
+      modelGallery.append(wrapper);
     }
     if (!models.length) modelGallery.textContent = "No exported 3D models available.";
   } catch (error) {
@@ -1307,7 +1316,15 @@ portraitChoose.addEventListener("click", async () => {
         portraitSave.disabled = portraitPending || selectedPortraitId === currentPortraitId;
       });
       label.append(input, card);
-      portraitGallery.append(label);
+      const wrapper = document.createElement("div");
+      wrapper.className = "avatar-picker-card";
+      wrapper.append(label);
+      const remove = avatarDeleteButton(portrait, "liveportrait", () => {
+        wrapper.remove();
+        if (selectedPortraitId === portrait.id) { selectedPortraitId = null; portraitSave.disabled = true; }
+      });
+      if (remove) wrapper.append(remove);
+      portraitGallery.append(wrapper);
     }
     portraitGalleryStatus.textContent = portraits.length ? "" : "No avatars found. Add PNG or JPEG images to assets/avatars/.";
   } catch (error) {

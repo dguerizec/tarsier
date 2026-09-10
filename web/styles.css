@@ -456,3 +456,12 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .device-reservation-row button { flex: 0 0 auto; min-width: 4.5rem; }
 
 #settings-avatars .panel.is-drag-over { border-color: var(--green); box-shadow: inset 0 0 0 1px var(--green); background: #b7ef7a0c; }
+
+.avatar-library-card, .avatar-picker-card { position: relative; }
+.avatar-picker-card > .portrait-option { display: block; height: 100%; }
+.avatar-delete { position: absolute; top: .3rem; right: .3rem; z-index: 1; width: 1.6rem; height: 1.6rem; padding: 0; border-radius: .4rem; background: #922b2b; color: #fff; font-size: 1.3rem; line-height: 1; opacity: 0; pointer-events: none; }
+.avatar-delete:hover { background: #c33737; }
+.avatar-library-card:hover > .avatar-delete, .avatar-library-card:focus-within > .avatar-delete,
+.avatar-picker-card:hover > .avatar-delete, .avatar-picker-card:focus-within > .avatar-delete { opacity: 1; pointer-events: auto; }
+@media (hover: none) { .avatar-delete { opacity: 1; pointer-events: auto; } }
+.avatar-picker-card:has(input:checked) > .avatar-delete { display: none; }
