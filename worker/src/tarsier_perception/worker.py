@@ -113,7 +113,20 @@ def select_landmarks(groups: list[list[Any]], limit: int) -> list[Landmark]:
 def encode_segmentation_mask(masks: list[Any], width: int, height: int) -> np.ndarray:
     if not masks:
         return np.zeros((height, width), dtype=np.uint8)
-    probabilities = np.asarray(masks[0].numpy_view(), dtype=np.float32).squeeze()
+    values = np.asarray(masks[0].numpy_view())
+    # GPU pose masks use RGBA bytes with confidence in red; CPU masks use
+    # a single float channel. Never send RGBA pixels as a scalar alpha mask.
+    if values.ndim == 3 and values.shape[-1] in (1, 4):
+        values = values[..., 0]
+    if values.ndim != 2:
+        raise ValueError(f"Unsupported segmentation mask shape: {values.shape}")
+    if values.dtype == np.uint8:
+        if values.shape != (height, width):
+            values = cv2.resize(values, (width, height), interpolation=cv2.INTER_LINEAR)
+        return np.ascontiguousarray(values)
+    if not np.issubdtype(values.dtype, np.floating):
+        raise ValueError(f"Unsupported segmentation mask dtype: {values.dtype}")
+    probabilities = values.astype(np.float32, copy=False)
     if probabilities.shape != (height, width):
         probabilities = cv2.resize(probabilities, (width, height), interpolation=cv2.INTER_LINEAR)
     return np.clip(probabilities * 255.0, 0.0, 255.0).astype(np.uint8)
