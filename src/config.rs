@@ -59,6 +59,10 @@ impl Config {
         if self.video.width == 0 || self.video.height == 0 || self.video.fps == 0 {
             bail!("video width, height, and fps must be greater than zero");
         }
+        if self.video.source == VideoSource::File {
+            let uri = reqwest::Url::parse(&self.video.input_device).context("invalid video file URI")?;
+            if uri.to_file_path().is_err() { bail!("video file source must use a local file URI"); }
+        }
         if self.video.preview_quality == 0 || self.video.preview_quality > 100 {
             bail!("video preview_quality must be between 1 and 100");
         }
@@ -301,6 +305,7 @@ pub enum VideoSource {
     #[default]
     Camera,
     Test,
+    File,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

@@ -126,6 +126,8 @@ pub struct UserSettings {
     #[serde(default)]
     pub camera_device: Option<String>,
     #[serde(default)]
+    pub video_input_library: Vec<crate::mute_media::Selection>,
+    #[serde(default)]
     pub audio_reserve_inputs: Option<bool>,
     #[serde(default)]
     pub audio_input_reservations: std::collections::BTreeMap<String, bool>,
@@ -170,6 +172,7 @@ impl UserSettings {
             liveportrait_source: None,
             portrait3d_model: None,
             camera_device: None,
+            video_input_library: Vec::new(),
             audio_reserve_inputs: None,
             audio_input_reservations: Default::default(),
             audio: AudioSettings::default(),
@@ -279,6 +282,22 @@ impl UserSettingsStore {
             },
             settings,
         ))
+    }
+
+    pub fn video_input_directory(&self) -> PathBuf {
+        self.path.parent().unwrap_or(Path::new(".")).join("video-inputs")
+    }
+
+    pub async fn video_input_library(&self) -> Vec<crate::mute_media::Selection> {
+        self.current.lock().await.video_input_library.clone()
+    }
+
+    pub async fn remember_video_input(&self, selection: crate::mute_media::Selection) -> Result<()> {
+        self.replace(|settings| {
+            if !settings.video_input_library.iter().any(|item| item.filename == selection.filename) {
+                settings.video_input_library.push(selection);
+            }
+        }).await
     }
 
     pub fn mute_media_directory(&self) -> PathBuf {

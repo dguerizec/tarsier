@@ -243,6 +243,7 @@ function setDevicesPending(pending) {
   cameraSelect.disabled = devicesSave.disabled = pending || !devicesState?.can_apply;
   document.querySelector('#device-microphones').disabled = pending || !devicesState?.can_apply;
   devicesRefresh.disabled = pending;
+  document.querySelector("#device-video-file").disabled = pending || !devicesState?.can_apply;
 }
 async function loadDevices() {
   const response = await fetch('/api/v1/settings/devices', {cache: 'no-store'});
@@ -250,7 +251,7 @@ async function loadDevices() {
   devicesState = await response.json();
   cameraSelect.replaceChildren();
   deviceOption(cameraSelect, '', 'Synthetic video');
-  for (const camera of devicesState.cameras) deviceOption(cameraSelect, camera.id, `${camera.name} · ${camera.id.split('/').pop()}`);
+  for (const camera of devicesState.cameras) deviceOption(cameraSelect, camera.id, camera.id.startsWith("file://") ? camera.name : `${camera.name} · ${camera.id.split('/').pop()}`);
   if (devicesState.camera && !devicesState.cameras.some(camera => camera.id === devicesState.camera)) {
     deviceOption(cameraSelect, devicesState.camera, `Disconnected · ${devicesState.camera}`);
   }
@@ -276,6 +277,22 @@ async function loadDevices() {
   setDevicesPending(false);
   devicesStatus.textContent = devicesState.can_apply ? '' : 'Device controls or persistent settings are unavailable.';
 }
+document.querySelector('#device-video-file').addEventListener('change', async event => {
+  const file = event.target.files[0];
+  if (!file || devicesPending) return;
+  if (file.size > 100 * 1024 * 1024) { devicesStatus.textContent = 'Choose a video up to 100 MB.'; event.target.value = ''; return; }
+  setDevicesPending(true); devicesStatus.textContent = 'Importing and checking video…';
+  try {
+    const response = await fetch(`/api/v1/settings/devices/video?name=${encodeURIComponent(file.name)}`, {
+      method: 'POST', headers: {'Content-Type': 'application/octet-stream'}, body: file,
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Could not import video');
+    await loadDevices(); cameraSelect.value = result.camera;
+    devicesStatus.textContent = 'Video imported. Click Save to use it as the video source.';
+  } catch (error) { setDevicesPending(false); devicesStatus.textContent = error.message; }
+  finally { event.target.value = ''; }
+});
 devicesRefresh.addEventListener('click', () => {
   setDevicesPending(true);
   loadDevices().catch(error => { setDevicesPending(false); devicesStatus.textContent = error.message; });

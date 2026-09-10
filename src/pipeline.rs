@@ -60,6 +60,8 @@ struct CaptureClock {
     started_at_ms: AtomicU64,
     fps: u32,
     first_pts_ns: Mutex<Option<u64>>,
+    frame_offset: AtomicU64,
+    last_frame_id: AtomicU64,
 }
 
 impl CaptureClock {
@@ -68,6 +70,8 @@ impl CaptureClock {
             started_at_ms: AtomicU64::new(started_at_ms),
             fps,
             first_pts_ns: Mutex::new(None),
+            frame_offset: AtomicU64::new(0),
+            last_frame_id: AtomicU64::new(0),
         }
     }
 
@@ -79,9 +83,12 @@ impl CaptureClock {
         let first_pts_ns = *self.first_pts_ns.lock().unwrap().get_or_insert(pts_ns);
         let elapsed_ns = pts_ns.saturating_sub(first_pts_ns) as u128;
         let rounded_frames = (elapsed_ns * self.fps as u128 + 500_000_000) / 1_000_000_000;
-        u64::try_from(rounded_frames)
+        let id = u64::try_from(rounded_frames)
             .unwrap_or(u64::MAX - 1)
             .saturating_add(1)
+            .saturating_add(self.frame_offset.load(Ordering::Relaxed));
+        self.last_frame_id.fetch_max(id, Ordering::Relaxed);
+        id
     }
 }
 
@@ -215,6 +222,7 @@ pub struct VideoPipelineControl {
 }
 
 struct ActivePipeline {
+    loop_video: bool,
     pipeline: gst::Pipeline,
     running: Arc<AtomicBool>,
     frame_count: Arc<AtomicU64>,
@@ -460,7 +468,7 @@ impl VideoPipelineControl {
 
     pub fn camera_source(&self) -> String {
         let config = self.config.lock().unwrap();
-        if config.source == VideoSource::Camera {
+        if config.source != VideoSource::Test {
             config.input_device.clone()
         } else {
             String::new()
@@ -477,7 +485,9 @@ impl VideoPipelineControl {
         }
         {
             let mut config = self.config.lock().unwrap();
-            config.source = if camera.is_empty() {
+            config.source = if camera.starts_with("file://") {
+                VideoSource::File
+            } else if camera.is_empty() {
                 VideoSource::Test
             } else {
                 VideoSource::Camera
@@ -490,7 +500,7 @@ impl VideoPipelineControl {
             .store(unix_ms(), Ordering::Relaxed);
         self.runtime
             .update(|state| {
-                state.pipeline.source = if camera.is_empty() { "test" } else { "camera" }.into();
+                state.pipeline.source = if camera.starts_with("file://") { "file" } else if camera.is_empty() { "test" } else { "camera" }.into();
                 state.pipeline.input_device = (!camera.is_empty()).then(|| camera.to_owned());
             })
             .await;
@@ -772,10 +782,11 @@ impl ActivePipeline {
                 state.pipeline.source = match config.source {
                     VideoSource::Camera => "camera",
                     VideoSource::Test => "test",
+                    VideoSource::File => "file",
                 }
                 .into();
                 state.pipeline.input_device =
-                    (config.source == VideoSource::Camera).then(|| config.input_device.clone());
+                    (config.source != VideoSource::Test).then(|| config.input_device.clone());
                 state.pipeline.output_device = config
                     .loopback_enabled
                     .then(|| config.output_device.clone());
@@ -796,7 +807,7 @@ impl ActivePipeline {
             frame_count.clone(),
             last_frame_at_ms.clone(),
         );
-        Ok(Self { pipeline, running, frame_count, last_frame_at_ms, capture_clock })
+        Ok(Self { pipeline, running, frame_count, last_frame_at_ms, capture_clock, loop_video: config.source == VideoSource::File })
     }
 
     fn reserve(&self) -> Result<()> {
@@ -867,6 +878,10 @@ fn pipeline_description(config: &VideoConfig) -> String {
     let source = match config.source {
         VideoSource::Camera => format!(
             "v4l2src name=physical_camera device=\"{}\" do-timestamp=true ! image/jpeg,width={},height={},framerate={}/1 ! jpegdec ! videoconvert",
+            config.input_device, config.width, config.height, config.fps
+        ),
+        VideoSource::File => format!(
+            "uridecodebin uri=\"{}\" ! queue ! videoconvert ! videoscale add-borders=true ! videorate ! video/x-raw,width={},height={},framerate={}/1,pixel-aspect-ratio=1/1 ! identity sync=true",
             config.input_device, config.width, config.height, config.fps
         ),
         VideoSource::Test => format!(
@@ -1173,7 +1188,22 @@ fn wait_for_pipeline_exit(
                         .unwrap_or_default()
                 ));
             }
-            gst::MessageView::Eos(..) => return PipelineExit::Eos,
+            gst::MessageView::Eos(..) => {
+                if active.loop_video {
+                    // All sinks reached EOS. Rebase both provenance clocks before
+                    // the flushing seek resets file timestamps to zero.
+                    active.capture_clock.frame_offset.store(active.capture_clock.last_frame_id.load(Ordering::Relaxed), Ordering::Relaxed);
+                    *active.capture_clock.first_pts_ns.lock().unwrap() = None;
+                    active.capture_clock.started_at_ms.store(unix_ms(), Ordering::Relaxed);
+                    if let Err(error) = active.pipeline.seek_simple(
+                        gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT, gst::ClockTime::ZERO,
+                    ) {
+                        return PipelineExit::Failed(format!("video loop failed: {error}"));
+                    }
+                } else {
+                    return PipelineExit::Eos;
+                }
+            }
             _ => {}
         }
     }
@@ -1340,6 +1370,50 @@ mod tests {
                 .running
                 .load(Ordering::Relaxed)
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn video_file_loops_in_real_time_without_restarting_or_rewinding_provenance() {
+        gst::init().unwrap();
+        let directory = std::env::temp_dir().join(format!("tarsier-video-input-{:032x}", rand::random::<u128>()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let fixture = directory.join("clip with spaces.webm");
+        let encoder = gst::parse::launch("webmmux name=mux ! filesink name=file videotestsrc num-buffers=10 pattern=ball ! video/x-raw,width=64,height=48,framerate=10/1 ! vp8enc deadline=1 ! queue ! mux.video_0 audiotestsrc num-buffers=47 samplesperbuffer=1024 ! audio/x-raw,rate=48000 ! audioconvert ! vorbisenc ! queue ! mux.audio_0").unwrap().downcast::<gst::Pipeline>().unwrap();
+        encoder.by_name("file").unwrap().set_property("location", fixture.to_str().unwrap());
+        encoder.set_state(gst::State::Playing).unwrap();
+        let message = encoder.bus().unwrap().timed_pop_filtered(gst::ClockTime::from_seconds(5), &[gst::MessageType::Eos, gst::MessageType::Error]).unwrap();
+        encoder.set_state(gst::State::Null).unwrap();
+        assert!(matches!(message.view(), gst::MessageView::Eos(_)), "{message:?}");
+        let config = VideoConfig { source: VideoSource::File, input_device: reqwest::Url::from_file_path(&fixture).unwrap().into(), loopback_enabled: false, width:64, height:48, preview_width:64, preview_height:48, fps:10, ..VideoConfig::default() };
+        let runtime = Runtime::new();
+        let preview = PreviewHub::new();
+        let mut frames = preview.subscribe_perception();
+        let pipeline = VideoPipeline::start(config.clone(), runtime.clone(), preview.clone()).await.unwrap();
+        let control = pipeline.control();
+        let (mut last_id, mut last_at, mut count) = (0, 0, 0);
+        let until = tokio::time::Instant::now() + Duration::from_millis(3400);
+        while tokio::time::Instant::now() < until {
+            tokio::time::timeout(Duration::from_secs(2), frames.changed()).await.unwrap().unwrap();
+            let frame = frames.borrow_and_update().clone();
+            let Some(frame) = frame else { panic!("file pipeline cleared frames: {:?}", runtime.state().await.pipeline); };
+            assert!(frame.frame_id > last_id, "frame IDs must advance across EOF");
+            assert!(frame.captured_at_ms >= last_at, "capture timestamps must not rewind");
+            assert!(unix_ms().abs_diff(frame.captured_at_ms) < 1000, "file frames must stay fresh");
+            last_id = frame.frame_id; last_at = frame.captured_at_ms; count += 1;
+        }
+        assert!((20..50).contains(&count), "playback must be paced, got {count} frames");
+        let state = runtime.state().await;
+        assert_eq!(state.pipeline.source, "file");
+        assert_eq!(state.pipeline.restart_count, 0);
+        assert_eq!(control.camera_source(), config.input_device);
+        assert!(preview.latest().is_some());
+        control.set_enabled(false).await.unwrap();
+        control.select_source("").await.unwrap();
+        control.set_enabled(true).await.unwrap();
+        control.wait_for_frame().await.unwrap();
+        assert_eq!(runtime.state().await.pipeline.source, "test");
+        drop(pipeline);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]

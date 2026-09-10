@@ -1496,3 +1496,14 @@ MediaPipe CPU/GPU selection per task and comparison guidance are documented in
 
 The private gesture-video fixture and offline CPU/GPU replay command are described
 in [Perception testing](docs/perception-testing.md).
+
+### Video file inputs
+
+In **Settings → Devices**, import an MP4 or WebM (up to 100 MB), select it as the
+video source and click **Save**. Imported clips are kept in the local settings
+`video-inputs` directory and remain selectable after restart. The library holds
+up to 16 clips. Playback loops in real time and passes through the regular preview,
+perception, effects and virtual camera pipeline; embedded audio is ignored.
+Switching sources keeps virtual outputs connected and mutes video output until
+it is manually unmuted. Select the physical camera or Synthetic video to switch
+back. Source file URIs are included in telemetry for reproducible comparisons.

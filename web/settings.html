@@ -106,9 +106,11 @@
       </div>
       <div class="settings-tab-panel" role="tabpanel" id="settings-devices" aria-labelledby="tab-devices" tabindex="0" hidden>
       <section class="panel" aria-labelledby="devices-heading">
-        <h2 id="devices-heading">Camera and microphones</h2>
+        <h2 id="devices-heading">Video source and microphones</h2>
         <form id="devices-form">
-          <p><label>Camera <select id="device-camera" disabled></select></label></p>
+          <p><label>Video source <select id="device-camera" disabled></select></label></p>
+          <p><label>Import video <input id="device-video-file" type="file" accept="video/mp4,video/webm,.mp4,.webm" disabled></label></p>
+          <p>MP4 or WebM, up to 100 MB. Imported videos play in a loop through the same effects and perception pipeline. Video audio is ignored; microphone settings stay separate.</p>
           <fieldset id="device-microphones" disabled><legend>Automatically reserve microphones</legend><div id="device-microphone-list"></div></fieldset>
           <p>Checked microphones are reserved at startup and reconnection, even when capture is Off. New microphones are reserved by default. Lock buttons on the preview change the current reservation without changing this preference.</p>
           <p>Changes apply immediately. Switching cameras mutes video output while virtual outputs stay connected. Check the new framing in the preview, then unmute manually. Choose capture and the output microphone in the Audio panel on the main page.</p>

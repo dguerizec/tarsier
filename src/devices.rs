@@ -71,7 +71,11 @@ fn inventory(sys: &Path, dev: &Path) -> std::io::Result<Vec<CameraDevice>> {
 
 pub fn apply_camera(config: &mut crate::config::Config, id: &str) {
     use crate::config::{CameraAdapter, VideoSource};
-    if id.is_empty() {
+    if id.starts_with("file://") {
+        config.video.source = VideoSource::File;
+        config.video.input_device = id.into();
+        config.camera.adapter = CameraAdapter::Mock;
+    } else if id.is_empty() {
         config.video.source = VideoSource::Test;
         config.camera.adapter = CameraAdapter::Mock;
     } else {
@@ -96,6 +100,20 @@ pub fn apply_camera(config: &mut crate::config::Config, id: &str) {
 mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
+
+    #[test]
+    fn file_source_uses_mock_camera_controls_and_retains_its_uri() {
+        let mut config = crate::config::Config::default();
+        apply_camera(&mut config, "file:///tmp/clip%20with%20spaces.mp4");
+        assert_eq!(config.video.source, crate::config::VideoSource::File);
+        assert_eq!(config.camera.adapter, crate::config::CameraAdapter::Mock);
+        assert_eq!(config.video.input_device, "file:///tmp/clip%20with%20spaces.mp4");
+        config.validate().unwrap();
+        config.video.input_device = "https://example.com/clip.mp4".into();
+        assert!(config.validate().is_err());
+        apply_camera(&mut config, "");
+        assert_eq!(config.video.source, crate::config::VideoSource::Test);
+    }
 
     #[test]
     fn stable_identity_survives_renumbering_and_excludes_metadata_and_loopback() {

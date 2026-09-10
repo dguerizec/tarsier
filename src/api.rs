@@ -307,6 +307,8 @@ pub fn router_with_controls(
             "/api/v1/settings/devices",
             get(device_settings).post(set_device_settings),
         )
+        .route("/api/v1/settings/devices/video", post(upload_video_input)
+            .layer(DefaultBodyLimit::max(crate::mute_media::MAX_UPLOAD_BYTES)))
         .route(
             "/api/v1/audio/voice",
             get(voice_settings).post(set_voice_settings),
@@ -1032,11 +1034,63 @@ async fn report_liveportrait_error(
     StatusCode::NO_CONTENT
 }
 
+async fn video_input_devices(settings: &UserSettingsStore) -> Vec<crate::devices::CameraDevice> {
+    let directory = settings.video_input_directory();
+    let mut result = Vec::new();
+    for item in settings.video_input_library().await {
+        if item.kind != crate::mute_media::Kind::Video { continue; }
+        let Ok(path) = item.path(&directory) else { continue; };
+        let Ok(path) = tokio::fs::canonicalize(path).await else { continue; };
+        let Ok(uri) = reqwest::Url::from_file_path(path) else { continue; };
+        result.push(crate::devices::CameraDevice { id: uri.into(), name: format!("Video · {}", item.name), motorized: false });
+    }
+    result
+}
+
+async fn upload_video_input(
+    State(state): State<ApiState>, Query(query): Query<MuteMediaUpload>, body: Bytes,
+) -> Response {
+    let _guard = state.mute_media_control.lock().await;
+    let Some(settings) = &state.user_settings else {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "Persistent settings are unavailable"}))).into_response();
+    };
+    if !(body.get(4..8) == Some(b"ftyp") || body.starts_with(&[0x1a, 0x45, 0xdf, 0xa3])) {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": "Choose an MP4 or WebM video"}))).into_response();
+    }
+    let library = settings.video_input_library().await;
+    if library.len() >= 16 {
+        return (StatusCode::CONFLICT, Json(json!({"error": "The video input library is limited to 16 clips"}))).into_response();
+    }
+    let directory = settings.video_input_directory();
+    let destination = directory.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        crate::mute_media::upload(&destination, &query.name, &body, 640, 360)
+            .map(|(selection, media)| { drop(media); selection })
+    }).await;
+    let selection = match result {
+        Ok(Ok(selection)) => selection,
+        Ok(Err(error)) => return (StatusCode::BAD_REQUEST, Json(json!({"error": error.to_string()}))).into_response(),
+        Err(error) => return command_error(error.into()),
+    };
+    if let Err(error) = settings.remember_video_input(selection.clone()).await {
+        if !library.iter().any(|item| item.filename == selection.filename) {
+            if let Ok(path) = selection.path(&directory) { let _ = tokio::fs::remove_file(path).await; }
+        }
+        return user_settings_error(error);
+    }
+    let path = selection.path(&directory).expect("validated media filename");
+    let uri = tokio::fs::canonicalize(path).await.ok().and_then(|p| reqwest::Url::from_file_path(p).ok());
+    Json(json!({"camera": uri.map(|uri| uri.to_string())})).into_response()
+}
+
 async fn device_settings(State(state): State<ApiState>) -> Response {
-    let cameras = match crate::devices::cameras() {
+    let mut cameras = match crate::devices::cameras() {
         Ok(devices) => devices,
         Err(error) => return command_error(error.into()),
     };
+    if let Some(settings) = &state.user_settings {
+        cameras.extend(video_input_devices(settings).await);
+    }
     let microphones = match crate::audio::sources(&state.config.audio).await {
         Ok(devices) => devices,
         Err(error) => return command_error(error),
@@ -1091,10 +1145,11 @@ async fn set_device_settings(
     else {
         return (StatusCode::CONFLICT, Json(json!({"error": "Device changes require active device controls and persistent settings"}))).into_response();
     };
-    let cameras = match crate::devices::cameras() {
+    let mut cameras = match crate::devices::cameras() {
         Ok(c) => c,
         Err(e) => return command_error(e.into()),
     };
+    cameras.extend(video_input_devices(settings).await);
     if !request.camera.is_empty()
         && !cameras.iter().any(|c| c.id == request.camera)
         && request.camera != pipeline.camera_source()
@@ -1180,7 +1235,8 @@ async fn switch_camera(state: &ApiState, source: &str, enabled: bool) -> anyhow:
     crate::devices::apply_camera(&mut config, source);
     // Selecting a webcam opens its muted local preview even if the previous
     // motorized camera was asleep; webcams have no hardware wake control.
-    let enabled = enabled || config.camera.adapter == crate::config::CameraAdapter::V4l2;
+    let enabled = enabled || config.camera.adapter == crate::config::CameraAdapter::V4l2
+        || config.video.source == crate::config::VideoSource::File;
     let camera = crate::camera::start(config.camera, state.runtime.clone()).await?;
     if !enabled {
         if let Some(camera) = &camera
@@ -1416,7 +1472,7 @@ fn telemetry_pipeline_context(runtime: &crate::model::RuntimeState, config: &Con
         "identity": video_identity(effects.output_mode, effects.avatar_engine),
         "background": {"enabled":effects.background_enabled,"selected_effect":effects.background_effect},
         "video": {"running":runtime.pipeline.running,"enabled":runtime.pipeline.enabled,
-            "source":runtime.pipeline.source,"width":runtime.pipeline.width,"height":runtime.pipeline.height,
+            "source":runtime.pipeline.source,"input":runtime.pipeline.input_device,"width":runtime.pipeline.width,"height":runtime.pipeline.height,
             "target_fps":config.video.fps,"actual_fps":runtime.pipeline.fps,
             "output_muted":runtime.pipeline.output_muted,"camera_reserved":runtime.pipeline.camera_reserved,
             "transform":effects.transform},
@@ -5200,6 +5256,26 @@ mod tests {
                 .status(),
             StatusCode::SERVICE_UNAVAILABLE
         );
+    }
+
+    #[tokio::test]
+    async fn video_input_import_rejects_images_and_invalid_clips_without_changing_source() {
+        let mut config = Config::default();
+        config.perception.enabled = false;
+        let directory = std::env::temp_dir().join(format!("tarsier-input-api-{:032x}", rand::random::<u128>()));
+        let fallback = UserSettings::from_config(&config);
+        let (settings, _) = UserSettingsStore::load(directory.join("settings.json"), fallback.clone()).await.unwrap();
+        let (_tx, rx) = watch::channel(false);
+        let app = router_with_controls(config, Runtime::new(), PreviewHub::new(), None,
+            ApiOptions { user_settings: Some(settings.clone()), ..ApiOptions::default() }, rx);
+        for bytes in [crate::mute_media::DEFAULT_IMAGE.to_vec(), b"0000ftypnot-a-video".to_vec()] {
+            let response = app.clone().oneshot(Request::post("/api/v1/settings/devices/video?name=broken.mp4")
+                .header("content-type", "application/octet-stream").body(Body::from(bytes)).unwrap()).await.unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
+        assert!(settings.video_input_library().await.is_empty());
+        assert!(!directory.join("settings.json").exists());
+        if directory.exists() { std::fs::remove_dir_all(directory).unwrap(); }
     }
 
     #[tokio::test]
