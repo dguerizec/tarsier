@@ -23,13 +23,23 @@ export function graphPoints(values, width = 300, height = 36) {
   }).filter(Boolean).join(' ');
 }
 
+export function processGpuDisplay(process) {
+  if (!process.active || !process.gpus?.length) return { text: '—\n—', detail: 'No GPU measurement attributed to this process' };
+  const detail = process.gpus.map(gpu => `${gpu.device} · ${gpu.source}: ${Object.entries(gpu.engines || {}).map(([engine, value]) => `${engine} ${formatPercent(value)}`).join(', ')}; ${gpu.memory_kind}: ${formatBytes(gpu.memory_bytes)}`).join(' | ');
+  if (process.gpus.length > 1) return { text: `${process.gpus.length} GPUs\nSee details`, detail };
+  const gpu = process.gpus[0];
+  const engines = Object.entries(gpu.engines || {});
+  const primary = engines.find(([name, value]) => value != null && (name === 'SM' || name === 'render')) || engines.find(([,value]) => value != null) || engines[0];
+  return { text: `${primary ? `${primary[0]} ${formatPercent(primary[1])}` : '—'}\n${formatBytes(gpu.memory_bytes)}`, detail };
+}
+
 // Keep row order and reuse inactive slots when short-lived helpers restart.
 export function mergeProcessRows(previous, current) {
   const remaining = new Set(current);
   const rows = previous.map(old => {
     const process = current.find(item => remaining.has(item) && item.pid === old.pid && item.name === old.name && item.role === old.role);
     if (process) { remaining.delete(process); return { ...process, active: true }; }
-    return { ...old, active: false, cpu_percent: null, rss_bytes: null };
+    return { ...old, active: false, cpu_percent: null, rss_bytes: null, gpus: [] };
   });
   for (const process of remaining) {
     const slot = rows.findIndex(row => !row.active && row.name === process.name && row.role === process.role);
@@ -65,10 +75,10 @@ export function installPerformancePanel() {
       </div>
       <svg class="performance-chart" viewBox="0 0 300 36" role="img" aria-label="Recent Tarsier CPU usage"><polyline fill="none" stroke="currentColor" stroke-width="2" /></svg>
       <p class="performance-note">CPU: 100% = one core. <span data-metric="cores"></span> Memory sums process RSS; shared pages can be counted twice.</p>
-      <table class="performance-processes"><caption>Processes · inactive rows retained</caption><thead><tr><th>Process</th><th>CPU</th><th>Memory</th></tr></thead><tbody></tbody></table>
+      <table class="performance-processes"><caption>Processes · inactive rows retained</caption><thead><tr><th>Process</th><th>CPU</th><th>Memory</th><th title="Per-process GPU engine activity and memory. Hover a cell for all engines and devices.">GPU</th></tr></thead><tbody></tbody></table>
       <div class="performance-gpus"></div>
       <dl class="performance-latencies"><div><dt>Perception inference</dt><dd data-metric="perception">—</dd></div><div><dt>Last voice inference / pipeline</dt><dd data-metric="voice">—</dd></div></dl>
-      <p class="performance-note">Browser CPU is excluded from Tarsier totals. Machine CPU includes all applications. GPU metrics cover the entire device. Tarsier GPU attribution is not yet collected.</p>
+      <p class="performance-note">Browser CPU is excluded from Tarsier totals. Machine CPU includes all applications. GPU card summaries cover the entire device. GPU process cells show attributed engine activity and GPU buffers; hover for details. Shared DRM buffers or clients may appear in several processes.</p>
     </div>`;
   document.body.append(panel);
   const status = panel.querySelector('.performance-status');
@@ -127,6 +137,10 @@ export function installPerformancePanel() {
       for (const text of [`${process.role} · ${process.name} (${process.pid})`, process.active ? formatPercent(process.cpu_percent) : 'Inactive', formatBytes(process.rss_bytes)]) {
         const cell = document.createElement('td'); cell.textContent = text; row.append(cell);
       }
+      const gpu = processGpuDisplay(process);
+      const gpuCell = document.createElement('td');
+      gpuCell.className = 'performance-process-gpu';
+      gpuCell.textContent = gpu.text; gpuCell.title = gpu.detail; row.append(gpuCell);
       return row;
     });
     panel.querySelector('tbody').replaceChildren(...rows);
@@ -140,7 +154,11 @@ export function installPerformancePanel() {
       block.append(title, detail, note);
       return block;
     });
-    if (!gpus.length) { const note = document.createElement('p'); note.textContent = 'GPU telemetry unavailable on this system.'; gpus.push(note); }
+    const processNote = document.createElement('p');
+    processNote.className = 'performance-note';
+    processNote.textContent = resources.process_gpu_status === 'available' ? 'Process GPU sampling active · — means no available measurement, not zero.' : 'Process GPU counters unavailable for the current processes / driver.';
+    gpus.push(processNote);
+    if (!(resources.gpus || []).length) { const note = document.createElement('p'); note.textContent = 'GPU telemetry unavailable on this system.'; gpus.push(note); }
     panel.querySelector('.performance-gpus').replaceChildren(...gpus);
     place();
   }

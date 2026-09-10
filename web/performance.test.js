@@ -99,3 +99,12 @@ test('concurrent helpers retain distinct rows and exact PID matches take precede
   assert.deepEqual(rows.map(row => row.pid), [3, 2]);
   assert.ok(rows.every(row => row.active));
 });
+
+test('GPU display distinguishes engines, unknown readings, inactive rows and multiple GPUs', async () => {
+  const { processGpuDisplay } = await import('./performance.js');
+  const gpu = {device:'NVIDIA GPU 0',source:'pmon',engines:{SM:25,encode:null},memory_bytes:104857600,memory_kind:'framebuffer memory'};
+  assert.equal(processGpuDisplay({active:true,gpus:[gpu]}).text, 'SM 25.0%\n100 MiB');
+  assert.match(processGpuDisplay({active:true,gpus:[gpu]}).detail, /encode —/);
+  assert.equal(processGpuDisplay({active:false,gpus:[gpu]}).text, '—\n—');
+  assert.equal(processGpuDisplay({active:true,gpus:[gpu,gpu]}).text, '2 GPUs\nSee details');
+});

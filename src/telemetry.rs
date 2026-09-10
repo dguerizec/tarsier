@@ -26,6 +26,8 @@ pub struct Telemetry {
 #[derive(Clone, Debug, Serialize)]
 pub struct ProcessUsage {
     pub pid: u32,
+    pub start_ticks: u64,
+    pub gpus: Vec<crate::gpu_process::Usage>,
     pub name: String,
     pub role: &'static str,
     pub cpu_percent: Option<f64>,
@@ -180,6 +182,8 @@ impl Sampler {
             };
             sample.processes.push(ProcessUsage {
                 pid,
+                start_ticks: stat.start,
+                gpus: Vec::new(),
                 name: stat.name.clone(),
                 role,
                 cpu_percent: cpu,
@@ -315,6 +319,10 @@ pub fn start(runtime: Runtime, mut shutdown: tokio::sync::watch::Receiver<bool>)
         let mut gpus = Vec::new();
         let mut gpu_at = None;
         let mut last_gpu = None;
+        let mut process_collector = crate::gpu_process::Collector::default();
+        let mut process_gpus = HashMap::new();
+        let mut process_identities = HashMap::new();
+        let mut process_gpu_status = "unavailable";
         loop {
             tokio::select! {
                 _ = shutdown.changed() => break,
@@ -334,9 +342,23 @@ pub fn start(runtime: Runtime, mut shutdown: tokio::sync::watch::Receiver<bool>)
             sampler = returned;
             if last_gpu.is_none_or(|at: Instant| at.elapsed() >= Duration::from_secs(6)) {
                 gpus = gpu_sample().await;
+                let nvidia = gpus.iter().any(|gpu| gpu.name.starts_with("NVIDIA"));
+                (process_gpus, process_gpu_status) =
+                    process_collector.sample(&sample.processes, nvidia).await;
+                process_identities = sample
+                    .processes
+                    .iter()
+                    .map(|p| (p.pid, p.start_ticks))
+                    .collect();
                 gpu_at = Some(unix_ms());
                 last_gpu = Some(Instant::now());
             }
+            for process in &mut sample.processes {
+                if process_identities.get(&process.pid) == Some(&process.start_ticks) {
+                    process.gpus = process_gpus.get(&process.pid).cloned().unwrap_or_default();
+                }
+            }
+            sample.process_gpu_status = process_gpu_status;
             sample.gpus = gpus.clone();
             sample.gpu_sampled_at_ms = gpu_at;
             runtime.set_telemetry(sample).await;

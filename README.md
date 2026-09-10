@@ -188,11 +188,23 @@ are outside the Tarsier total. These are measurements, not resource limits.
 GPU utilization and VRAM are device-wide: AMD counters are read from DRM sysfs
 when exposed; NVIDIA uses a bounded `nvidia-smi` query at most once every six
 seconds. Unsupported counters, including Intel activity not exposed through
-these interfaces, display as unavailable rather than zero. GPU process attribution
-is explicitly **not collected yet** (`process_gpu_status: "not_collected"`, GPU
-entries have `scope: "device"`). A later collector can correlate driver per-process
-metrics with the sampled daemon/worker PIDs and expose a separate process scope;
-device-wide utilization must never be presented as Tarsier's own GPU usage.
+these interfaces, display as unavailable rather than zero.
+
+Per-process GPU activity and memory are collected separately: NVIDIA uses a
+bounded `nvidia-smi pmon` sample (compute and graphics processes, up to the first
+four supported devices), and Intel/AMD use standard DRM fdinfo when their driver
+exposes it. Cells show an engine activity percentage and GPU memory; hover for
+all engines, devices, units and data sources. SM/render, encode and decode remain
+separate measures and are not added into a synthetic utilization percentage.
+
+DRM activity uses counter deltas, normalizes engine capacity, and deduplicates
+repeated descriptors for the same client inside a process. Memory prefers resident
+buffers, then allocated buffers; on integrated GPUs these can be system-memory
+buffers, not dedicated VRAM. Shared clients/buffers can appear in several processes,
+so per-process memory must not be summed as unique GPU memory. Process identity is
+checked using PID and start time before cached measurements are attributed.
+Missing, unsupported and first-sample counters remain unavailable, never zero.
+The format follows the [kernel DRM client usage statistics](https://www.kernel.org/doc/html/v6.9/gpu/drm-usage-stats.html).
 
 The authenticated `GET /api/v1/telemetry` endpoint serves cached samples and
 existing pipeline timings. Collection stays local, has no external reporting,

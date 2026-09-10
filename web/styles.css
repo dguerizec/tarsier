@@ -502,3 +502,8 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .performance-processes th:nth-child(3) { width: 70px; }
 .performance-processes td:first-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .performance-processes .performance-process-inactive { color: #8492a5; }
+
+.performance-processes th:nth-child(2) { width: 48px; }
+.performance-processes th:nth-child(3) { width: 58px; }
+.performance-processes th:nth-child(4) { width: 90px; }
+.performance-process-gpu { white-space: pre; overflow: hidden; text-overflow: ellipsis; line-height: 1.4; }

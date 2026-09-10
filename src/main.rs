@@ -26,6 +26,7 @@ mod scenario;
 mod settings;
 mod service;
 mod telemetry;
+mod gpu_process;
 mod utterances;
 mod video_clients;
 mod video_transform;
