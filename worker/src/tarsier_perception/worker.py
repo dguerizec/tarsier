@@ -18,7 +18,7 @@ import mediapipe as mp
 import numpy as np
 
 from .auth import authorize
-from .avatar import AvatarInputFrame, AvatarProcessor
+from .avatar import AvatarInputFrame, AvatarProcessor, VideoIdentityClient
 from .delegates import DEFAULT_DELEGATES, Delegates, base_options
 from .depth import DepthInputFrame, DepthProcessor
 from .telemetry import stages, timed
@@ -577,6 +577,7 @@ def run_worker(
     LOGGER.info("Requested MediaPipe delegates: %s", asdict(delegates))
     publisher = ObservationPublisher(daemon_url)
     pose_constraints = PoseConstraintStore()
+    identity = VideoIdentityClient(daemon_url)
     observation_interval = 1.0 / fps
     mask_interval = 1.0 / mask_fps
     avatar_interval = 1.0 / avatar_fps
@@ -594,9 +595,8 @@ def run_worker(
     previous_refined_masks_published = 0
     with ExitStack() as stack:
         stack.enter_context(stages.publishing(daemon_url))
-        segmenter = stack.enter_context(
-            MediaPipeSegmenter(model_dir, pose_constraints, delegates.segmentation)
-        )
+        segmentation_resources = stack.enter_context(ExitStack())
+        segmenter: MediaPipeSegmenter | None = None
         observation_processor = stack.enter_context(
             ObservationProcessor(
                 daemon_url,
@@ -644,7 +644,12 @@ def run_worker(
             if depth_processor is not None:
                 depth_processor.raise_if_failed()
             now = time.monotonic()
-            mask_due = rate_is_due(now, next_mask_at, mask_interval)
+            segmentation_required = identity.segmentation_required()
+            if not segmentation_required and segmenter is not None:
+                segmentation_resources.close()
+                segmenter = None
+                LOGGER.info("selfie segmentation suspended; model released")
+            mask_due = segmentation_required and rate_is_due(now, next_mask_at, mask_interval)
             observation_due = rate_is_due(now, next_observation_at, observation_interval)
             avatar_due = avatar_processor is not None and rate_is_due(
                 now, next_avatar_at, avatar_interval
@@ -675,6 +680,11 @@ def run_worker(
                 )
             person_mask = None
             if mask_due:
+                if segmenter is None:
+                    segmenter = segmentation_resources.enter_context(
+                        MediaPipeSegmenter(model_dir, pose_constraints, delegates.segmentation)
+                    )
+                    LOGGER.info("selfie segmentation resumed")
                 next_mask_at = advance_deadline(next_mask_at, now, mask_interval)
                 person_mask = segmenter.segment(frame, timestamp_ms, source_frame.rotation)
                 if depth_processor is None or not depth_processor.mask_refinement_active:

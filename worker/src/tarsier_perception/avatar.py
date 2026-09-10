@@ -292,6 +292,10 @@ class VideoIdentityClient:
         except (OSError, urllib.error.URLError):
             LOGGER.warning("failed to report portrait preparation error")
 
+    def segmentation_required(self) -> bool:
+        """Only camera backgrounds consume the selfie mask, including depth refinement."""
+        return self.selected_identity() == "camera" and self._background_enabled
+
     def depth_usage(self) -> str | None:
         identity = self.selected_identity()
         if identity == "depth-map":

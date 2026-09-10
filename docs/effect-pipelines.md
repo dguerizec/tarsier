@@ -1,7 +1,8 @@
 # Effect pipelines and process boundaries
 
-Inspected at commit `54d07ef` (2026-09-10). This describes the current
-implementation, followed by candidate demand rules; it does not implement them.
+Inspected at commit `54d07ef` (2026-09-10), updated for demand-driven selfie
+segmentation. This describes the current implementation and further candidate
+demand rules.
 Rates below are the configured targets used in the replay benchmark, not
 necessarily achieved throughput.
 
@@ -20,7 +21,7 @@ flowchart TB
     subgraph WORKER["Process: tarsier-percept — Python, launched through uv"]
         DEC["Decode incoming JPEG"]
         DET["Observation thread: face + hands/gestures + pose • target 10/s"]
-        SEG["Main thread: selfie segmentation • target 30/s"]
+        SEG["Main thread: selfie segmentation • target 30/s when needed"]
         MASK["Constrain selfie mask with pose mask"]
         DEP["Depth thread: estimate + optional mask refinement • target 30/s"]
         AV["Avatar thread: separate face tracker/cropper + selected renderer • target 30/s"]
@@ -104,11 +105,21 @@ observation consumers are not requesting extra work.
 | Observation face | Not needed by image effect | Not needed by image effect | Not needed by image effect | Not needed by image effect | Always with observation thread |
 | Hands + gesture recognition | Not needed by image effect | Not needed by image effect | Not needed by image effect | Not needed by image effect | Always with observation thread |
 | Pose + pose mask | Not needed by image effect | Required by current mask constraint | Not needed by image effect | Not needed by image effect | Always with observation thread |
-| Selfie segmentation | Not needed | Required | Not needed | Not needed | Always while worker captures |
+| Selfie segmentation | Not needed | Required | Not needed | Not needed | Only camera identity with background enabled |
 | Depth estimation | Not needed | Mask refinement, when configured | Required | Not needed | Already conditional |
 | Depth mask refinement | Not needed | When depth is configured | Not needed | Not needed | Already conditional |
 | Avatar face + renderer | Not needed | Not needed | Not needed | Selected engine only | Already conditional |
 | Perception JPEG transport/decode | Only for other consumers | Required | Required | Required | Present in the current video pipeline |
+
+Selfie segmentation polls the existing identity endpoint no more than four times
+per second while frames arrive.
+It initializes the configured CPU/GPU task only when camera backgrounds need a
+mask and closes it when demand disappears. Frame capture, observations and
+depth/avatar submissions continue while segmentation is suspended. Poll failures
+retain the last accepted demand and retry; they do not switch delegates.
+Background/output-mode changes clear cached masks and processed output. Warmup or
+failure remains fail-closed: camera composition requires a fresh mask with the
+matching source frame ID. Late masks cannot unmask a different frame.
 
 Depth and avatar loops still receive submitted frames and poll the selected mode
 when idle. Their expensive inference is skipped and their engine resources are
@@ -130,7 +141,7 @@ Python/native allocators can also retain memory after an engine is closed.
 A candidate next step is a backend-computed demand set, shared with the worker:
 `face`, `hands`, `pose`, `segmentation`, `depth`, `avatar`. Compute it as the union
 of effect requirements and enabled/subscribed consumers. Then separate observation
-models so unused models can skip inference, pause unused segmentation, and finally
+models so unused models can skip inference, and finally
 skip perception transport or the entire worker only when the demand set is empty.
 Keep capture/output running for plain video. Demand changes must clear stale
 results and preserve the current fail-closed mask/output behavior during warmup.
@@ -141,7 +152,7 @@ These are proposed optimization rules, not existing behavior.
 - `src/pipeline.rs`: `pipeline_description`, source tee and perception/output branches.
 - `src/perception.rs`: worker supervision and CLI arguments.
 - `worker/src/tarsier_perception/worker.py`: `MediaPipeDetector.detect`,
-  `PoseConstraintStore`, `run`, unconditional observation and segmentation cadence.
+  `PoseConstraintStore`, `run_worker`, observation cadence and demand-driven segmentation.
 - `worker/src/tarsier_perception/avatar.py`: `VideoIdentityClient.depth_usage`,
   `AvatarProcessor._run`, separate avatar tracking and renderers.
 - `worker/src/tarsier_perception/depth.py`: `DepthProcessor._run`, conditional

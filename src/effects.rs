@@ -292,6 +292,9 @@ impl VideoEffects {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         *held = HeldOutput::default();
+        if mode != self.output_mode() {
+            self.clear_mask();
+        }
         self.output_mode
             .store(output_mode_code(mode), Ordering::Relaxed);
     }
@@ -325,6 +328,7 @@ impl VideoEffects {
             .unwrap_or_else(|error| error.into_inner());
         if enabled != self.background_enabled() || effect != self.background_effect() {
             *held = HeldOutput::default();
+            self.clear_mask();
         }
         self.background_effect
             .store(effect_code(effect), Ordering::Relaxed);
@@ -1190,6 +1194,35 @@ mod tests {
 
         assert!(effects.apply_output_for_frame(&mut frame, 2, 1, captured_at_ms, Some(10),));
         assert_eq!(frame, [10, 20, 30, 255, 0, 255, 0, 255]);
+    }
+
+    #[test]
+    fn effect_transitions_clear_masks_and_fail_closed_until_matching_frame() {
+        let effects = VideoEffects::new();
+        let now = unix_ms();
+        effects.set_background(true, BackgroundEffect::GreenScreen);
+        effects.publish_mask(VideoMask::new(1, now, 1, 1, vec![255]).unwrap());
+        effects.set_background(false, BackgroundEffect::GreenScreen);
+        assert!(effects.latest_mask().is_none());
+        effects.set_background(true, BackgroundEffect::GreenScreen);
+        let mut frame = [99; 4];
+        effects.apply_output_for_frame(&mut frame, 1, 1, now, Some(2));
+        assert_eq!(frame, [0; 4]);
+        // A late result from before the transition cannot unmask a new frame.
+        effects.publish_mask(VideoMask::new(1, now, 1, 1, vec![255]).unwrap());
+        frame.fill(99);
+        effects.apply_output_for_frame(&mut frame, 1, 1, now, Some(2));
+        assert_eq!(frame, [0; 4]);
+        let now = unix_ms();
+        effects.publish_mask(VideoMask::new(2, now, 1, 1, vec![255]).unwrap());
+        frame.fill(99);
+        effects.apply_output_for_frame(&mut frame, 1, 1, now, Some(2));
+        assert_eq!(frame, [99; 4]);
+        effects.set_output_mode(VideoOutputMode::DepthMap);
+        assert!(effects.latest_mask().is_none());
+        effects.publish_mask(VideoMask::new(3, now, 1, 1, vec![255]).unwrap());
+        effects.set_output_mode(VideoOutputMode::Camera);
+        assert!(effects.latest_mask().is_none());
     }
 
     #[test]
