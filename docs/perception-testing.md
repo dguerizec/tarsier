@@ -92,3 +92,6 @@ frame alignment. NVML process activity remains sparse in some modes; missing
 samples are not zero. RSS includes models retained from earlier scenarios.
 See the local report for stage timings, memory, GPU sample counts and limits.
 The original delegates and effects were restored; the video remains selected.
+
+The current process boundaries, effect dependencies and candidate demand rules are
+documented in [Effect pipelines](effect-pipelines.md).
