@@ -166,6 +166,36 @@ The physical camera and any existing `/dev/video42` must be free before the daem
 The example uses the stable `/dev/v4l/by-id/...-video-index0` camera symlink so
 a manual restart still finds the device after USB re-enumeration.
 
+## Performance telemetry
+
+The **Performance** button in the main UI shows or hides a floating resource
+panel. Drag its title to move it, or focus the title and use arrow keys
+(Shift for larger steps, Home to reset). Escape hides it. Visibility and position
+are saved locally in the browser; the panel stays within the viewport on resize.
+
+The daemon samples its process and current descendants every two seconds. The
+panel displays their CPU, summed RSS memory, per-process breakdown, machine CPU,
+video FPS, recent perception inference latency, and the last voice timings.
+CPU **100% means one logical core** for Tarsier; machine CPU is normalized across
+all cores. Summed RSS can double-count shared pages. Short-lived processes between
+samples and detached/reparented workers are not accounted for. Browser processes
+are outside the Tarsier total. These are measurements, not resource limits.
+
+GPU utilization and VRAM are device-wide: AMD counters are read from DRM sysfs
+when exposed; NVIDIA uses a bounded `nvidia-smi` query at most once every six
+seconds. Unsupported counters, including Intel activity not exposed through
+these interfaces, display as unavailable rather than zero. GPU process attribution
+is explicitly **not collected yet** (`process_gpu_status: "not_collected"`, GPU
+entries have `scope: "device"`). A later collector can correlate driver per-process
+metrics with the sampled daemon/worker PIDs and expose a separate process scope;
+device-wide utilization must never be presented as Tarsier's own GPU usage.
+
+The authenticated `GET /api/v1/telemetry` endpoint serves cached samples and
+existing pipeline timings. Collection stays local, has no external reporting,
+and is independent of high-frequency video/state events. UI requests pause while
+the panel or browser tab is hidden. Failed requests and stale samples are marked
+explicitly. The CPU graph keeps the last 60 displayed samples in memory only.
+
 ## Service installation and diagnostics
 
 Build the release binaries and install them into `~/.local/bin`:

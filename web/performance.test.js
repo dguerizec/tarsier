@@ -1,0 +1,73 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { clampPosition, formatPercent, formatBytes, graphPoints } from './performance.js';
+test('panel stays reachable after resize and invalid saved coordinates', () => {
+  assert.deepEqual(clampPosition(900, 800, 390, 500, 400, 600), { x: 8, y: 92 });
+  assert.deepEqual(clampPosition(NaN, undefined, 200, 100, 800, 600), { x: 584, y: 84 });
+  assert.deepEqual(clampPosition(-200, -80, 390, 900, 320, 400), { x: 8, y: 8 });
+});
+test('unavailable resources never display as zero', () => {
+  assert.equal(formatPercent(null), '—');
+  assert.equal(formatPercent(NaN), '—');
+  assert.equal(formatPercent(250), '250.0%');
+  assert.equal(formatBytes(undefined), '—');
+  assert.equal(formatBytes(1073741824), '1.00 GiB');
+});
+test('CPU graph scales above one core and filters invalid measurements', () => {
+  assert.equal(graphPoints([0, 100, 200]), '0.0,36.0 150.0,18.0 300.0,0.0');
+  assert.equal(graphPoints([null, NaN]), '');
+});
+
+test('panel hides without polling, persists drag position, and resumes when shown', async () => {
+  const { installPerformancePanel } = await import('./performance.js');
+  class Element {
+    constructor() { this.listeners = new Map(); this.nodes = new Map(); this.style = {}; this.attributes = {}; this.offsetWidth = 390; this.offsetHeight = 500; this.children = []; this.classList = { add() {}, remove() {} }; }
+    querySelector(selector) { if (!this.nodes.has(selector)) this.nodes.set(selector, new Element()); return this.nodes.get(selector); }
+    setAttribute(name, value) { this.attributes[name] = value; }
+    addEventListener(name, callback) { this.listeners.set(name, callback); }
+    emit(name, event = {}) { this.listeners.get(name)?.(event); }
+    append(...children) { this.children.push(...children); }
+    replaceChildren(...children) { this.children = children; }
+    setPointerCapture() {}
+    focus() { this.focused = true; }
+  }
+  const savedGlobals = new Map();
+  const replace = (key, value) => { savedGlobals.set(key, Object.getOwnPropertyDescriptor(globalThis, key)); Object.defineProperty(globalThis, key, { value, configurable: true, writable: true }); };
+  const document = new Element();
+  document.body = new Element(); document.hidden = false; document.createElement = () => new Element();
+  const store = new Map();
+  const timers = new Map(); let next = 0; let requests = 0;
+  const flush = () => new Promise(resolve => setImmediate(resolve));
+  try {
+    replace('document', document); replace('window', new Element());
+    replace('innerWidth', 1000); replace('innerHeight', 800);
+    replace('localStorage', { getItem: key => store.get(key), setItem: (key, value) => store.set(key, value) });
+    replace('ResizeObserver', class { observe() {} });
+    replace('setTimeout', (callback, delay) => { timers.set(++next, { callback, delay }); return next; });
+    replace('clearTimeout', id => timers.delete(id));
+    replace('fetch', async () => { requests++; return { ok: true, json: async () => ({ resources: { sampled_at_ms: Date.now(), logical_cpus: 8, cpu_percent: 123, processes: [], gpus: [] } }) }; });
+    installPerformancePanel(); await flush();
+    const toggle = document.querySelector('#performance-toggle');
+    const panel = document.body.children[0];
+    const drag = panel.querySelector('.performance-drag');
+    assert.equal(requests, 1);
+    drag.emit('pointerdown', { button: 0, pointerId: 1, clientX: 600, clientY: 100 });
+    drag.emit('pointermove', { pointerId: 1, clientX: 100, clientY: 200 });
+    drag.emit('pointerup');
+    const stored = JSON.parse(store.get('tarsier.performance.v1'));
+    assert.equal(stored.x, 94); assert.equal(stored.y, 184);
+    panel.querySelector('.performance-close').emit('click');
+    assert.equal(panel.hidden, true); assert.equal(toggle.attributes['aria-expanded'], 'false');
+    assert.equal(timers.size, 0); assert.equal(JSON.parse(store.get('tarsier.performance.v1')).visible, false);
+    toggle.emit('click'); await flush();
+    assert.equal(requests, 2); assert.equal(panel.hidden, false);
+    document.hidden = true; document.emit('visibilitychange');
+    assert.equal(timers.size, 0);
+    document.hidden = false; document.emit('visibilitychange'); await flush();
+    assert.equal(requests, 3);
+    panel.emit('keydown', { key: 'Escape', preventDefault() {} });
+    assert.equal(panel.hidden, true); assert.equal(timers.size, 0);
+  } finally {
+    for (const [key, descriptor] of savedGlobals) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete globalThis[key]; }
+  }
+});

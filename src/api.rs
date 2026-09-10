@@ -344,6 +344,10 @@ pub fn router_with_controls(
         .route("/api/v1/health", get(health))
         .route("/api/v1/daemon/restart", post(restart_daemon))
         .route("/api/v1/state", get(current_state))
+        .route("/api/v1/telemetry", get(resource_telemetry))
+        .route("/assets/performance.js", get(|| async {
+            ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8"), (header::CACHE_CONTROL, "no-store")], include_str!("../web/performance.js"))
+        }))
         .route("/api/v1/camera/state", get(camera_state))
         .route("/api/v1/camera/position", get(camera_position))
         .route("/api/v1/camera/power", post(set_camera_power))
@@ -1332,6 +1336,20 @@ async fn restart_daemon(State(state): State<ApiState>) -> Response {
 
 async fn current_state(State(state): State<ApiState>) -> Json<crate::model::RuntimeState> {
     Json(state.runtime.state().await)
+}
+
+async fn resource_telemetry(State(state): State<ApiState>) -> Json<serde_json::Value> {
+    let runtime = state.runtime.state().await;
+    Json(json!({
+        "resources": state.runtime.telemetry().await,
+        "video_fps": runtime.pipeline.fps,
+        "video_running": runtime.pipeline.running,
+        "perception_latency_ms": runtime.perception.latency_ms,
+        "perception_sample_at_ms": runtime.perception.sample_at_ms,
+        "perception_age_ms": runtime.perception.sample_at_ms.map(|at| crate::model::unix_ms().saturating_sub(at)),
+        "voice_inference_ms": runtime.audio_voice.inference_ms,
+        "voice_pipeline_ms": runtime.audio_voice.pipeline_ms,
+    }))
 }
 
 async fn camera_state(State(state): State<ApiState>) -> Json<crate::model::CameraState> {
@@ -6010,6 +6028,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn telemetry_is_read_only_and_keeps_unknown_metrics_null() {
+        let runtime = Runtime::new();
+        let updates = runtime.subscribe_state();
+        runtime.set_telemetry(crate::telemetry::Telemetry {
+            sampled_at_ms: Some(123), cpu_percent: Some(225.0), rss_bytes: Some(4096),
+            process_gpu_status: "not_collected", ..Default::default()
+        }).await;
+        assert!(!updates.has_changed().unwrap());
+        let (_tx, rx) = watch::channel(false);
+        let app = router(Config::default(), runtime.clone(), PreviewHub::new(), None, rx);
+        let response = app.oneshot(Request::get("/api/v1/telemetry").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: Value = serde_json::from_slice(&to_bytes(response.into_body(), 8192).await.unwrap()).unwrap();
+        assert_eq!(body["resources"]["cpu_percent"], 225.0);
+        assert!(body["resources"]["host_cpu_percent"].is_null());
+        assert_eq!(body["resources"]["process_gpu_status"], "not_collected");
+        assert!(body["perception_age_ms"].is_null());
+        assert!(runtime.recent_events().await.is_empty());
+    }
+
+    #[tokio::test]
     async fn network_settings_report_scope_and_require_supervision() {
         let mut config = Config::default();
         config.server.bind = "0.0.0.0:8742".parse().unwrap();
@@ -6080,6 +6119,7 @@ mod tests {
         for path in [
             "/",
             "/assets/app.js",
+            "/assets/performance.js",
             "/assets/styles.css",
             "/assets/lucide.js",
             "/assets/preview-drag.js",

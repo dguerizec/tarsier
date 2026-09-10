@@ -25,6 +25,7 @@ mod runtime;
 mod scenario;
 mod settings;
 mod service;
+mod telemetry;
 mod utterances;
 mod video_clients;
 mod video_transform;
@@ -334,6 +335,7 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
             .await;
     }
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    telemetry::start(runtime.clone(), shutdown_rx.clone());
     let (daemon_restart, restart_rx) = if std::env::var_os("INVOCATION_ID").is_some() {
         let (restart_tx, restart_rx) = tokio::sync::oneshot::channel();
         (Some(api::DaemonRestart::new(restart_tx)), Some(restart_rx))
