@@ -207,9 +207,12 @@ retains only the latest detailed snapshot):
 tarsier telemetry-record --output telemetry.jsonl --duration 600 --interval 2
 ```
 
-When authentication is enabled, supply an API-scoped token through
-`TARSIER_API_TOKEN`, as for `tarsier status`. The recorder never writes the token
-or HTTP response error bodies. `--url` selects another daemon. Files are created
+Reading telemetry over loopback (`127.0.0.1` or `::1`) does not require a token,
+even when authentication is enabled. Remote connections to this endpoint are
+rejected, including authenticated connections. The check uses the socket peer,
+not `Host` or forwarded headers.
+The recorder also supports `TARSIER_API_TOKEN` for older protected daemons and never
+writes the token or HTTP response error bodies. `--url` selects another daemon. Files are created
 with user-only permissions and existing files are rejected. The default limits
 are ten minutes and 64 MiB (`--max-mib`); Ctrl-C stops early. It does not start,
 restart, or change the camera or daemon.
@@ -265,7 +268,7 @@ checked using PID and start time before cached measurements are attributed.
 Missing, unsupported and first-sample counters remain unavailable, never zero.
 The format follows the [kernel DRM client usage statistics](https://www.kernel.org/doc/html/v6.9/gpu/drm-usage-stats.html).
 
-The authenticated `GET /api/v1/telemetry` endpoint serves cached samples and
+The loopback-only, read-only `GET /api/v1/telemetry` endpoint serves cached samples and
 existing pipeline timings. Collection stays local, has no external reporting,
 and is independent of high-frequency video/state events. UI requests pause while
 the panel or browser tab is hidden. Failed requests and stale samples are marked
@@ -653,6 +656,9 @@ password. The first password must be set from the camera computer over a
 loopback connection, or with the local CLI. Once set, protection applies
 immediately to all operator API routes, media, MJPEG, and WebSocket streams.
 The login page, static UI assets, and authentication status remain public.
+Read-only `GET /api/v1/telemetry` needs no token but accepts only loopback
+connections; it exposes process resource usage and pipeline configuration locally.
+Worker telemetry uploads and control endpoints remain protected.
 There are no user accounts.
 
 Web clients sign in with the master password and receive a 12-hour HttpOnly,

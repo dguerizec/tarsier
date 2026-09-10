@@ -325,7 +325,14 @@ pub async fn guard(State(auth): State<Auth>, request: Request, next: Next) -> Re
     let path = request.uri().path().to_owned();
     let headers = request.headers().clone();
     let method = request.method().as_str().to_owned();
-    let public = path == "/login"
+    let telemetry_read = path == "/api/v1/telemetry" && method == "GET";
+    if telemetry_read && !request.extensions().get::<ConnectInfo<SocketAddr>>()
+        .is_some_and(|peer| peer.0.ip().to_canonical().is_loopback())
+    {
+        return error(StatusCode::FORBIDDEN, "Telemetry is only available over loopback");
+    }
+    let public = telemetry_read
+        || path == "/login"
         || path.starts_with("/assets/")
         || path == "/api/v1/auth/status"
         || path == "/api/v1/auth/login";
@@ -901,6 +908,38 @@ mod tests {
     }
     async fn value(response: Response) -> serde_json::Value {
         serde_json::from_slice(&to_bytes(response.into_body(), 65536).await.unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn telemetry_reads_are_local_only_and_worker_writes_remain_protected() {
+        let fixture = Fixture::new();
+        fixture.setup().await;
+        let response = fixture.request("GET", "/api/v1/telemetry", None, None, json!(null)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let data = value(response).await;
+        assert!(data["resources"].is_object());
+        assert!(data["pipeline_context"].is_object());
+        for (peer, expected) in [
+            (Some("[::1]:30000"), StatusCode::OK),
+            (Some("[::ffff:127.0.0.1]:30000"), StatusCode::OK),
+            (Some("192.0.2.10:30000"), StatusCode::FORBIDDEN),
+            (None, StatusCode::FORBIDDEN),
+        ] {
+            let mut request = Request::builder().uri("/api/v1/telemetry")
+                .header("host", "localhost:8742")
+                .header("x-forwarded-for", "127.0.0.1")
+                .header("forwarded", "for=127.0.0.1");
+            if let Some(peer) = peer {
+                request = request.extension(ConnectInfo(peer.parse::<SocketAddr>().unwrap()));
+            }
+            let response = fixture.router().oneshot(request.body(Body::empty()).unwrap()).await.unwrap();
+            assert_eq!(response.status(), expected, "peer {peer:?}");
+        }
+        for path in ["/api/v1/telemetry", "/api/v1/perception/telemetry", "/api/v1/perception/observations"] {
+            assert_eq!(fixture.request("POST", path, None, None, json!({})).await.status(), StatusCode::UNAUTHORIZED);
+        }
+        assert_eq!(fixture.request("GET", "/api/v1/state", None, None, json!(null)).await.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
