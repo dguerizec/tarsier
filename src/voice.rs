@@ -20,6 +20,12 @@ const MAX_AGE: Duration = Duration::from_millis(650);
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct VoiceState {
+    #[serde(default = "default_show_controls")]
+    pub show_controls: bool,
+    #[serde(default)]
+    pub disabled_models: std::collections::BTreeSet<String>,
+    #[serde(default)]
+    pub library_revision: u64,
     pub enabled: bool,
     #[serde(default = "default_model")]
     pub model: String,
@@ -33,6 +39,10 @@ pub struct VoiceState {
     pub error: Option<String>,
 }
 
+pub fn default_show_controls() -> bool {
+    true
+}
+
 pub fn default_model() -> String {
     "FrenchWoman.pth".into()
 }
@@ -40,6 +50,9 @@ pub fn default_model() -> String {
 impl Default for VoiceState {
     fn default() -> Self {
         Self {
+            show_controls: true,
+            disabled_models: Default::default(),
+            library_revision: 0,
             enabled: false,
             model: default_model(),
             generation: 0,

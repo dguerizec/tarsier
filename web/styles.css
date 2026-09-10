@@ -433,3 +433,8 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .avatar-library-card [hidden] { display: none; }
 #settings-avatars form { display: grid; gap: .7rem; }
 #settings-avatars input { min-width: 0; max-width: 100%; }
+
+.voice-library-row { display: flex; align-items: center; gap: 1rem; padding: 0.8rem 0; border-bottom: 1px solid var(--border, #29372b); }
+.voice-library-row strong { flex: 1; overflow-wrap: anywhere; }
+.voice-library-row label { white-space: nowrap; }
+@media (max-width: 520px) { .voice-library-row { flex-wrap: wrap; } .voice-library-row strong { flex-basis: 100%; } }

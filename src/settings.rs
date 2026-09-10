@@ -37,6 +37,8 @@ impl VideoResolution {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct AudioSettings {
+    pub voice_show_controls: bool,
+    pub voice_disabled_models: std::collections::BTreeSet<String>,
     pub voice_enabled: bool,
     pub voice_pitch: i32,
     pub voice_model: String,
@@ -50,6 +52,8 @@ pub struct AudioSettings {
 impl Default for AudioSettings {
     fn default() -> Self {
         Self {
+            voice_show_controls: true,
+            voice_disabled_models: Default::default(),
             voice_enabled: false,
             voice_pitch: 0,
             voice_model: crate::voice::default_model(),
@@ -65,6 +69,8 @@ impl Default for AudioSettings {
 impl AudioSettings {
     pub fn from_state(state: &crate::model::RuntimeState) -> Self {
         Self {
+            voice_show_controls: state.audio_voice.show_controls,
+            voice_disabled_models: state.audio_voice.disabled_models.clone(),
             voice_enabled: state.audio_voice.enabled,
             voice_pitch: state.audio_voice.pitch,
             voice_model: state.audio_voice.model.clone(),
@@ -77,7 +83,13 @@ impl AudioSettings {
     }
 
     pub fn apply(&self, state: &mut crate::model::RuntimeState) {
-        if state.audio_voice.model != self.voice_model {
+        if state.audio_voice.model != self.voice_model
+            || (!state
+                .audio_voice
+                .disabled_models
+                .contains(&self.voice_model)
+                && self.voice_disabled_models.contains(&self.voice_model))
+        {
             state.audio_voice.generation = state.audio_voice.generation.wrapping_add(1);
             state.audio_voice.ready = false;
             state.audio_voice.error = None;
@@ -85,7 +97,11 @@ impl AudioSettings {
             state.audio_voice.pipeline_ms = None;
             state.audio_voice.model = self.voice_model.clone();
         }
-        state.audio_voice.enabled = self.voice_enabled;
+        state.audio_voice.show_controls = self.voice_show_controls;
+        state.audio_voice.disabled_models = self.voice_disabled_models.clone();
+        state.audio_voice.enabled = self.voice_enabled
+            && self.voice_show_controls
+            && !self.voice_disabled_models.contains(&self.voice_model);
         state.audio_voice.pitch = self.voice_pitch;
         state.audio_capture_sources = self.capture_sources.clone();
         state.audio_virtual.source = self.output_source.clone();
@@ -606,6 +622,8 @@ mod tests {
             .await
             .unwrap();
         let audio = AudioSettings {
+            voice_show_controls: true,
+            voice_disabled_models: std::collections::BTreeSet::from(["Disabled.pth".into()]),
             capture_sources: vec!["disconnected-mic".into()],
             output_source: Some("disabled-mic".into()),
             output_enabled: true,

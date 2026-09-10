@@ -528,3 +528,58 @@ for (const [kind, form] of [['liveportrait', portraitImportForm], ['portrait3d',
   });
 }
 loadAvatarLibrary().catch(error => { avatarLibraryStatus.textContent = error.message; });
+
+
+const voiceLibraryList = document.querySelector('#voice-library-list');
+const voiceLibraryShow = document.querySelector('#voice-library-show');
+const voiceLibraryForm = document.querySelector('#voice-library-import');
+const voiceLibraryFile = document.querySelector('#voice-library-file');
+const voiceLibraryStatus = document.querySelector('#voice-library-status');
+let voiceLibraryBusy = false;
+let voiceLibrary = null;
+function renderVoiceLibrary() {
+  voiceLibraryShow.checked = voiceLibrary?.show_controls ?? true;
+  voiceLibraryShow.disabled = voiceLibraryBusy || !voiceLibrary;
+  voiceLibraryForm.querySelector('button[type="submit"]').disabled = voiceLibraryBusy || !voiceLibrary?.available;
+  voiceLibraryFile.disabled = voiceLibraryBusy || !voiceLibrary?.available;
+  document.querySelector('#voice-library-refresh').disabled = voiceLibraryBusy;
+  voiceLibraryList.replaceChildren();
+  for (const model of voiceLibrary?.models || []) {
+    const row = document.createElement('div'); row.className = 'voice-library-row';
+    const name = document.createElement('strong'); name.textContent = model.name;
+    const label = document.createElement('label');
+    const toggle = document.createElement('input'); toggle.type = 'checkbox'; toggle.checked = model.enabled;
+    toggle.disabled = voiceLibraryBusy; toggle.setAttribute('aria-label', `Enable ${model.name}`);
+    toggle.onchange = () => changeVoiceLibrary('/api/v1/settings/voice', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({model:model.id, enabled:toggle.checked})});
+    label.append(toggle, ' Enabled');
+    const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'secondary compact'; remove.textContent = 'Delete';
+    remove.disabled = voiceLibraryBusy; remove.setAttribute('aria-label', `Delete ${model.name}`);
+    remove.onclick = () => changeVoiceLibrary(`/api/v1/audio/voice/models/${encodeURIComponent(model.id)}`, {method:'DELETE'});
+    row.append(name, label, remove); voiceLibraryList.append(row);
+  }
+  if (voiceLibrary && !voiceLibrary.models.length) voiceLibraryList.textContent = 'No voices imported.';
+}
+async function changeVoiceLibrary(url = '/api/v1/settings/voice', options = {}) {
+  if (voiceLibraryBusy) return;
+  voiceLibraryBusy = true; renderVoiceLibrary(); voiceLibraryStatus.textContent = options.method ? 'Applying…' : 'Loading…';
+  try {
+    const response = await fetch(url, options);
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || 'Could not update voice library');
+    voiceLibrary = body;
+    voiceLibraryStatus.textContent = !body.available ? 'Model storage is not configured.' : !body.worker_available ? 'Voice worker is not configured. You can still manage models.' : options.method ? 'Saved.' : '';
+  } catch (error) { voiceLibraryStatus.textContent = error.message; }
+  finally { voiceLibraryBusy = false; renderVoiceLibrary(); }
+}
+voiceLibraryShow.onchange = () => changeVoiceLibrary('/api/v1/settings/voice', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({show_controls:voiceLibraryShow.checked})});
+voiceLibraryForm.onsubmit = async event => {
+  event.preventDefault();
+  const file = voiceLibraryFile.files[0];
+  if (!file || !file.name.endsWith('.pth') || !file.size || file.size > 128 * 1024 * 1024) {
+    voiceLibraryStatus.textContent = 'Choose a nonempty RVC .pth file up to 128 MiB.'; return;
+  }
+  await changeVoiceLibrary(`/api/v1/audio/voice/models?name=${encodeURIComponent(file.name)}`, {method:'POST', headers:{'Content-Type':'application/octet-stream'}, body:file});
+  voiceLibraryFile.value = '';
+};
+document.querySelector('#voice-library-refresh').onclick = () => changeVoiceLibrary();
+changeVoiceLibrary();

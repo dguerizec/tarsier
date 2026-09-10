@@ -16,6 +16,7 @@
       <div class="settings-tabs" role="tablist" aria-label="Settings categories">
         <button type="button" role="tab" id="tab-video" aria-controls="settings-video" aria-selected="true" tabindex="0">Video</button>
         <button type="button" role="tab" id="tab-avatars" aria-controls="settings-avatars" aria-selected="false" tabindex="-1">Avatars</button>
+        <button type="button" role="tab" id="tab-voice" aria-controls="settings-voice" aria-selected="false" tabindex="-1">Voice conversion</button>
         <button type="button" role="tab" id="tab-devices" aria-controls="settings-devices" aria-selected="false" tabindex="-1">Devices</button>
         <button type="button" role="tab" id="tab-network" aria-controls="settings-network" aria-selected="false" tabindex="-1">Network</button>
         <button type="button" role="tab" id="tab-security" aria-controls="settings-security" aria-selected="false" tabindex="-1">Security</button>
@@ -78,6 +79,23 @@
           </form>
           <p>The model is checked and a neutral preview is generated during import. A missing preview can be generated again from the library.</p>
           <div id="portrait3d-library" class="avatar-library-grid" aria-label="Personal 3D library"></div>
+        </section>
+      </div>
+      <div class="settings-tab-panel" role="tabpanel" id="settings-voice" aria-labelledby="tab-voice" tabindex="0" hidden>
+        <section class="panel" aria-labelledby="voice-library-heading">
+          <h2 id="voice-library-heading">Voice conversion</h2>
+          <p><label><input id="voice-library-show" type="checkbox" disabled> Show voice conversion on the main page</label></p>
+          <p class="hint">Hiding the controls turns conversion off. Showing them again does not restart conversion. Enabled voices appear in the main page selector. Disabling or deleting the selected voice turns conversion off.</p>
+          <form id="voice-library-import">
+            <label for="voice-library-file">RVC model (.pth)</label>
+            <input id="voice-library-file" type="file" accept=".pth" required disabled>
+            <p class="hint">Up to 128 MiB. Importing does not select the voice. Compatibility is checked when loading.</p>
+            <button type="submit" disabled>Import voice</button>
+            <button id="voice-library-refresh" type="button" class="secondary">Refresh</button>
+          </form>
+          <p id="voice-library-status" role="status" aria-live="polite"></p>
+          <div id="voice-library-list" aria-label="Installed voices"></div>
+          <p class="hint">Deleted models are kept in the model folder’s .trash directory.</p>
         </section>
       </div>
       <div class="settings-tab-panel" role="tabpanel" id="settings-devices" aria-labelledby="tab-devices" tabindex="0" hidden>

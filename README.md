@@ -1276,3 +1276,16 @@ Every manual camera change mutes virtual video output before replacing capture.
 The output stays muted even if switching fails and the previous source is restored.
 Check framing in the local preview and unmute explicitly. There is no automatic
 fallback or simultaneous capture of multiple cameras.
+
+
+### Voice conversion library
+
+Settings → Voice conversion manages local RVC `.pth` imports, per-model availability,
+and deletion. Only enabled models appear on the preview page. Disabling or deleting
+the selected voice stops conversion; deleted checkpoints move to the model directory's
+`.trash` folder. Importing a model does not select or load it.
+
+Turning off **Show voice conversion on the main page** also stops conversion.
+Showing the controls again leaves conversion off. These preferences persist across
+restarts and apply to already-open preview pages without reloading. Imports remain
+limited to 128 MiB; model compatibility is checked when the worker loads a voice.

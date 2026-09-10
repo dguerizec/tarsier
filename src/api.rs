@@ -300,6 +300,14 @@ pub fn router_with_controls(
                 .post(upload_voice_model)
                 .layer(DefaultBodyLimit::max(128 * 1024 * 1024)),
         )
+        .route(
+            "/api/v1/settings/voice",
+            get(voice_models).post(set_voice_library),
+        )
+        .route(
+            "/api/v1/audio/voice/models/{name}",
+            axum::routing::delete(delete_voice_model),
+        )
         .route("/api/v1/audio/sources", get(audio_sources))
         .route("/api/v1/audio/meter", get(audio_meter))
         .route("/api/v1/audio/utterances", get(audio_utterances))
@@ -4253,9 +4261,16 @@ async fn set_voice_settings(
     }
     let _guard = state.audio_settings_control.lock().await;
     let mut audio = crate::settings::AudioSettings::from_state(&state.runtime.state().await);
+    if request.enabled && !audio.voice_show_controls {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"Show voice conversion on the main page before enabling it"})),
+        )
+            .into_response();
+    }
     audio.voice_enabled = request.enabled;
     audio.voice_pitch = request.pitch;
-    if let Some(model) = request.model {
+    if let Some(model) = request.model.as_ref() {
         let Some(directory) = &state.config.audio.voice_models_dir else {
             return (
                 StatusCode::BAD_REQUEST,
@@ -4263,14 +4278,23 @@ async fn set_voice_settings(
             )
                 .into_response();
         };
-        if crate::voice::model_path(directory, &model).is_err() {
+        if crate::voice::model_path(directory, model).is_err() {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(json!({"error":"Model is not installed"})),
             )
                 .into_response();
         }
-        audio.voice_model = model;
+        audio.voice_model = model.clone();
+    }
+    if audio.voice_disabled_models.contains(&audio.voice_model)
+        && (request.enabled || request.model.is_some())
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"Enable this voice in Settings before using it"})),
+        )
+            .into_response();
     }
     if let Some(settings) = &state.user_settings {
         if let Err(error) = settings.set_audio(audio.clone()).await {
@@ -4282,17 +4306,134 @@ async fn set_voice_settings(
 }
 
 async fn voice_models(State(state): State<ApiState>) -> Response {
-    let Some(directory) = &state.config.audio.voice_models_dir else {
-        return Json(json!({"available":false,"models":[]})).into_response();
+    let voice = state.runtime.state().await.audio_voice;
+    let models = match state
+        .config
+        .audio
+        .voice_models_dir
+        .as_ref()
+        .map(|directory| crate::voice::models(directory))
+        .transpose()
+    {
+        Ok(models) => models.unwrap_or_default(),
+        Err(error) => return command_error(error),
     };
-    match crate::voice::models(directory) {
-        Ok(models) => Json(json!({"available":true,"models":models})).into_response(),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error":error.to_string()})),
-        )
-            .into_response(),
+    Json(json!({
+        "available": state.config.audio.voice_models_dir.is_some(),
+        "worker_available": !state.config.audio.voice_worker.is_empty(),
+        "show_controls": voice.show_controls,
+        "models": models.into_iter().map(|model| json!({"id":model.id,"name":model.name,"enabled":!voice.disabled_models.contains(&model.id),"selected":voice.model == model.id})).collect::<Vec<_>>()
+    })).into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VoiceLibraryRequest {
+    show_controls: Option<bool>,
+    model: Option<String>,
+    enabled: Option<bool>,
+}
+
+async fn save_voice_library(
+    state: &ApiState,
+    audio: crate::settings::AudioSettings,
+) -> anyhow::Result<()> {
+    if let Some(settings) = &state.user_settings {
+        settings.set_audio(audio.clone()).await?;
     }
+    state
+        .runtime
+        .update(|runtime| {
+            audio.apply(runtime);
+            runtime.audio_voice.library_revision =
+                runtime.audio_voice.library_revision.wrapping_add(1);
+        })
+        .await;
+    Ok(())
+}
+
+async fn set_voice_library(
+    State(state): State<ApiState>,
+    Json(request): Json<VoiceLibraryRequest>,
+) -> Response {
+    let _guard = state.audio_settings_control.lock().await;
+    let mut audio = crate::settings::AudioSettings::from_state(&state.runtime.state().await);
+    if let Some(show) = request.show_controls {
+        audio.voice_show_controls = show;
+        if !show {
+            audio.voice_enabled = false;
+        }
+    }
+    match (request.model, request.enabled) {
+        (Some(model), Some(enabled)) => {
+            let valid = state
+                .config
+                .audio
+                .voice_models_dir
+                .as_ref()
+                .is_some_and(|dir| crate::voice::model_path(dir, &model).is_ok());
+            if !valid {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error":"Model is not installed"})),
+                )
+                    .into_response();
+            }
+            if enabled {
+                audio.voice_disabled_models.remove(&model);
+            } else {
+                audio.voice_disabled_models.insert(model.clone());
+                if audio.voice_model == model {
+                    audio.voice_enabled = false;
+                }
+            }
+        }
+        (None, None) => {}
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":"Model and enabled must be provided together"})),
+            )
+                .into_response();
+        }
+    }
+    if let Err(error) = save_voice_library(&state, audio).await {
+        return user_settings_error(error);
+    }
+    voice_models(State(state.clone())).await
+}
+
+async fn delete_voice_model(
+    State(state): State<ApiState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> Response {
+    let _guard = state.audio_settings_control.lock().await;
+    let Some(directory) = &state.config.audio.voice_models_dir else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if crate::voice::model_path(directory, &name).is_err() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let mut audio = crate::settings::AudioSettings::from_state(&state.runtime.state().await);
+    audio.voice_disabled_models.insert(name.clone());
+    if audio.voice_model == name {
+        audio.voice_enabled = false;
+    }
+    if let Err(error) = save_voice_library(&state, audio).await {
+        return user_settings_error(error);
+    }
+    // Retain a recoverable local copy outside the selectable library.
+    let trash = directory.join(".trash");
+    let result = std::fs::create_dir_all(&trash).and_then(|()| {
+        std::fs::rename(
+            directory.join(&name),
+            trash.join(format!("{:032x}-{name}", rand::random::<u128>())),
+        )
+    });
+    if let Err(error) = result {
+        return command_error(error.into());
+    }
+    voice_models(State(state.clone())).await
 }
 
 #[derive(Deserialize)]
@@ -4313,12 +4454,19 @@ async fn upload_voice_model(
         )
             .into_response();
     };
+    let _guard = state.audio_settings_control.lock().await;
+    let name = query.name.clone();
     let result = tokio::task::spawn_blocking(move || {
         crate::voice::install_model(&directory, &query.name, &bytes)
     })
     .await;
     match result {
-        Ok(Ok(())) => voice_models(State(state)).await,
+        Ok(Ok(())) => {
+            let mut audio = crate::settings::AudioSettings::from_state(&state.runtime.state().await);
+            audio.voice_disabled_models.remove(&name);
+            if let Err(error) = save_voice_library(&state, audio).await { return user_settings_error(error); }
+            voice_models(State(state.clone())).await
+        },
         Ok(Err(error)) => (StatusCode::BAD_REQUEST, Json(json!({"error":format!("Could not import model (existing files are not replaced): {error}")}))).into_response(),
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"Model import failed"}))).into_response(),
     }
@@ -5153,6 +5301,131 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(manual.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn voice_library_preferences_delete_and_hide_are_persistent() {
+        let directory = std::env::temp_dir().join(format!(
+            "tarsier-voice-library-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        crate::voice::install_model(&directory, "Trial.pth", b"fixture").unwrap();
+        let mut config = Config::default();
+        config.audio.voice_models_dir = Some(directory.clone());
+        config.audio.voice_worker = vec!["unused-test-worker".into()];
+        let runtime = Runtime::new();
+        runtime
+            .update(|s| {
+                s.audio_voice.model = "Trial.pth".into();
+                s.audio_voice.enabled = true;
+                s.audio_virtual.muted = true;
+            })
+            .await;
+        let settings_path = directory.join("settings.json");
+        let defaults = UserSettings::from_config(&config);
+        let (settings, _) = UserSettingsStore::load(settings_path.clone(), defaults.clone())
+            .await
+            .unwrap();
+        let (_stop, shutdown) = watch::channel(false);
+        let app = router_with_controls(
+            config,
+            runtime.clone(),
+            PreviewHub::new(),
+            None,
+            ApiOptions {
+                user_settings: Some(settings),
+                ..Default::default()
+            },
+            shutdown,
+        );
+        for body in [
+            json!({"show_controls":false}),
+            json!({"show_controls":true}),
+            json!({"model":"Trial.pth","enabled":false}),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post("/api/v1/settings/voice")
+                        .header("content-type", "application/json")
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert!(!runtime.state().await.audio_voice.enabled);
+            assert!(runtime.state().await.audio_virtual.muted);
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post("/api/v1/audio/voice")
+                        .header("content-type", "application/json")
+                        .body(Body::from(r#"{"enabled":true,"pitch":0}"#))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            if body == json!({"show_controls":true}) {
+                assert_eq!(response.status(), StatusCode::OK);
+            } else {
+                assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            }
+        }
+        let (_, restored) = UserSettingsStore::load(settings_path.clone(), defaults.clone())
+            .await
+            .unwrap();
+        assert!(restored.audio.voice_disabled_models.contains("Trial.pth"));
+        assert!(!restored.audio.voice_enabled);
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/settings/voice")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"model":"Trial.pth","enabled":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!runtime.state().await.audio_voice.enabled);
+        runtime.update(|s| s.audio_voice.enabled = true).await;
+        let generation = runtime.state().await.audio_voice.generation;
+        let response = app
+            .clone()
+            .oneshot(
+                Request::delete("/api/v1/audio/voice/models/Trial.pth")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!runtime.state().await.audio_voice.enabled);
+        assert!(runtime.state().await.audio_voice.generation > generation);
+        assert!(!directory.join("Trial.pth").exists());
+        assert_eq!(
+            std::fs::read_dir(directory.join(".trash")).unwrap().count(),
+            1
+        );
+        assert!(crate::voice::models(&directory).unwrap().is_empty());
+        let response = app
+            .oneshot(
+                Request::post("/api/v1/settings/voice")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"show_controls":false}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let (_, restored) = UserSettingsStore::load(settings_path, defaults)
+            .await
+            .unwrap();
+        assert!(!restored.audio.voice_show_controls);
+        assert!(!restored.audio.voice_enabled);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[tokio::test]

@@ -553,40 +553,19 @@ window.addEventListener('pagehide', () => {
 
 let voiceState = {};
 let voicePending = false;
-let voiceImportPending = false;
+let voiceLibraryRevision = null;
+let voiceModelsPending = false;
 const voiceModel = document.querySelector('#voice-model');
-const voiceImport = document.querySelector('#voice-import');
-const voiceFile = document.querySelector('#voice-model-file');
 const voiceImportStatus = document.querySelector('#voice-import-status');
 async function refreshVoiceModels() {
   const response = await fetch('/api/v1/audio/voice/models');
   const body = await response.json();
   if (!response.ok) throw new Error(body.error || 'Could not list voice models');
   document.querySelector('#voice-model-controls').hidden = !body.available;
-  voiceModel.replaceChildren(...body.models.map(model => new Option(model.name, model.id)));
+  voiceModel.replaceChildren(new Option('Choose a voice', ''), ...body.models.filter(model => model.enabled !== false).map(model => new Option(model.name, model.id)));
+  voiceModel.options[0].disabled = true;
   renderVoice();
 }
-voiceImport.onclick = () => voiceFile.click();
-voiceFile.onchange = async () => {
-  const file = voiceFile.files[0];
-  if (!file) return;
-  if (!file.name.endsWith('.pth') || !file.size || file.size > 128 * 1024 * 1024) {
-    voiceImportStatus.textContent = 'Choose a nonempty RVC .pth file up to 128 MiB.';
-    voiceFile.value = ''; return;
-  }
-  voiceImportPending = true; renderVoice();
-  voiceImportStatus.textContent = 'Importing model…';
-  try {
-    const response = await fetch(`/api/v1/audio/voice/models?name=${encodeURIComponent(file.name)}`, {
-      method: 'POST', headers: {'Content-Type':'application/octet-stream'}, body: file,
-    });
-    const body = await response.json();
-    if (!response.ok) throw new Error(body.error || 'Could not import model');
-    await refreshVoiceModels();
-    voiceImportStatus.textContent = 'Imported. Select the model to load it; compatibility is checked when loading.';
-  } catch (error) { voiceImportStatus.textContent = error.message; }
-  finally { voiceImportPending = false; voiceFile.value = ''; renderVoice(); }
-};
 const voiceFold = document.querySelector('#voice-fold');
 voiceFold.prepend(createElement(ChevronDown, { width: 18, height: 18, 'aria-hidden': 'true', focusable: 'false' }));
 function foldVoice(folded) {
@@ -602,13 +581,18 @@ const voicePitch = document.querySelector('#voice-pitch');
 const voiceStatus = document.querySelector('#voice-status');
 document.querySelector('#voice-conversion').hidden = !audioConfig.audio.voice_worker?.length;
 function renderVoice() {
+  document.querySelector('#voice-conversion').hidden = !audioConfig.audio.voice_worker?.length || voiceState.show_controls === false;
+  if (voiceLibraryRevision !== (voiceState.library_revision ?? 0) && !voiceModelsPending) {
+    voiceLibraryRevision = voiceState.library_revision ?? 0;
+    voiceModelsPending = true;
+    refreshVoiceModels().catch(error => { voiceImportStatus.textContent = error.message; }).finally(() => { voiceModelsPending = false; });
+  }
   voiceToggle.textContent = voiceState.enabled ? 'On' : 'Off';
   voiceToggle.setAttribute('aria-pressed', String(!!voiceState.enabled));
-  voiceToggle.disabled = voicePending;
+  voiceToggle.disabled = voicePending || (!voiceState.enabled && ![...voiceModel.options].some(option => option.value && option.value === voiceState.model));
   voicePitch.disabled = voicePending;
-  voiceModel.disabled = voicePending || voiceImportPending;
-  voiceImport.disabled = voiceImportPending;
-  voiceModel.value = voiceState.model || 'FrenchWoman.pth';
+  voiceModel.disabled = voicePending;
+  voiceModel.value = [...voiceModel.options].some(option => option.value === voiceState.model) ? voiceState.model : '';
   const credit = document.querySelector('#voice-model-credit');
   const credits = {
     'FrenchWoman.pth': ['French Woman — DantSu', 'https://github.com/DantSu/RVC-french-woman-model'],
@@ -644,4 +628,4 @@ voicePitch.oninput = () => { document.querySelector('#voice-pitch-value').textCo
 voicePitch.onchange = () => updateVoice(!!voiceState.enabled, Number(voicePitch.value));
 
 voiceModel.onchange = () => updateVoice(!!voiceState.enabled, Number(voicePitch.value), voiceModel.value);
-if (audioConfig.audio.voice_worker?.length) refreshVoiceModels().catch(error => { voiceImportStatus.textContent = error.message; });
+renderVoice();
