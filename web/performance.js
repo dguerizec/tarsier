@@ -23,6 +23,23 @@ export function graphPoints(values, width = 300, height = 36) {
   }).filter(Boolean).join(' ');
 }
 
+// Keep row order and reuse inactive slots when short-lived helpers restart.
+export function mergeProcessRows(previous, current) {
+  const remaining = new Set(current);
+  const rows = previous.map(old => {
+    const process = current.find(item => remaining.has(item) && item.pid === old.pid && item.name === old.name && item.role === old.role);
+    if (process) { remaining.delete(process); return { ...process, active: true }; }
+    return { ...old, active: false, cpu_percent: null, rss_bytes: null };
+  });
+  for (const process of remaining) {
+    const slot = rows.findIndex(row => !row.active && row.name === process.name && row.role === process.role);
+    const next = { ...process, active: true };
+    if (slot === -1) rows.push(next);
+    else rows[slot] = next;
+  }
+  return rows;
+}
+
 export function installPerformancePanel() {
   const toggle = document.querySelector('#performance-toggle');
   if (!toggle) return;
@@ -48,7 +65,7 @@ export function installPerformancePanel() {
       </div>
       <svg class="performance-chart" viewBox="0 0 300 36" role="img" aria-label="Recent Tarsier CPU usage"><polyline fill="none" stroke="currentColor" stroke-width="2" /></svg>
       <p class="performance-note">CPU: 100% = one core. <span data-metric="cores"></span> Memory sums process RSS; shared pages can be counted twice.</p>
-      <table class="performance-processes"><caption>Daemon and current child processes</caption><thead><tr><th>Process</th><th>CPU</th><th>Memory</th></tr></thead><tbody></tbody></table>
+      <table class="performance-processes"><caption>Processes · inactive rows retained</caption><thead><tr><th>Process</th><th>CPU</th><th>Memory</th></tr></thead><tbody></tbody></table>
       <div class="performance-gpus"></div>
       <dl class="performance-latencies"><div><dt>Perception inference</dt><dd data-metric="perception">—</dd></div><div><dt>Last voice inference / pipeline</dt><dd data-metric="voice">—</dd></div></dl>
       <p class="performance-note">Browser CPU is excluded from Tarsier totals. Machine CPU includes all applications. GPU metrics cover the entire device. Tarsier GPU attribution is not yet collected.</p>
@@ -64,6 +81,7 @@ export function installPerformancePanel() {
   let lastSample = null;
   let lastAdvance = Date.now();
   let history = [];
+  let processRows = [];
   function persist() {
     try { localStorage.setItem(key, JSON.stringify({ ...position, visible })); } catch { /* Keep controls usable without storage. */ }
   }
@@ -101,9 +119,12 @@ export function installPerformancePanel() {
     metric('perception', data.perception_age_ms == null || data.perception_age_ms > 5000 ? 'No recent sample' : formatMs(data.perception_latency_ms));
     metric('voice', `${formatMs(data.voice_inference_ms)} / ${formatMs(data.voice_pipeline_ms)}`);
     panel.querySelector('polyline').setAttribute('points', graphPoints(history));
-    const rows = (resources.processes || []).map(process => {
+    processRows = mergeProcessRows(processRows, resources.processes || []);
+    const rows = processRows.map(process => {
       const row = document.createElement('tr');
-      for (const text of [`${process.role} · ${process.name} (${process.pid})`, formatPercent(process.cpu_percent), formatBytes(process.rss_bytes)]) {
+      row.className = process.active ? '' : 'performance-process-inactive';
+      row.title = `${process.role} · ${process.name} (${process.pid})${process.active ? '' : ' · Not present in the latest sample'}`;
+      for (const text of [`${process.role} · ${process.name} (${process.pid})`, process.active ? formatPercent(process.cpu_percent) : 'Inactive', formatBytes(process.rss_bytes)]) {
         const cell = document.createElement('td'); cell.textContent = text; row.append(cell);
       }
       return row;

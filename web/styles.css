@@ -496,3 +496,9 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .performance-latencies { margin: 14px 0 0; }
 .performance-latencies div { display: flex; justify-content: space-between; gap: 8px; margin-top: 5px; }
 .performance-latencies dd { margin: 0; font-variant-numeric: tabular-nums; }
+
+.performance-processes { table-layout: fixed; }
+.performance-processes th:nth-child(2) { width: 65px; }
+.performance-processes th:nth-child(3) { width: 70px; }
+.performance-processes td:first-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.performance-processes .performance-process-inactive { color: #8492a5; }

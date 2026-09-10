@@ -71,3 +71,31 @@ test('panel hides without polling, persists drag position, and resumes when show
     for (const [key, descriptor] of savedGlobals) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete globalThis[key]; }
   }
 });
+
+test('departed helpers stay gray-ready with cleared readings and stable ordering', async () => {
+  const { mergeProcessRows } = await import('./performance.js');
+  const daemon = { pid: 1, name: 'tarsier', role: 'Daemon', cpu_percent: 80, rss_bytes: 100 };
+  const helper = { pid: 2, name: 'pw-dump', role: 'Worker', cpu_percent: 10, rss_bytes: 50 };
+  let rows = mergeProcessRows([], [daemon, helper]);
+  rows = mergeProcessRows(rows, [daemon]);
+  assert.deepEqual(rows.map(row => row.pid), [1, 2]);
+  assert.equal(rows[1].active, false);
+  assert.equal(rows[1].cpu_percent, null);
+  assert.equal(rows[1].rss_bytes, null);
+  for (let pid = 3; pid < 20; pid++) {
+    rows = mergeProcessRows(rows, [{ ...helper, pid }, daemon]);
+    assert.deepEqual(rows.map(row => row.pid), [1, pid]);
+    assert.equal(rows[1].active, true);
+    rows = mergeProcessRows(rows, [daemon]);
+  }
+  assert.equal(rows.length, 2);
+});
+
+test('concurrent helpers retain distinct rows and exact PID matches take precedence', async () => {
+  const { mergeProcessRows } = await import('./performance.js');
+  const helper = { name: 'pw-dump', role: 'Worker', cpu_percent: 5, rss_bytes: 50 };
+  let rows = mergeProcessRows([], [{ ...helper, pid: 1 }, { ...helper, pid: 2 }]);
+  rows = mergeProcessRows(rows, [{ ...helper, pid: 3 }, { ...helper, pid: 2 }]);
+  assert.deepEqual(rows.map(row => row.pid), [3, 2]);
+  assert.ok(rows.every(row => row.active));
+});

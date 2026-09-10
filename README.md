@@ -171,7 +171,11 @@ a manual restart still finds the device after USB re-enumeration.
 The **Performance** button in the main UI shows or hides a floating resource
 panel. Drag its title to move it, or focus the title and use arrow keys
 (Shift for larger steps, Home to reset). Escape hides it. Visibility and position
-are saved locally in the browser; the panel stays within the viewport on resize.
+are saved locally in the browser; the panel stays within the viewport on resize. Process rows
+stay in their original order. Missing processes remain gray and show `Inactive`,
+with their old measurements cleared. A restarted helper reuses an inactive row
+with the same name and role, so recurring commands such as `pw-dump` do not grow
+the list indefinitely. This row history lasts until the page is reloaded.
 
 The daemon samples its process and current descendants every two seconds. The
 panel displays their CPU, summed RSS memory, per-process breakdown, machine CPU,
