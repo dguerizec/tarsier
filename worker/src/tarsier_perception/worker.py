@@ -19,6 +19,7 @@ import numpy as np
 
 from .auth import authorize
 from .avatar import AvatarInputFrame, AvatarProcessor
+from .delegates import DEFAULT_DELEGATES, Delegates, base_options
 from .depth import DepthInputFrame, DepthProcessor
 from .telemetry import stages, timed
 
@@ -153,13 +154,14 @@ class PoseConstraintStore:
 
 
 class MediaPipeDetector:
-    def __init__(self, model_dir: Path, minimum_confidence: float) -> None:
+    def __init__(
+        self, model_dir: Path, minimum_confidence: float, delegates: Delegates = DEFAULT_DELEGATES
+    ) -> None:
         vision = mp.tasks.vision
-        base_options = mp.tasks.BaseOptions
         self._gesture = vision.GestureRecognizer.create_from_options(
             vision.GestureRecognizerOptions(
                 base_options=base_options(
-                    model_asset_path=str(model_dir / "gesture_recognizer.task")
+                    model_dir / "gesture_recognizer.task", delegates.hands
                 ),
                 running_mode=vision.RunningMode.VIDEO,
                 num_hands=2,
@@ -173,7 +175,7 @@ class MediaPipeDetector:
         )
         self._face = vision.FaceLandmarker.create_from_options(
             vision.FaceLandmarkerOptions(
-                base_options=base_options(model_asset_path=str(model_dir / "face_landmarker.task")),
+                base_options=base_options(model_dir / "face_landmarker.task", delegates.face),
                 running_mode=vision.RunningMode.VIDEO,
                 num_faces=1,
                 min_face_detection_confidence=minimum_confidence,
@@ -184,7 +186,7 @@ class MediaPipeDetector:
         self._pose = vision.PoseLandmarker.create_from_options(
             vision.PoseLandmarkerOptions(
                 base_options=base_options(
-                    model_asset_path=str(model_dir / "pose_landmarker_lite.task")
+                    model_dir / "pose_landmarker_lite.task", delegates.pose
                 ),
                 running_mode=vision.RunningMode.VIDEO,
                 num_poses=1,
@@ -241,13 +243,13 @@ class MediaPipeDetector:
 
 
 class MediaPipeSegmenter:
-    def __init__(self, model_dir: Path, pose_constraints: PoseConstraintStore) -> None:
+    def __init__(
+        self, model_dir: Path, pose_constraints: PoseConstraintStore, delegate: str = "cpu"
+    ) -> None:
         vision = mp.tasks.vision
         self._segmenter = vision.ImageSegmenter.create_from_options(
             vision.ImageSegmenterOptions(
-                base_options=mp.tasks.BaseOptions(
-                    model_asset_path=str(model_dir / "selfie_segmenter.tflite")
-                ),
+                base_options=base_options(model_dir / "selfie_segmenter.tflite", delegate),
                 running_mode=vision.RunningMode.VIDEO,
                 output_confidence_masks=True,
                 output_category_mask=False,
@@ -351,9 +353,11 @@ class ObservationProcessor:
         model_dir: Path,
         minimum_confidence: float,
         pose_constraints: PoseConstraintStore,
+        delegates: Delegates = DEFAULT_DELEGATES,
     ) -> None:
         self._daemon_url = daemon_url
         self._model_dir = model_dir
+        self._delegates = delegates
         self._minimum_confidence = minimum_confidence
         self._pose_constraints = pose_constraints
         self._frames: queue.Queue[DetectionFrame | None] = queue.Queue(maxsize=1)
@@ -401,7 +405,9 @@ class ObservationProcessor:
     def _run(self) -> None:
         try:
             publisher = ObservationPublisher(self._daemon_url)
-            with MediaPipeDetector(self._model_dir, self._minimum_confidence) as detector:
+            with MediaPipeDetector(
+                self._model_dir, self._minimum_confidence, self._delegates
+            ) as detector:
                 while (frame := self._frames.get()) is not None:
                     inference_started = time.perf_counter()
                     (
@@ -543,6 +549,7 @@ def run_worker(
     daemon_url: str,
     model_dir: Path,
     minimum_confidence: float,
+    delegates: Delegates = DEFAULT_DELEGATES,
     avatar_engine: str | None = None,
     avatar_source: Path | None = None,
     portrait_model: Path | None = None,
@@ -554,6 +561,7 @@ def run_worker(
     depth_fps: float = 30.0,
     depth_input_height: int = 252,
 ) -> None:
+    LOGGER.info("Requested MediaPipe delegates: %s", asdict(delegates))
     publisher = ObservationPublisher(daemon_url)
     pose_constraints = PoseConstraintStore()
     observation_interval = 1.0 / fps
@@ -573,13 +581,16 @@ def run_worker(
     previous_refined_masks_published = 0
     with ExitStack() as stack:
         stack.enter_context(stages.publishing(daemon_url))
-        segmenter = stack.enter_context(MediaPipeSegmenter(model_dir, pose_constraints))
+        segmenter = stack.enter_context(
+            MediaPipeSegmenter(model_dir, pose_constraints, delegates.segmentation)
+        )
         observation_processor = stack.enter_context(
             ObservationProcessor(
                 daemon_url,
                 model_dir,
                 minimum_confidence,
                 pose_constraints,
+                delegates,
             )
         )
         avatar_processor = (
@@ -593,6 +604,7 @@ def run_worker(
                     avatar_height,
                     compile_models=avatar_compile,
                     portrait_model=portrait_model,
+                    face_delegate=delegates.avatar_face,
                 )
             )
             if avatar_engine is not None

@@ -289,6 +289,15 @@ fn worker_arguments(
         "--minimum-confidence".into(),
         config.detection_confidence.to_string(),
     ]);
+    for (model, delegate) in [
+        ("face", config.delegates.face),
+        ("hands", config.delegates.hands),
+        ("pose", config.delegates.pose),
+        ("segmentation", config.delegates.segmentation),
+        ("avatar-face", config.delegates.avatar_face),
+    ] {
+        arguments.extend([format!("--{model}-delegate"), delegate.as_str().into()]);
+    }
     if config.source == PerceptionSource::Device {
         arguments.push("--source".into());
         arguments.push(config.device.clone());
@@ -419,6 +428,29 @@ mod tests {
         assert_eq!(state.perception.error, None);
         let events = runtime.recent_events().await;
         assert_eq!(events.last().unwrap().kind, "perception.worker.paused");
+    }
+
+    #[test]
+    fn worker_command_passes_each_mediapipe_delegate() {
+        let mut config = PerceptionConfig::default();
+        config.delegates.hands = crate::config::MediaPipeDelegate::Gpu;
+        config.delegates.avatar_face = crate::config::MediaPipeDelegate::Gpu;
+        let args = worker_arguments(
+            &config,
+            &AvatarConfig::default(),
+            &DepthConfig::default(),
+            &VideoConfig::default(),
+            "http://127.0.0.1:8742",
+        );
+        for (flag, value) in [
+            ("--face-delegate", "cpu"),
+            ("--hands-delegate", "gpu"),
+            ("--pose-delegate", "cpu"),
+            ("--segmentation-delegate", "cpu"),
+            ("--avatar-face-delegate", "gpu"),
+        ] {
+            assert!(args.windows(2).any(|pair| pair == [flag, value]));
+        }
     }
 
     #[test]

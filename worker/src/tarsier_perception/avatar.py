@@ -19,6 +19,7 @@ import mediapipe as mp
 import numpy as np
 
 from .auth import authorize
+from .delegates import base_options
 from .telemetry import stages, timed
 
 LOGGER = logging.getLogger(__name__)
@@ -135,13 +136,11 @@ def compose_avatar_frame(
 
 
 class MediaPipeFaceCropper:
-    def __init__(self, model_dir: Path) -> None:
+    def __init__(self, model_dir: Path, delegate: str = "cpu") -> None:
         vision = mp.tasks.vision
         self._landmarker = vision.FaceLandmarker.create_from_options(
             vision.FaceLandmarkerOptions(
-                base_options=mp.tasks.BaseOptions(
-                    model_asset_path=str(model_dir / "face_landmarker.task")
-                ),
+                base_options=base_options(model_dir / "face_landmarker.task", delegate),
                 running_mode=vision.RunningMode.VIDEO,
                 num_faces=1,
                 min_face_detection_confidence=0.5,
@@ -176,13 +175,11 @@ class MediaPipeFaceCropper:
 
 
 class MediaPipeAvatarTracker:
-    def __init__(self, model_dir: Path) -> None:
+    def __init__(self, model_dir: Path, delegate: str = "cpu") -> None:
         vision = mp.tasks.vision
         self._landmarker = vision.FaceLandmarker.create_from_options(
             vision.FaceLandmarkerOptions(
-                base_options=mp.tasks.BaseOptions(
-                    model_asset_path=str(model_dir / "face_landmarker.task")
-                ),
+                base_options=base_options(model_dir / "face_landmarker.task", delegate),
                 running_mode=vision.RunningMode.VIDEO,
                 num_faces=1,
                 min_face_detection_confidence=0.5,
@@ -357,11 +354,13 @@ class AvatarProcessor:
         *,
         compile_models: bool,
         portrait_model: Path | None = None,
+        face_delegate: str = "cpu",
     ) -> None:
         self._daemon_url = daemon_url
         self._model_dir = model_dir
         self._engine = engine
         self._source_image = source_image
+        self._face_delegate = face_delegate
         self._portrait_model = portrait_model
         self._width = width
         self._height = height
@@ -489,7 +488,7 @@ class AvatarProcessor:
             from .portrait3d import Portrait3DAvatarEngine
 
             tracker = resources.enter_context(
-                MediaPipeAvatarTracker(self._model_dir)
+                MediaPipeAvatarTracker(self._model_dir, self._face_delegate)
             )
             engine = resources.enter_context(
                 Portrait3DAvatarEngine(self._portrait_model, self._width, self._height)
@@ -513,7 +512,9 @@ class AvatarProcessor:
         engine = resources.enter_context(
             ComicAvatarEngine(source_image, self._model_dir, compile_models=self._compile_models)
         )
-        cropper = resources.enter_context(MediaPipeFaceCropper(self._model_dir))
+        cropper = resources.enter_context(
+            MediaPipeFaceCropper(self._model_dir, self._face_delegate)
+        )
         assert self._portrait_identity is not None
         switcher = resources.enter_context(PortraitSwitcher(
             revision, engine.source, engine.prepare_source, engine.render,

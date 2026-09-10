@@ -1490,3 +1490,6 @@ Turning off **Show voice conversion on the main page** also stops conversion.
 Showing the controls again leaves conversion off. These preferences persist across
 restarts and apply to already-open preview pages without reloading. Imports remain
 limited to 128 MiB; model compatibility is checked when the worker loads a voice.
+
+MediaPipe CPU/GPU selection per task and comparison guidance are documented in
+[MediaPipe delegates](docs/mediapipe-delegates.md).

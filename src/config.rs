@@ -340,9 +340,37 @@ pub enum CameraAdapter {
     Disabled,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum MediaPipeDelegate {
+    #[default]
+    Cpu,
+    Gpu,
+}
+
+impl MediaPipeDelegate {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cpu => "cpu",
+            Self::Gpu => "gpu",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MediaPipeDelegates {
+    pub face: MediaPipeDelegate,
+    pub hands: MediaPipeDelegate,
+    pub pose: MediaPipeDelegate,
+    pub segmentation: MediaPipeDelegate,
+    pub avatar_face: MediaPipeDelegate,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct PerceptionConfig {
+    pub delegates: MediaPipeDelegates,
     pub phone_near_mouth: crate::phone_gesture::PhoneGestureConfig,
     pub enabled: bool,
     pub supervise_worker: bool,
@@ -366,6 +394,7 @@ pub struct PerceptionConfig {
 impl Default for PerceptionConfig {
     fn default() -> Self {
         Self {
+            delegates: MediaPipeDelegates::default(),
             phone_near_mouth: crate::phone_gesture::PhoneGestureConfig::default(),
             enabled: true,
             supervise_worker: true,
@@ -438,6 +467,27 @@ impl Default for ScenarioConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mediapipe_delegates_are_opt_in_and_strict() {
+        let config: Config =
+            toml::from_str("[perception.delegates]\nface = 'gpu'\npose = 'gpu'").unwrap();
+        assert_eq!(config.perception.delegates.face, MediaPipeDelegate::Gpu);
+        assert_eq!(config.perception.delegates.pose, MediaPipeDelegate::Gpu);
+        assert_eq!(config.perception.delegates.hands, MediaPipeDelegate::Cpu);
+        assert_eq!(
+            config.perception.delegates.segmentation,
+            MediaPipeDelegate::Cpu
+        );
+        assert_eq!(
+            config.perception.delegates.avatar_face,
+            MediaPipeDelegate::Cpu
+        );
+        assert!(toml::from_str::<Config>("[perception.delegates]\nface = 'cuda'").is_err());
+        assert!(toml::from_str::<Config>("[perception.delegates]\nfcae = 'gpu'").is_err());
+        let restored: Config = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+        assert_eq!(restored.perception.delegates.face, MediaPipeDelegate::Gpu);
+    }
 
     #[test]
     fn removed_avatar_engine_and_identity_are_rejected() {

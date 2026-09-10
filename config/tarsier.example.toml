@@ -47,6 +47,15 @@ cooldown_ms = 3000
 face_dwell_ms = 300
 face_release_ms = 500
 
+# Restart the daemon after changing delegates. GPU requires a working MediaPipe
+# GPU context; Tarsier does not silently retry on CPU. See docs/mediapipe-delegates.md.
+[perception.delegates]
+face = "cpu"
+hands = "cpu"
+pose = "cpu"
+segmentation = "cpu"
+avatar_face = "cpu"
+
 [perception.phone_near_mouth]
 enabled = true
 dwell_ms = 300

@@ -5,6 +5,7 @@ import json
 import logging
 from pathlib import Path
 
+from .delegates import Delegates
 from .models import default_model_dir, describe_models, download_models
 from .worker import run_mock, run_worker
 
@@ -28,6 +29,8 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--height", type=int, default=360)
     serve.add_argument("--fps", type=float, default=10.0)
     serve.add_argument("--mask-fps", type=float, default=30.0)
+    for model in ("face", "hands", "pose", "segmentation", "avatar-face"):
+        serve.add_argument(f"--{model}-delegate", choices=("cpu", "gpu"), default="cpu")
     serve.add_argument("--minimum-confidence", type=float, default=0.5)
     serve.add_argument("--model-dir", type=Path, default=default_model_dir())
     serve.add_argument("--avatar-engine", choices=("portrait3d", "liveportrait"))
@@ -120,6 +123,13 @@ def main() -> None:
             daemon_url=args.daemon_url,
             model_dir=args.model_dir,
             minimum_confidence=args.minimum_confidence,
+            delegates=Delegates(
+                face=args.face_delegate,
+                hands=args.hands_delegate,
+                pose=args.pose_delegate,
+                segmentation=args.segmentation_delegate,
+                avatar_face=args.avatar_face_delegate,
+            ),
             avatar_engine=args.avatar_engine,
             avatar_source=args.avatar_source,
             portrait_model=args.portrait_model,
