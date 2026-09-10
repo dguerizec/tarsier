@@ -13,13 +13,13 @@ flowchart TB
     SOURCE["Camera / video file / synthetic source"]
     subgraph DAEMON["Process: tarsier — Rust + in-process GStreamer"]
         CAP["Decode / normalize input"]
-        JPEG["Resize + encode perception JPEG"]
+        JPEG["Resize + shared frame publication (MJPEG optional)"]
         FX["Select identity + composite effects"]
         OUT["Preview / photo / recording / virtual camera"]
         OBS["Observation consumers: tracking, events, scenarios, API"]
     end
     subgraph WORKER["Process: tarsier-percept — Python, launched through uv"]
-        DEC["Decode incoming JPEG"]
+        DEC["Copy shared pixels (or decode MJPEG)"]
         DET["Observation thread: face + hands/gestures + pose • target 10/s"]
         SEG["Main thread: selfie segmentation • target 30/s when needed"]
         MASK["Constrain selfie mask with pose mask"]
@@ -29,7 +29,7 @@ flowchart TB
     SOURCE --> CAP
     CAP --> JPEG
     CAP --> FX
-    JPEG -->|"HTTP MJPEG"| DEC
+    JPEG -->|"Local shared buffer by default"| DEC
     DEC --> DET
     DEC --> SEG
     DET -->|"pose mask, shared memory"| MASK
@@ -109,7 +109,7 @@ observation consumers are not requesting extra work.
 | Depth estimation | Not needed | Mask refinement, when configured | Required | Not needed | Already conditional |
 | Depth mask refinement | Not needed | When depth is configured | Not needed | Not needed | Already conditional |
 | Avatar face + renderer | Not needed | Not needed | Not needed | Selected engine only | Already conditional |
-| Perception JPEG transport/decode | Only for other consumers | Required | Required | Required | Present in the current video pipeline |
+| Perception frame transport/copy | Only for other consumers | Required | Required | Required | Present in the current video pipeline |
 
 Selfie segmentation polls the existing identity endpoint no more than four times
 per second while frames arrive.
@@ -163,3 +163,7 @@ These are proposed optimization rules, not existing behavior.
 
 Measured costs and the private replay data are linked from
 [Perception testing](perception-testing.md).
+
+The default local frame transport now uses a shared buffer; see
+[Shared-frame transport](shared-frame-transport.md) for ownership, synchronization
+and the explicit MJPEG comparison option.

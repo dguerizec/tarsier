@@ -95,7 +95,7 @@ export function sortProcessRows(rows, column, direction = 'desc') {
 }
 
 const WORKER_STAGES = [
-  ['decode', 'Decode / resize'], ['face', 'Face'], ['hands', 'Hands / gestures'],
+  ['decode', 'Decode / resize'], ['input_copy', 'Shared frame copy / resize'], ['face', 'Face'], ['hands', 'Hands / gestures'],
   ['pose', 'Pose'], ['segmentation', 'Person mask'],
   ['observations_publish', 'Send observations'], ['mask_publish', 'Send mask'],
   ['avatar_tracking', 'Avatar tracking'], ['avatar_render', 'Avatar render'],

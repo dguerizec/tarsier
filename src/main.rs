@@ -19,6 +19,7 @@ mod mute_media;
 mod perception;
 mod phone_gesture;
 mod pipeline;
+mod shared_frames;
 mod pipeline_reservation;
 mod recording;
 mod runtime;
@@ -245,7 +246,14 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
         .capture_sources
         .retain(|source| config.audio.allows(source));
     let runtime = Runtime::new();
-    let preview = PreviewHub::new();
+    let mut preview = PreviewHub::new();
+    if config.perception.enabled && config.perception.supervise_worker
+        && config.perception.source == config::PerceptionSource::Preview
+        && config.perception.transport == config::PerceptionTransport::SharedMemory
+    {
+        preview.enable_shared_input(config.perception.width, config.perception.height)?;
+    }
+    let shared_source = preview.shared_source();
     // Never expose capture on startup before a connected client is manually approved.
     if config.video.loopback_enabled {
         user_settings.video_output_muted = true;
@@ -385,6 +393,7 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
         config.server.bind,
         runtime,
         worker_token,
+        shared_source,
     );
     audit::record(
         "daemon.ready",

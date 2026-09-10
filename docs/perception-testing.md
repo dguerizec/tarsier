@@ -131,3 +131,42 @@ Static snapshots were inspected for green, blur, depth and both avatars; this
 is not exhaustive transition-video or browser QA. The initial Camera + Pixel
 Party, remembered LivePortrait engine, delegates, mute and device settings were
 restored, retaining the replay input.
+
+## Shared-frame input transport (2026-09-10)
+
+Implementation and protocol: [Shared-frame transport](shared-frame-transport.md).
+Private evidence is in `local-test-media/shared-frame-transport-20260910/`,
+including `report.md`, JSONL with pipeline context, summaries and run scripts.
+The replay, delegates and segmentation-demand optimization remain fixed. Each
+window has 15 seconds stabilization and 48 seconds sampling (24 valid samples).
+Three MJPEG windows and three final BGR shared-memory windows cover plain video,
+Pixel Party and plain video again. A final MJPEG plain-video control uses the
+same final binary; the first full MJPEG series predates the shared-only change
+from BGRx to direct BGR. The discarded BGRx candidate is archived separately.
+
+| Mode | Total CPU, MJPEG → shared | Worker CPU, MJPEG → shared | Output fps, MJPEG → shared | Input wall ms/frame, decode → copy |
+|---|---:|---:|---:|---:|
+| Plain video | 99.27% → 97.46% | 26.06% → 24.04% | 30.00 → 30.00 | 0.54 → 0.08 |
+| Pixel Party | 269.04% → 263.92% | 164.71% → 160.60% | 23.92 → 23.59 | 0.64 → 0.09 |
+| Plain repeat | 101.29% → 98.25% | 28.08% → 25.75% | 29.97 → 30.00 | 0.54 → 0.07 |
+
+The final MJPEG control measured 98.38% total CPU, 25.44% worker and 30 fps.
+Thus the plain-video CPU difference is small relative to run drift; these
+sequential desktop measurements do not establish a substantial global CPU gain.
+Pixel Party throughput is essentially unchanged. The input-stage wall-time
+reduction is clear, and shared mode reports zero JPEG decode calls. CPU 100% is
+one logical core; stage wall time is not CPU attribution. Raw model inputs also
+avoid an extra lossy JPEG generation, so they are not byte-identical to MJPEG.
+
+No browser or diagnostic MJPEG client was added during the measured windows.
+The raw buffer is 691,264 bytes at 640x360, plus a 691,200-byte private worker
+image; this is bounded shared transport with a copy, not end-to-end zero-copy.
+
+Validation passed: 307 Rust tests (five ignored), 77 Python tests, Ruff and
+35 JavaScript tests. Live checks covered plain camera, Pixel Party, depth-map,
+Personal 3D, LivePortrait and Pixel Party resume, followed by supervised worker
+termination/reconnection to the same daemon buffer. Shared-copy counters remained
+active and JPEG decode counters stayed zero. Snapshots for the four effect modes
+were inspected; this is static output validation, not exhaustive browser/video
+QA. The authenticated diagnostic MJPEG endpoint also returned a JPEG on demand.
+Initial effects were restored and replay remains selected.

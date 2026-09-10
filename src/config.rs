@@ -375,6 +375,7 @@ pub struct MediaPipeDelegates {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct PerceptionConfig {
+    pub transport: PerceptionTransport,
     pub delegates: MediaPipeDelegates,
     pub phone_near_mouth: crate::phone_gesture::PhoneGestureConfig,
     pub enabled: bool,
@@ -399,6 +400,7 @@ pub struct PerceptionConfig {
 impl Default for PerceptionConfig {
     fn default() -> Self {
         Self {
+            transport: PerceptionTransport::default(),
             delegates: MediaPipeDelegates::default(),
             phone_near_mouth: crate::phone_gesture::PhoneGestureConfig::default(),
             enabled: true,
@@ -419,6 +421,20 @@ impl Default for PerceptionConfig {
             face_dwell_ms: 300,
             face_release_ms: 500,
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PerceptionTransport {
+    #[default]
+    SharedMemory,
+    Mjpeg,
+}
+
+impl PerceptionTransport {
+    pub fn as_str(self) -> &'static str {
+        match self { Self::SharedMemory => "shared-memory", Self::Mjpeg => "mjpeg" }
     }
 }
 

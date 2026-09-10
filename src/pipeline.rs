@@ -26,6 +26,7 @@ use crate::{
 
 #[derive(Clone)]
 pub struct PreviewHub {
+    shared_input: Option<Arc<crate::shared_frames::SharedFrames>>,
     output_tx: watch::Sender<Option<Bytes>>,
     perception_tx: watch::Sender<Option<PerceptionFrame>>,
     photo_tx: watch::Sender<Option<CapturedImage>>,
@@ -97,6 +98,7 @@ impl PreviewHub {
         let (output_tx, _) = watch::channel(None);
         let (perception_tx, _) = watch::channel(None);
         Self {
+            shared_input: None,
             photo_tx: watch::channel(None).0,
             snapshot_tx: watch::channel(None).0,
             output_tx,
@@ -107,6 +109,15 @@ impl PreviewHub {
             output_muted: Arc::new(AtomicBool::new(false)),
             replacement: Arc::default(),
         }
+    }
+
+    pub fn enable_shared_input(&mut self, width: u32, height: u32) -> Result<()> {
+        self.shared_input = Some(Arc::new(crate::shared_frames::SharedFrames::new(width, height)?));
+        Ok(())
+    }
+
+    pub fn shared_source(&self) -> Option<String> {
+        self.shared_input.as_ref().map(|input| input.source().to_owned())
     }
 
     pub fn set_replacement(
@@ -188,6 +199,7 @@ impl PreviewHub {
     }
 
     fn clear(&self) {
+        if let Some(input) = &self.shared_input { input.clear(); }
         *self.virtual_frame.lock().unwrap() = None;
         self.photo_tx.send_replace(None);
         self.snapshot_tx.send_replace(None);
@@ -607,7 +619,8 @@ impl ActivePipeline {
         preview: PreviewHub,
         restarted: bool,
     ) -> Result<Self> {
-        let description = pipeline_description(config);
+        let shared_dimensions = preview.shared_input.as_ref().map(|input| input.dimensions());
+        let description = pipeline_description(config, shared_dimensions);
         tracing::debug!(%description, "building GStreamer pipeline");
         let element = gst::parse::launch(&description).context("invalid GStreamer pipeline")?;
         let pipeline = element
@@ -646,6 +659,18 @@ impl ActivePipeline {
 
         let capture_clock = Arc::new(CaptureClock::new(unix_ms(), config.fps));
 
+        // Establish the timestamp origin before leaky queues can deliver the
+        // first frame out of order across the photo/perception/output branches.
+        let source_clock = Arc::clone(&capture_clock);
+        pipeline.by_name("camera_input").context("source tee is missing")?
+            .static_pad("sink").context("source tee sink is missing")?
+            .add_probe(gst::PadProbeType::BUFFER, move |_, info| {
+                if let Some(pts) = info.buffer().and_then(|buffer| buffer.pts()) {
+                    source_clock.frame_id(pts.nseconds());
+                }
+                gst::PadProbeReturn::Ok
+            });
+
         let photo_sink = pipeline
             .by_name("photo")
             .context("photo appsink is missing")?
@@ -678,6 +703,7 @@ impl ActivePipeline {
                 .build(),
         );
 
+        let jpeg_quality = config.preview_quality.min(100) as u8;
         perception_sink.set_callbacks(
             gst_app::AppSinkCallbacks::builder()
                 .new_sample({
@@ -693,11 +719,25 @@ impl ActivePipeline {
                         let frame_id = capture_clock.frame_id(pts_ns);
                         let captured_at_ms = capture_clock.captured_at_ms(pts_ns);
                         let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
-                        preview.publish_perception(PerceptionFrame {
-                            bytes: Bytes::copy_from_slice(map.as_slice()),
-                            frame_id,
-                            captured_at_ms,
-                        });
+                        if let Some(input) = &preview.shared_input {
+                            input.publish(map.as_slice(), frame_id, captured_at_ms, preview.effects().transform().rotation)
+                                .map_err(|error| { tracing::error!(%error, "shared frame publication failed"); gst::FlowError::Error })?;
+                            // Keep the diagnostic MJPEG API, but encode only when subscribed.
+                            if preview.perception_tx.receiver_count() > 0 {
+                                let (width, height) = input.dimensions();
+                                let rgb: Vec<u8> = map.as_slice().chunks_exact(input.stride())
+                                    .flat_map(|row| row[..width as usize * 3].chunks_exact(3).flat_map(|p| [p[2], p[1], p[0]])).collect();
+                                let mut jpeg = Vec::new();
+                                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, jpeg_quality)
+                                    .encode(&rgb, width, height, image::ExtendedColorType::Rgb8)
+                                    .map_err(|_| gst::FlowError::Error)?;
+                                preview.publish_perception(PerceptionFrame { bytes: Bytes::from(jpeg), frame_id, captured_at_ms });
+                            }
+                        } else {
+                            preview.publish_perception(PerceptionFrame {
+                                bytes: Bytes::copy_from_slice(map.as_slice()), frame_id, captured_at_ms,
+                            });
+                        }
                         Ok(gst::FlowSuccess::Ok)
                     }
                 })
@@ -874,7 +914,7 @@ fn validate_path(path: &str) -> Result<()> {
     Ok(())
 }
 
-fn pipeline_description(config: &VideoConfig) -> String {
+fn pipeline_description(config: &VideoConfig, shared_dimensions: Option<(u32, u32)>) -> String {
     let source = match config.source {
         VideoSource::Camera => format!(
             "v4l2src name=physical_camera device=\"{}\" do-timestamp=true ! image/jpeg,width={},height={},framerate={}/1 ! jpegdec ! videoconvert",
@@ -889,10 +929,16 @@ fn pipeline_description(config: &VideoConfig) -> String {
             config.width, config.height, config.fps
         ),
     };
+    let (input_width, input_height) = shared_dimensions.unwrap_or((config.preview_width, config.preview_height));
+    let input_format = if shared_dimensions.is_some() {
+        format!("video/x-raw,width={input_width},height={input_height},format=BGR")
+    } else {
+        format!("video/x-raw,width={input_width},height={input_height} ! jpegenc quality={}", config.preview_quality)
+    };
     let mut branches = format!(
         "{source} ! tee name=camera_input \
          camera_input. ! queue leaky=downstream max-size-buffers=2 ! videoscale ! videoconvert ! \
-         video/x-raw,width={},height={} ! jpegenc quality={} ! \
+         {} ! \
          appsink name=perception_preview max-buffers=1 drop=true sync=false \
          camera_input. ! queue name=effect_alignment leaky=downstream max-size-buffers=3 min-threshold-buffers=2 ! videoconvert ! \
          video/x-raw,format=BGRx,width={},height={},framerate={}/1 ! \
@@ -900,9 +946,7 @@ fn pipeline_description(config: &VideoConfig) -> String {
          stream. ! queue leaky=downstream max-size-buffers=2 ! videoscale ! videoconvert ! \
          video/x-raw,width={},height={} ! jpegenc quality={} ! \
          appsink name=preview max-buffers=1 drop=true sync=false",
-        config.preview_width,
-        config.preview_height,
-        config.preview_quality,
+        input_format,
         config.width,
         config.height,
         config.fps,
@@ -1374,6 +1418,15 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn video_file_loops_in_real_time_without_restarting_or_rewinding_provenance() {
+        assert_file_loop(false).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn shared_file_input_preserves_loop_provenance_and_mjpeg_diagnostics() {
+        assert_file_loop(true).await;
+    }
+
+    async fn assert_file_loop(shared: bool) {
         gst::init().unwrap();
         let directory = std::env::temp_dir().join(format!("tarsier-video-input-{:032x}", rand::random::<u128>()));
         std::fs::create_dir_all(&directory).unwrap();
@@ -1386,7 +1439,8 @@ mod tests {
         assert!(matches!(message.view(), gst::MessageView::Eos(_)), "{message:?}");
         let config = VideoConfig { source: VideoSource::File, input_device: reqwest::Url::from_file_path(&fixture).unwrap().into(), loopback_enabled: false, width:64, height:48, preview_width:64, preview_height:48, fps:10, ..VideoConfig::default() };
         let runtime = Runtime::new();
-        let preview = PreviewHub::new();
+        let mut preview = PreviewHub::new();
+        if shared { preview.enable_shared_input(64, 48).unwrap(); }
         let mut frames = preview.subscribe_perception();
         let pipeline = VideoPipeline::start(config.clone(), runtime.clone(), preview.clone()).await.unwrap();
         let control = pipeline.control();
@@ -1396,7 +1450,7 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(2), frames.changed()).await.unwrap().unwrap();
             let frame = frames.borrow_and_update().clone();
             let Some(frame) = frame else { panic!("file pipeline cleared frames: {:?}", runtime.state().await.pipeline); };
-            assert!(frame.frame_id > last_id, "frame IDs must advance across EOF");
+            assert!(frame.frame_id > last_id, "frame IDs must advance across EOF: {} after {}", frame.frame_id, last_id);
             assert!(frame.captured_at_ms >= last_at, "capture timestamps must not rewind");
             assert!(unix_ms().abs_diff(frame.captured_at_ms) < 1000, "file frames must stay fresh");
             last_id = frame.frame_id; last_at = frame.captured_at_ms; count += 1;
@@ -1407,6 +1461,18 @@ mod tests {
         assert_eq!(state.pipeline.restart_count, 0);
         assert_eq!(control.camera_source(), config.input_device);
         assert!(preview.latest().is_some());
+        if let Some(source) = preview.shared_source() {
+            use std::os::unix::fs::FileExt;
+            let path = source.strip_prefix("shm://").unwrap().split('#').next().unwrap();
+            let file = std::fs::File::open(path).unwrap();
+            let mut header = [0u8; 64];
+            fs2::FileExt::lock_shared(&file).unwrap();
+            file.read_exact_at(&mut header, 0).unwrap();
+            fs2::FileExt::unlock(&file).unwrap();
+            assert_eq!(&header[..8], b"TARSFRM1");
+            assert!(u64::from_le_bytes(header[32..40].try_into().unwrap()) >= last_id);
+            assert!(preview.subscribe_perception().borrow().as_ref().unwrap().bytes.starts_with(&[0xff, 0xd8]));
+        }
         control.set_enabled(false).await.unwrap();
         control.select_source("").await.unwrap();
         control.set_enabled(true).await.unwrap();
@@ -1777,7 +1843,7 @@ mod tests {
             loopback_enabled: false,
             ..VideoConfig::default()
         };
-        let description = pipeline_description(&config);
+        let description = pipeline_description(&config, None);
         assert!(description.contains("videotestsrc"));
         assert!(description.contains("appsink name=perception_preview"));
         assert!(description.contains("name=effect_alignment"));
@@ -1788,8 +1854,19 @@ mod tests {
     }
 
     #[test]
+    fn shared_input_branch_has_no_jpeg_encoder_and_uses_inference_dimensions() {
+        let description = pipeline_description(&VideoConfig::default(), Some((320, 240)));
+        let input = description.split("appsink name=perception_preview").next().unwrap();
+        assert!(!input.contains("jpegenc"));
+        assert!(input.contains("width=320,height=240"));
+        assert!(input.contains("format=BGR"));
+        assert!(!input.contains("format=BGRx"));
+        assert_eq!(description.matches("jpegenc").count(), 2); // Browser preview and photos.
+    }
+
+    #[test]
     fn camera_pipeline_keeps_loopback_branch_leaky() {
-        let description = pipeline_description(&VideoConfig::default());
+        let description = pipeline_description(&VideoConfig::default(), None);
         assert!(description.contains("v4l2src name=physical_camera device=\"/dev/video0\""));
         assert!(description.contains("appsink name=loopback_bridge"));
         assert!(!description.contains("v4l2sink"));

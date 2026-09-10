@@ -28,6 +28,7 @@ impl PerceptionSupervisor {
         server_address: SocketAddr,
         runtime: Runtime,
         worker_token: String,
+        shared_source: Option<String>,
     ) -> Option<Self> {
         if !config.enabled || !config.supervise_worker {
             return None;
@@ -38,7 +39,7 @@ impl PerceptionSupervisor {
             avatar,
             depth,
             video,
-            (server_address, worker_token),
+            (server_address, worker_token, shared_source),
             runtime,
             receiver,
         ));
@@ -56,11 +57,11 @@ async fn supervise(
     avatar: AvatarConfig,
     depth: DepthConfig,
     video: VideoConfig,
-    connection: (SocketAddr, String),
+    connection: (SocketAddr, String, Option<String>),
     runtime: Runtime,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    let (server_address, worker_token) = connection;
+    let (server_address, worker_token, shared_source) = connection;
     let daemon_url = worker_daemon_url(server_address);
     let mut states = runtime.subscribe_state();
     loop {
@@ -87,15 +88,13 @@ async fn supervise(
         // otherwise a fast resume can leave two inference workers consuming it.
         #[cfg(unix)]
         command.process_group(0);
+        let mut arguments = worker_arguments(&config, &avatar, &depth, &video, &daemon_url);
+        if let Some(source) = &shared_source {
+            arguments.extend(["--source".into(), source.clone()]);
+        }
         command
             .env("TARSIER_API_TOKEN", &worker_token)
-            .args(worker_arguments(
-                &config,
-                &avatar,
-                &depth,
-                &video,
-                &daemon_url,
-            ))
+            .args(arguments)
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())

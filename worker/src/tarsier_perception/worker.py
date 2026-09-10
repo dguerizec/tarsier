@@ -521,6 +521,12 @@ def capture_mjpeg_frames(source: str, width: int, height: int) -> Iterator[Sourc
 
 
 def capture_frames(source: str, width: int, height: int) -> Iterator[SourceFrame]:
+    if source.startswith("shm://"):
+        from .shared_frames import capture_shared_frames
+
+        for frame_id, captured_at, rotation, frame in capture_shared_frames(source, width, height):
+            yield SourceFrame(frame_id, captured_at, frame, rotation)
+        return
     if source.startswith(("http://", "https://")) and source.endswith(".mjpeg"):
         yield from capture_mjpeg_frames(source, width, height)
         return

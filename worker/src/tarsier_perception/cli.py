@@ -23,7 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
     models.add_argument("--avatar", action="store_true")
     models.add_argument("--depth", action="store_true")
 
-    serve = subparsers.add_parser("serve", help="process frames from MJPEG or a V4L2 source")
+    serve = subparsers.add_parser("serve", help="process shared frames, MJPEG or a V4L2 source")
     serve.add_argument("--source", "--device", dest="source")
     serve.add_argument("--width", type=int, default=640)
     serve.add_argument("--height", type=int, default=360)

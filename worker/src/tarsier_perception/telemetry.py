@@ -13,7 +13,7 @@ from functools import wraps
 from .auth import authorize
 
 STAGES = (
-    "decode", "face", "hands", "pose", "segmentation", "observations_publish",
+    "decode", "input_copy", "face", "hands", "pose", "segmentation", "observations_publish",
     "mask_publish", "avatar_tracking", "avatar_render", "avatar_publish",
     "depth", "depth_refine", "depth_publish",
 )

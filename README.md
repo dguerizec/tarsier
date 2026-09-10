@@ -1507,3 +1507,6 @@ perception, effects and virtual camera pipeline; embedded audio is ignored.
 Switching sources keeps virtual outputs connected and mutes video output until
 it is manually unmuted. Select the physical camera or Synthetic video to switch
 back. Source file URIs are included in telemetry for reproducible comparisons.
+
+The supervised local worker uses [shared-frame transport](docs/shared-frame-transport.md)
+to avoid JPEG encoding and decoding between the daemon and perception.
