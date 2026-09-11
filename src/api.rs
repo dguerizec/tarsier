@@ -4353,6 +4353,8 @@ async fn drive_face_tracking(
         return;
     }
 
+    let tracking_zoom = camera.controlled_zoom_magnification();
+    controller.set_tracking_zoom(tracking_zoom);
     let target = controller
         .face_target(face_landmarks, pose_landmarks)
         .map(|target| (target, FaceTrackingTarget::Face))
@@ -4371,7 +4373,7 @@ async fn drive_face_tracking(
                 .then_some(target.size)
                 .flatten()
         }),
-        camera.controlled_zoom_magnification(),
+        tracking_zoom,
         captured_at_ms,
     );
     let should_command = desired_motion != controller.motion() || desired_motion.active();

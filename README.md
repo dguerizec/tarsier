@@ -532,8 +532,11 @@ zoom slider has focus. The page renews a short daemon-owned movement lease while
 a direction remains held and stops the motor on release. If the page or network
 disappears, the daemon expires the lease and stops the motor automatically.
 The **Face tracking** control below the preview uses the same movement lease at
-a proportional speed with acceleration and deceleration ramps. Enabling it
-first disables the camera's built-in tracking; enabling built-in tracking stops
+a proportional speed with acceleration and deceleration ramps. Speed and
+acceleration are scaled by the inverse square of the commanded zoom, with
+stronger braking at higher magnification to reduce oscillation. This applies
+to both face and shoulder targets. Enabling it first disables the camera's
+built-in tracking; enabling built-in tracking stops
 Tarsier face tracking. The detected face is the preferred target. While face
 and pose are both visible, their vertical offset is calibrated continuously;
 when the face disappears, stable shoulders therefore preserve the inferred

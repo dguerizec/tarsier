@@ -68,6 +68,7 @@ pub struct AutoZoomDecision {
 pub struct FaceTrackingController {
     enabled: bool,
     motion: FaceTrackingMotion,
+    tracking_zoom: f32,
     shoulder_face_y_offset: Option<f32>,
     auto_zoom_enabled: bool,
     auto_zoom_target_face_size: Option<f32>,
@@ -116,6 +117,13 @@ impl FaceTrackingController {
         self.last_auto_zoom_command_at_ms = None;
         self.auto_zoom_destination = None;
         self.auto_zoom_settle_until_ms = None;
+    }
+
+    pub fn set_tracking_zoom(&mut self, zoom: Option<f32>) {
+        // Unknown zoom uses the most conservative gain until a value is available.
+        self.tracking_zoom = zoom
+            .filter(|zoom| zoom.is_finite() && (1.0..=4.0).contains(zoom))
+            .unwrap_or(MAXIMUM_ZOOM_MAGNIFICATION);
     }
 
     pub fn motion(&self) -> FaceTrackingMotion {
@@ -203,7 +211,12 @@ impl FaceTrackingController {
             } else {
                 ACCELERATION_STEP + catch_up * (MAXIMUM_ACCELERATION_STEP - ACCELERATION_STEP)
             };
-            ramp_speed(current, requested, acceleration)
+            // Zoom amplifies image motion. Reduce both gain and acceleration,
+            // with extra damping at high magnification to avoid hunting.
+            let zoom = f64::from(self.tracking_zoom.clamp(1.0, 4.0));
+            let gain = 1.0 / (zoom * zoom);
+            let current = current.min(MAXIMUM_SPEED_FRACTION * gain);
+            ramp_speed(current, requested * gain, acceleration * gain, zoom)
         };
         FaceTarget {
             x,
@@ -354,13 +367,14 @@ fn axis_strength(error: f32, direction: i8, stop_threshold: f32) -> f32 {
     ((error.abs() - stop_threshold) / (MAXIMUM_IMAGE_ERROR - stop_threshold)).clamp(0.0, 1.0)
 }
 
-fn ramp_speed(current: f64, requested: f64, acceleration: f64) -> f64 {
+fn ramp_speed(current: f64, requested: f64, acceleration: f64, zoom: f64) -> f64 {
     if requested > current {
         requested.min(current + acceleration)
     } else {
         // Brake faster after a catch-up movement to avoid carrying its speed
         // into the center of the image.
-        requested.max(current - DECELERATION_STEP.max(current * 0.25))
+        let braking_fraction = 1.0 - 0.75 / zoom;
+        requested.max(current - DECELERATION_STEP.max(current * braking_fraction))
     }
 }
 
@@ -630,6 +644,71 @@ mod tests {
         let middle_increase = starts[1] - starts[0];
         let edge_increase = starts[3] - starts[2];
         assert!(edge_increase < middle_increase * 0.5);
+    }
+
+    #[test]
+    fn zoom_reduces_face_and_shoulder_speed_and_acceleration() {
+        let mut baseline = FaceTrackingController::default();
+        baseline.set_tracking_zoom(Some(1.0));
+        let initial = baseline.target_at(0.9, 0.5).motion.speed_fraction;
+        for zoom in [2.0_f32, 3.0, 4.0] {
+            let mut controller = FaceTrackingController::default();
+            controller.set_tracking_zoom(Some(zoom));
+            let mut pose = vec![
+                Landmark {
+                    x: 0.9,
+                    y: 0.6,
+                    z: 0.0,
+                    visibility: Some(0.9)
+                };
+                33
+            ];
+            pose[LEFT_SHOULDER_INDEX].x = 0.8;
+            pose[RIGHT_SHOULDER_INDEX].x = 1.0;
+            let face = controller.face_target(&face_at(0.9, 0.5), &pose).unwrap();
+            let shoulder = controller.shoulder_target(&pose).unwrap();
+            let expected = initial / f64::from(zoom * zoom);
+            assert!((face.motion.speed_fraction - expected).abs() < 1e-8);
+            assert!((shoulder.motion.speed_fraction - expected).abs() < 1e-8);
+            for _ in 0..20 {
+                let motion = controller.target_at(0.9, 0.5).motion;
+                assert!(motion.speed_fraction <= MAXIMUM_SPEED_FRACTION / f64::from(zoom * zoom));
+                controller.record_motion(motion);
+            }
+        }
+    }
+
+    #[test]
+    fn zoom_in_clamps_existing_speed_and_brakes_before_centering() {
+        let mut controller = FaceTrackingController::default();
+        controller.record_motion(FaceTrackingMotion {
+            pan_direction: 1,
+            tilt_direction: 0,
+            speed_fraction: 0.35,
+        });
+        controller.set_tracking_zoom(Some(3.0));
+        let fast = controller.target_at(0.95, 0.5).motion;
+        assert!(fast.speed_fraction <= MAXIMUM_SPEED_FRACTION / 9.0);
+        controller.record_motion(fast);
+        let braking = controller.target_at(0.57, 0.5).motion;
+        assert!(braking.speed_fraction <= fast.speed_fraction * 0.25 + 1e-8);
+        controller.record_motion(braking);
+        assert_eq!(
+            controller.target_at(0.5, 0.5).motion,
+            FaceTrackingMotion::default()
+        );
+    }
+
+    #[test]
+    fn unknown_or_invalid_zoom_uses_conservative_tracking_gains() {
+        for zoom in [None, Some(f32::NAN), Some(0.0), Some(5.0)] {
+            let mut controller = FaceTrackingController::default();
+            controller.set_tracking_zoom(zoom);
+            assert!(
+                controller.target_at(1.0, 0.5).motion.speed_fraction
+                    <= MAXIMUM_ACCELERATION_STEP / 16.0
+            );
+        }
     }
 
     #[test]
