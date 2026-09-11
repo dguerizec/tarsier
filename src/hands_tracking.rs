@@ -7,10 +7,12 @@ const PAN_START_THRESHOLD: f32 = 0.10;
 const PAN_STOP_THRESHOLD: f32 = 0.06;
 const TILT_START_THRESHOLD: f32 = 0.11;
 const TILT_STOP_THRESHOLD: f32 = 0.065;
-const MINIMUM_SPEED_FRACTION: f64 = 0.004;
-const MAXIMUM_SPEED_FRACTION: f64 = 0.035;
-const ACCELERATION_STEP: f64 = 0.006;
-const DECELERATION_STEP: f64 = 0.008;
+const MINIMUM_SPEED_FRACTION: f64 = 0.01;
+const BASE_MAXIMUM_SPEED_FRACTION: f64 = 0.15;
+const MAXIMUM_SPEED_FRACTION: f64 = 0.60;
+const MAXIMUM_ACCELERATION_STEP: f64 = 0.18;
+const ACCELERATION_STEP: f64 = 0.027;
+const DECELERATION_STEP: f64 = 0.02;
 const MAXIMUM_IMAGE_ERROR: f32 = 0.5;
 const RAPID_HAND_SPEED_PER_SECOND: f32 = 0.85;
 const MAXIMUM_SPEED_SAMPLE_INTERVAL_MS: u64 = 500;
@@ -200,18 +202,33 @@ impl HandsTrackingController {
         let speed_fraction = if directions == (0, 0) {
             0.0
         } else {
-            let requested = proportional_speed(
+            let strength = tracking_strength(
                 x - TARGET_X,
                 y - TARGET_Y,
                 pan_direction,
                 image_tilt_direction,
             );
-            let current = if directions == (self.motion.pan_direction, self.motion.tilt_direction) {
+            let previous = (self.motion.pan_direction, self.motion.tilt_direction);
+            let continuing = (pan_direction != 0 && pan_direction == previous.0)
+                || (tilt_direction != 0 && tilt_direction == previous.1);
+            let reversing = pan_direction * previous.0 < 0 || tilt_direction * previous.1 < 0;
+            let current = if continuing && !reversing {
                 self.motion.speed_fraction
             } else {
                 0.0
             };
-            ramp_speed(current, requested)
+            // Use gradual catch-up and an edge plateau with stronger hand gains.
+            let offset = ((strength - 0.15) / 0.85).clamp(0.0, 1.0);
+            let catch_up = offset * offset * (3.0 - 2.0 * offset);
+            let requested = MINIMUM_SPEED_FRACTION
+                + strength * (BASE_MAXIMUM_SPEED_FRACTION - MINIMUM_SPEED_FRACTION)
+                + catch_up * (MAXIMUM_SPEED_FRACTION - BASE_MAXIMUM_SPEED_FRACTION);
+            let acceleration = if reversing {
+                ACCELERATION_STEP
+            } else {
+                ACCELERATION_STEP + catch_up * (MAXIMUM_ACCELERATION_STEP - ACCELERATION_STEP)
+            };
+            ramp_speed(current, requested, acceleration)
         };
         HandsTrackingMotion {
             pan_direction,
@@ -420,7 +437,7 @@ fn union_bounds(hands: &[HandGeometry]) -> (f32, f32, f32, f32) {
     )
 }
 
-fn proportional_speed(
+fn tracking_strength(
     pan_error: f32,
     tilt_error: f32,
     pan_direction: i8,
@@ -428,8 +445,7 @@ fn proportional_speed(
 ) -> f64 {
     let pan_strength = axis_strength(pan_error, pan_direction, PAN_STOP_THRESHOLD);
     let tilt_strength = axis_strength(tilt_error, image_tilt_direction, TILT_STOP_THRESHOLD);
-    let strength = f64::from(pan_strength.max(tilt_strength));
-    MINIMUM_SPEED_FRACTION + strength * (MAXIMUM_SPEED_FRACTION - MINIMUM_SPEED_FRACTION)
+    f64::from(pan_strength.max(tilt_strength))
 }
 
 fn axis_strength(error: f32, direction: i8, stop_threshold: f32) -> f32 {
@@ -439,11 +455,11 @@ fn axis_strength(error: f32, direction: i8, stop_threshold: f32) -> f32 {
     ((error.abs() - stop_threshold) / (MAXIMUM_IMAGE_ERROR - stop_threshold)).clamp(0.0, 1.0)
 }
 
-fn ramp_speed(current: f64, requested: f64) -> f64 {
+fn ramp_speed(current: f64, requested: f64, acceleration: f64) -> f64 {
     if requested > current {
-        requested.min(current + ACCELERATION_STEP)
+        requested.min(current + acceleration)
     } else {
-        requested.max(current - DECELERATION_STEP)
+        requested.max(current - DECELERATION_STEP.max(current * 0.25))
     }
 }
 
@@ -492,7 +508,7 @@ mod tests {
     }
 
     #[test]
-    fn two_hands_drive_slow_pan_tilt_and_calibrate_zoom() {
+    fn two_hands_drive_ramped_pan_tilt_and_calibrate_zoom() {
         let mut controller = HandsTrackingController::default();
         controller.set_enabled(true);
 
@@ -502,8 +518,74 @@ mod tests {
         assert!(!decision.zoom_frozen);
         assert!(decision.calibrated);
         assert_eq!(decision.motion.pan_direction, 1);
-        assert!(decision.motion.speed_fraction <= ACCELERATION_STEP);
+        assert!(decision.motion.speed_fraction > ACCELERATION_STEP);
+        assert!(decision.motion.speed_fraction <= MAXIMUM_ACCELERATION_STEP);
         assert_eq!(decision.requested_magnification, None);
+    }
+
+    #[test]
+    fn catch_up_accelerates_earlier_and_flattens_near_the_edge() {
+        for vertical in [false, true] {
+            let controller = HandsTrackingController::default();
+            let speeds: Vec<_> = [0.62, 0.7, 0.8, 0.9, 1.0]
+                .into_iter()
+                .map(|position| {
+                    let (x, y) = if vertical {
+                        (0.5, position)
+                    } else {
+                        (position, 0.5)
+                    };
+                    controller.motion_for_target(x, y).speed_fraction
+                })
+                .collect();
+            assert!(speeds.windows(2).all(|pair| pair[1] > pair[0]));
+            assert!(speeds[2] > 0.055);
+            assert!(speeds[4] <= MAXIMUM_ACCELERATION_STEP);
+            assert!(speeds[4] - speeds[3] < speeds[2] - speeds[1]);
+        }
+    }
+
+    #[test]
+    fn axis_transitions_preserve_speed_and_return_to_center_brakes() {
+        let mut controller = HandsTrackingController::default();
+        controller.record_motion(HandsTrackingMotion {
+            pan_direction: 1,
+            tilt_direction: 0,
+            speed_fraction: 0.15,
+        });
+        let diagonal = controller.motion_for_target(0.9, 0.7);
+        assert!(diagonal.speed_fraction > 0.15);
+        controller.record_motion(diagonal);
+        let horizontal = controller.motion_for_target(0.9, 0.5);
+        assert!(horizontal.speed_fraction >= diagonal.speed_fraction);
+        controller.record_motion(horizontal);
+        let braking = controller.motion_for_target(0.58, 0.5);
+        assert!(braking.speed_fraction <= horizontal.speed_fraction * 0.75);
+        controller.record_motion(braking);
+        assert_eq!(
+            controller.motion_for_target(0.5, 0.5),
+            HandsTrackingMotion::default()
+        );
+    }
+
+    #[test]
+    fn one_hand_reaches_a_stronger_bounded_catch_up_speed() {
+        let mut controller = HandsTrackingController::default();
+        controller.set_enabled(true);
+        let landmarks = hand_at(0.8, 0.5, 0.1);
+        let first = controller.observe(&landmarks, Some(2.0), 1_000);
+        assert!(first.motion.speed_fraction > 0.08);
+        controller.record_motion(first.motion);
+        for frame in 1..=10 {
+            let decision = controller.observe(&landmarks, Some(2.0), 1_000 + frame * 100);
+            assert!(!decision.rapid_motion);
+            assert!(decision.zoom_frozen);
+            assert!(decision.motion.speed_fraction <= MAXIMUM_SPEED_FRACTION);
+            controller.record_motion(decision.motion);
+        }
+        assert!(controller.motion().speed_fraction > 0.28);
+        let lost = controller.observe(&[], Some(2.0), 2_100);
+        assert_eq!(lost.motion, HandsTrackingMotion::default());
     }
 
     #[test]
