@@ -4510,7 +4510,7 @@ async fn drive_hands_tracking(state: &ApiState, hand_landmarks: &[Landmark], cap
     }
     let zoom_error = if let Some(magnification) = decision.requested_magnification {
         camera
-            .set_zoom(magnification)
+            .set_tracking_zoom(magnification)
             .await
             .err()
             .map(|error| error.to_string())

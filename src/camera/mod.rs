@@ -69,6 +69,9 @@ enum Command {
     Zoom {
         magnification: f32,
     },
+    TrackingZoom {
+        magnification: f32,
+    },
     PanTiltSpeed {
         pan_direction: i8,
         tilt_direction: i8,
@@ -312,6 +315,14 @@ impl CameraHandle {
     pub async fn set_zoom(&self, magnification: f32) -> Result<()> {
         Self::validate_zoom(magnification)?;
         self.request(Command::Zoom { magnification }).await?;
+        self.controlled_zoom_bits
+            .store(magnification.to_bits(), Ordering::Relaxed);
+        Ok(())
+    }
+
+    pub async fn set_tracking_zoom(&self, magnification: f32) -> Result<()> {
+        Self::validate_zoom(magnification)?;
+        self.request(Command::TrackingZoom { magnification }).await?;
         self.controlled_zoom_bits
             .store(magnification.to_bits(), Ordering::Relaxed);
         Ok(())
@@ -769,6 +780,21 @@ impl<T: XuTransport> Worker<T> {
                 let units = zoom_units_from_magnification(magnification, control)?;
                 self.transport.set_zoom_units(units)?;
                 self.last_io = Some(Instant::now());
+                Ok(CommandOutcome::Applied)
+            }
+            Command::TrackingZoom { magnification } => {
+                self.pace();
+                let control = self.transport.zoom_control()?;
+                let target = zoom_units_from_magnification(magnification, control)?;
+                // Bound the extra owner time to 60 ms and never queue a ramp
+                // beyond this request, so a later freeze has no pending steps.
+                let interval_ms = self.minimum_interval.as_millis().max(1);
+                let maximum_steps = (60 / interval_ms + 1).min(4) as i32;
+                for units in tracking_zoom_steps(control, target, maximum_steps) {
+                    self.pace();
+                    self.transport.set_zoom_units(units)?;
+                    self.last_io = Some(Instant::now());
+                }
                 Ok(CommandOutcome::Applied)
             }
             Command::PanTiltSpeed {
@@ -1283,6 +1309,7 @@ fn spawn_mock(config: &CameraConfig) -> CameraHandle {
                     | Command::Hdr { .. }
                     | Command::BuiltInGesture { .. }
                     | Command::Zoom { .. }
+                    | Command::TrackingZoom { .. }
                     | Command::PanTiltSpeed { .. } => Ok(CommandOutcome::Applied),
                     Command::ImageControl { control, value } => {
                         let result = image_controls
@@ -1326,6 +1353,18 @@ fn zoom_units_from_magnification(magnification: f32, control: ZoomControl) -> Re
     let snapped =
         f64::from(control.minimum) + ((raw - f64::from(control.minimum)) / step).round() * step;
     Ok((snapped as i32).clamp(control.minimum, control.maximum))
+}
+
+// Interpolate in device units: substeps smaller than its quantum do nothing.
+fn tracking_zoom_steps(control: ZoomControl, target: i32, maximum_steps: i32) -> Vec<i32> {
+    let distance = (target - control.value) / control.step;
+    let count = distance.abs().min(maximum_steps);
+    (1..=count)
+        .map(|index| {
+            let offset = (f64::from(distance) * f64::from(index) / f64::from(count)).round() as i32;
+            control.value + offset * control.step
+        })
+        .collect()
 }
 
 fn magnification_from_zoom_units(control: ZoomControl) -> Result<f32> {
@@ -2097,6 +2136,40 @@ mod tests {
 
         assert!(worker.transport.writes.is_empty());
         assert_eq!(worker.transport.zoom_units, [50]);
+    }
+
+    #[test]
+    fn tracking_zoom_splits_small_adjustments_into_device_steps_in_both_directions() {
+        let (_tx, rx) = sync_channel(1);
+        let mut worker = Worker::new(RecordingTransport::default(), rx, Duration::ZERO);
+        worker
+            .execute(Command::TrackingZoom { magnification: 1.09 })
+            .unwrap();
+        assert_eq!(worker.transport.zoom_units, [1, 2, 3]);
+        worker
+            .execute(Command::TrackingZoom { magnification: 1.0 })
+            .unwrap();
+        assert_eq!(worker.transport.zoom_units, [1, 2, 3, 2, 1, 0]);
+        worker
+            .execute(Command::TrackingZoom { magnification: 1.0 })
+            .unwrap();
+        assert_eq!(worker.transport.zoom_units.len(), 6);
+    }
+
+    #[test]
+    fn tracking_zoom_ramps_are_bounded_and_respect_device_quantization() {
+        let control = ZoomControl {
+            minimum: 10,
+            maximum: 110,
+            step: 2,
+            value: 10,
+        };
+        let steps = tracking_zoom_steps(control, 110, 4);
+        assert_eq!(steps.len(), 4);
+        assert_eq!(steps.last(), Some(&110));
+        assert!(steps.iter().all(|units| (units - 10) % 2 == 0));
+        assert!(steps.windows(2).all(|pair| pair[1] > pair[0]));
+        assert_eq!(tracking_zoom_steps(control, 110, 1), [110]);
     }
 
     #[test]
