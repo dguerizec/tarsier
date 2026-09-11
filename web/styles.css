@@ -60,9 +60,6 @@ main { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(17rem, .85
 .pan-tilt-copy strong { font-size: .8rem; }
 .pan-tilt-copy span { color: var(--muted); font-size: .7rem; }
 .pan-tilt-controls { display: flex; align-items: center; gap: .75rem; }
-.tracking-mode-controls { position: absolute; bottom: .5rem; left: .5rem; z-index: 3; display: flex; align-items: center; gap: .4rem; max-width: calc(100% - 3.375rem); padding: .4rem; border: 1px solid #ffffff30; border-radius: .5rem; background: #111713d9; backdrop-filter: blur(8px); opacity: 0; pointer-events: none; transition: opacity .15s; }
-.preview-stage:hover .tracking-mode-controls, .tracking-mode-controls:focus-within { opacity: 1; pointer-events: auto; }
-@media (hover: none) { .tracking-mode-controls { opacity: 1; pointer-events: auto; } }
 #face-tracking-toggle, #hands-tracking-toggle { min-width: 0; white-space: nowrap; }
 .direction-pad { display: grid; grid-template: repeat(3, 2rem) / repeat(3, 2rem); gap: .25rem; }
 .direction-pad button { display: grid; place-items: center; min-width: 0; padding: 0; border-radius: .5rem; font-size: 1rem; touch-action: none; user-select: none; }
@@ -314,7 +311,6 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .audio-source-choice:focus-visible { outline: 1px solid var(--green); outline-offset: 2px; }
 #audio-tracks .audio-track-overlay { left: .5rem; }
 
-.tracking-mode-controls button { display: grid; place-items: center; width: 1.875rem; height: 1.875rem; padding: 0; border-radius: .45rem; }
 
 .audio-meter-wrap { position: relative; display: inline-flex; }
 .audio-max-marker { position: absolute; top: 2px; bottom: 2px; width: 2px; background: var(--green); transform: translateX(-2px); pointer-events: none; }
@@ -543,3 +539,10 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .preview-overlay-tools #preview-mute-toggle { display: flex; justify-content: center; gap: 1px; }
 .preview-overlay-tools #preview-mute-toggle[aria-pressed="true"] { background: #3a211b; border-color: #ef806b; color: #ffb6a5; }
 .preview-overlay-tools #preview-mute-toggle[aria-pressed="mixed"] { background: #392f1d; border-color: #e3b66d; color: #f4cf91; }
+
+.track-controls { position: relative; }
+.track-options { position: absolute; width: max-content; right: 100%; top: 0; display: flex; gap: 6px; padding-right: 6px; visibility: hidden; pointer-events: none; }
+.track-controls:hover .track-options,
+.track-controls.keyboard-open .track-options,
+.track-controls:has(:focus-visible) .track-options { visibility: visible; pointer-events: auto; }
+.preview-overlay-tools #preview-track-toggle { font-size: 9px; }

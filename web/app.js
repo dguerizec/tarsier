@@ -1127,13 +1127,48 @@ $("#demo-trigger").addEventListener("click", async () => {
   await fetch("/api/v1/scenarios/open-palm-demo/trigger", { method: "POST" });
 });
 
-for (const controls of document.querySelectorAll(".skeleton-controls, .mute-controls")) {
+for (const controls of document.querySelectorAll(".skeleton-controls, .mute-controls, .track-controls")) {
   controls.addEventListener("keydown", () => controls.classList.add("keyboard-open"));
   controls.addEventListener("pointerdown", () => controls.classList.remove("keyboard-open"));
   controls.addEventListener("focusout", event => {
     if (!controls.contains(event.relatedTarget)) controls.classList.remove("keyboard-open");
   });
 }
+
+const trackToggle = $("#preview-track-toggle");
+let lastTrackingMode = faceTrackingToggle;
+function syncTrackToggle() {
+  const active = [faceTrackingToggle, handsTrackingToggle]
+    .find(button => button.getAttribute("aria-pressed") === "true");
+  if (active) lastTrackingMode = active;
+  const target = active || lastTrackingMode;
+  trackToggle.disabled = target.disabled || autoZoomPending;
+  trackToggle.setAttribute("aria-pressed", String(Boolean(active)));
+  const mode = target === handsTrackingToggle ? "hands" : "face";
+  trackToggle.title = `${active ? "Stop" : "Start"} ${mode} tracking`;
+  trackToggle.setAttribute("aria-label", `Track: ${trackToggle.title.toLowerCase()}`);
+  const displayedMode = active ? mode : "off";
+  if (trackToggle.dataset.mode !== displayedMode) {
+    trackToggle.dataset.mode = displayedMode;
+    if (active) {
+      trackToggle.replaceChildren(createElement(mode === "hands" ? Hand : ScanFace,
+        { width: 18, height: 18, "aria-hidden": "true", focusable: "false" }));
+    } else {
+      trackToggle.textContent = "Track";
+    }
+  }
+}
+const trackObserver = new MutationObserver(syncTrackToggle);
+for (const button of [faceTrackingToggle, handsTrackingToggle, autoZoomToggle]) {
+  trackObserver.observe(button, {attributes: true, attributeFilter: ["aria-pressed", "disabled"]});
+}
+trackToggle.addEventListener("click", () => {
+  // Tracking modes are mutually exclusive; reuse the selected mode's command.
+  const active = [faceTrackingToggle, handsTrackingToggle]
+    .find(button => button.getAttribute("aria-pressed") === "true");
+  (active || lastTrackingMode).click();
+});
+syncTrackToggle();
 
 const muteToggle = $("#preview-mute-toggle");
 const muteOutputs = [$("#preview-audio-mute"), videoMute];

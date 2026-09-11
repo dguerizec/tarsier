@@ -92,11 +92,6 @@
           <div id="preview-placeholder" role="status">Waiting for video</div>
           <span id="video-output-muted" class="video-output-muted" hidden>Video output muted</span>
           <span id="preview-zoom" data-camera-capability="zoom" hidden class="preview-zoom" aria-label="Preview zoom level">Zoom —</span>
-          <div class="tracking-mode-controls" data-camera-capability="pan_tilt" hidden role="group" aria-label="Camera tracking">
-            <button id="face-tracking-toggle" class="secondary compact" type="button" aria-pressed="false" aria-label="Face tracking" title="Face tracking"></button>
-            <button id="hands-tracking-toggle" class="secondary compact" type="button" aria-pressed="false" aria-label="Hands tracking" title="Hands tracking"></button>
-            <button id="auto-zoom-toggle" class="secondary compact" type="button" aria-pressed="false" aria-label="Auto zoom" title="Auto zoom" disabled></button>
-          </div>
           <div class="preview-overlay-tools" role="group" aria-label="Preview controls">
             <div class="mute-controls" role="group" aria-label="Output mute controls">
               <button id="preview-mute-toggle" type="button" aria-label="Mute microphone and video" aria-pressed="false" title="Mute microphone and video" disabled></button>
@@ -112,6 +107,14 @@
                 <button id="skeleton-face" type="button" aria-label="Face landmarks" aria-pressed="false" title="Show face landmarks"></button>
                 <button id="skeleton-hands" type="button" aria-label="Hands landmarks" aria-pressed="false" title="Show hands landmarks"></button>
                 <button id="skeleton-pose" type="button" aria-label="Body landmarks" aria-pressed="false" title="Show body landmarks"></button>
+              </div>
+            </div>
+            <div class="track-controls" data-camera-capability="pan_tilt" hidden role="group" aria-label="Camera tracking">
+              <button id="preview-track-toggle" type="button" aria-pressed="false" aria-label="Track" title="Start face tracking" disabled>Track</button>
+              <div class="track-options" role="group" aria-label="Tracking modes">
+                <button id="face-tracking-toggle" type="button" aria-pressed="false" aria-label="Face tracking" title="Face tracking"></button>
+                <button id="hands-tracking-toggle" type="button" aria-pressed="false" aria-label="Hands tracking" title="Hands tracking"></button>
+                <button id="auto-zoom-toggle" type="button" aria-pressed="false" aria-label="Auto zoom" title="Auto zoom" disabled></button>
               </div>
             </div>
             <button id="preview-video-applications" type="button" aria-label="Applications using the virtual camera" aria-haspopup="dialog" aria-controls="video-applications-dialog" title="Applications using the virtual camera"><span>–</span></button>
