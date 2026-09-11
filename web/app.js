@@ -740,7 +740,8 @@ function renderHandsTracking(camera) {
     : tracking.enabled ? "Stop hands tracking" : "Hands tracking");
   handsTrackingToggle.title = tracking.error
     || (tracking.enabled
-      ? tracking.rapid_motion ? "Rapid hand movement detected; camera motion is frozen"
+      ? tracking.recovering_arms ? "Following the visible arm to recover a hand"
+      : tracking.rapid_motion ? "Rapid hand movement detected; camera motion is frozen"
       : tracking.hands_visible === 2 ? "Framing both detected hands"
       : tracking.hands_visible === 1 ? "Following one hand with pan and tilt; zoom is frozen"
       : "Waiting for a hand"
@@ -772,6 +773,8 @@ function renderPanTilt(camera) {
   $("#pan-tilt-status").textContent = trackingPending || faceTrackingPending || handsTrackingPending
     ? "Switching tracking…"
     : camera.tracking === true ? "Camera tracking controls the gimbal"
+    : handsTracking.enabled && handsTracking.recovering_arms
+      ? "Hands tracking · following arms · recovering hand"
     : handsTracking.enabled && handsTracking.rapid_motion ? "Hands tracking · rapid movement · holding"
     : handsTracking.enabled && handsTracking.hands_visible === 0 ? "Hands tracking · waiting for hands · zoom frozen"
     : handsTracking.enabled && handsTracking.hands_visible === 1 && handsTracking.active

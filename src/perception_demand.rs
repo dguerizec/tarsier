@@ -85,8 +85,9 @@ pub fn internal(config: &crate::config::Config, state: &crate::model::RuntimeSta
             || state.camera.face_tracking.auto_zoom.enabled
             || config.perception.phone_near_mouth.enabled,
         hands: state.camera.hands_tracking.enabled || config.perception.phone_near_mouth.enabled,
-        // Face tracking uses calibrated shoulders when the face mesh is lost.
+        // Local tracking needs shoulders for face fallback and arms for hand recovery.
         pose: state.camera.face_tracking.enabled
+            || state.camera.hands_tracking.enabled
             || (state.video_effects.output_mode == crate::model::VideoOutputMode::Camera
                 && state.video_effects.background_enabled),
     };
@@ -153,6 +154,25 @@ mod tests {
             }
         );
         state.camera.face_tracking.enabled = false;
+        assert_eq!(internal(&config, &state), Models::default());
+    }
+
+    #[test]
+    fn hands_tracking_requests_pose_for_arm_recovery() {
+        let mut config = crate::config::Config::default();
+        config.perception.phone_near_mouth.enabled = false;
+        config.scenarios.clear();
+        let mut state = crate::model::RuntimeState::default();
+        state.camera.hands_tracking.enabled = true;
+        assert_eq!(
+            internal(&config, &state),
+            Models {
+                face: false,
+                hands: true,
+                pose: true
+            }
+        );
+        state.camera.hands_tracking.enabled = false;
         assert_eq!(internal(&config, &state), Models::default());
     }
 

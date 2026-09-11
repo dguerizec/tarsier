@@ -9,8 +9,8 @@ consumer can still require that model.
 
 | Consumer | Models |
 |---|---|
-| Face tracking or auto zoom | Face |
-| Hands tracking | Hands |
+| Face tracking (including auto zoom) | Face + pose (shoulder fallback) |
+| Hands tracking | Hands + pose (arm recovery) |
 | Enabled phone-near-mouth detector | Face + hands |
 | Enabled open-palm scenario | Hands |
 | Enabled face-presence scenario | Face |

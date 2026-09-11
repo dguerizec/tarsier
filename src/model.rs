@@ -324,6 +324,8 @@ pub struct HandsTrackingState {
     pub active: bool,
     pub hands_visible: u8,
     pub rapid_motion: bool,
+    #[serde(default)]
+    pub recovering_arms: bool,
     pub zoom_frozen: bool,
     pub target_x: Option<f32>,
     pub target_y: Option<f32>,

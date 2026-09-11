@@ -129,7 +129,8 @@ Python/native allocators can also retain memory after an engine is closed.
 ## Consumers that must participate in demand calculation
 
 - Face tracking and auto-zoom use observation face data and can also use pose.
-- Hands tracking and gesture-triggered scenarios need hand observations.
+- Hands tracking needs hand observations and pose for arm-guided recovery.
+  Gesture-triggered scenarios need the observations used by their gesture.
 - The phone-near-mouth detector combines face and hand landmarks.
 - Face-presence and gesture events are API-visible behavior, including external
   clients; absence of an image effect is not proof that nobody needs them.

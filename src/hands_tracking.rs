@@ -1,6 +1,11 @@
 use crate::model::Landmark;
 
 const HAND_LANDMARK_COUNT: usize = 21;
+const ARM_RECOVERY_MS: u64 = 800;
+const ARM_MINIMUM_VISIBILITY: f32 = 0.6;
+const ARM_HAND_MATCH_DISTANCE: f32 = 0.20;
+const ARM_RECOVERY_SPEED: f64 = 0.08;
+const ARM_RECOVERY_ZOOM_STEP: f32 = 0.12;
 const TARGET_X: f32 = 0.5;
 const TARGET_Y: f32 = 0.5;
 const PAN_START_THRESHOLD: f32 = 0.10;
@@ -50,6 +55,7 @@ impl HandsTrackingMotion {
 pub struct HandsTrackingDecision {
     pub hands_visible: u8,
     pub rapid_motion: bool,
+    pub recovering_arms: bool,
     pub zoom_frozen: bool,
     pub target_x: Option<f32>,
     pub target_y: Option<f32>,
@@ -77,6 +83,7 @@ pub struct HandsTrackingController {
     motion: HandsTrackingMotion,
     previous_centers: Vec<(f32, f32)>,
     previous_captured_at_ms: Option<u64>,
+    arm_last_hand_at_ms: [Option<u64>; 2],
     target_span: Option<f32>,
     smoothed_span: Option<f32>,
     recalibrate_zoom_after_ms: Option<u64>,
@@ -95,6 +102,7 @@ impl HandsTrackingController {
         self.motion = HandsTrackingMotion::default();
         self.previous_centers.clear();
         self.previous_captured_at_ms = None;
+        self.arm_last_hand_at_ms = [None; 2];
         self.target_span = None;
         self.smoothed_span = None;
         self.recalibrate_zoom_after_ms = None;
@@ -118,14 +126,26 @@ impl HandsTrackingController {
         self.target_span = None;
         self.smoothed_span = None;
         self.recalibrate_zoom_after_ms = Some(captured_at_ms);
+        self.arm_last_hand_at_ms = [None; 2];
         self.last_zoom_command_at_ms = None;
         self.zoom_destination = None;
         self.zoom_settle_until_ms = None;
     }
 
+    #[cfg(test)]
     pub fn observe(
         &mut self,
         landmarks: &[Landmark],
+        zoom_magnification: Option<f32>,
+        captured_at_ms: u64,
+    ) -> HandsTrackingDecision {
+        self.observe_with_pose(landmarks, &[], zoom_magnification, captured_at_ms)
+    }
+
+    pub fn observe_with_pose(
+        &mut self,
+        landmarks: &[Landmark],
+        pose_landmarks: &[Landmark],
         zoom_magnification: Option<f32>,
         captured_at_ms: u64,
     ) -> HandsTrackingDecision {
@@ -138,6 +158,42 @@ impl HandsTrackingController {
         self.previous_captured_at_ms = Some(captured_at_ms);
 
         let hands_visible = hands.len() as u8;
+        let recovery = self.arm_recovery_target(&hands, pose_landmarks, captured_at_ms);
+        if let Some((x, y)) = recovery.filter(|_| !rapid_motion) {
+            self.smoothed_span = None;
+            self.zoom_destination = None;
+            self.zoom_settle_until_ms = None;
+            let mut motion = self.motion_for_target(x, y);
+            motion.speed_fraction = motion.speed_fraction.min(ARM_RECOVERY_SPEED);
+            let zoom = zoom_magnification.filter(|zoom| {
+                zoom.is_finite()
+                    && (MINIMUM_ZOOM_MAGNIFICATION..=MAXIMUM_ZOOM_MAGNIFICATION).contains(zoom)
+            });
+            let at_limit = zoom.is_some_and(|zoom| zoom <= MINIMUM_ZOOM_MAGNIFICATION);
+            let due = self.last_zoom_command_at_ms.is_none_or(|previous| {
+                captured_at_ms.saturating_sub(previous) >= ZOOM_MINIMUM_INTERVAL_MS
+            });
+            let requested_magnification = zoom.filter(|_| !at_limit && due).map(|zoom| {
+                ((zoom - ARM_RECOVERY_ZOOM_STEP).max(MINIMUM_ZOOM_MAGNIFICATION) * 100.0).round()
+                    / 100.0
+            });
+            if requested_magnification.is_some() {
+                self.last_zoom_command_at_ms = Some(captured_at_ms);
+            }
+            return HandsTrackingDecision {
+                hands_visible,
+                recovering_arms: true,
+                zoom_frozen: zoom.is_none() || at_limit,
+                target_x: Some(x),
+                target_y: Some(y),
+                motion,
+                calibrated: self.target_span.is_some(),
+                target_span: self.target_span,
+                requested_magnification,
+                at_limit,
+                ..HandsTrackingDecision::default()
+            };
+        }
         let zoom_frozen = hands_visible != 2 || rapid_motion;
         let target = if hands.is_empty() || rapid_motion {
             None
@@ -171,6 +227,7 @@ impl HandsTrackingController {
         HandsTrackingDecision {
             hands_visible,
             rapid_motion,
+            recovering_arms: false,
             zoom_frozen,
             target_x: target.map(|(x, _)| x),
             target_y: target.map(|(_, y)| y),
@@ -181,6 +238,71 @@ impl HandsTrackingController {
             requested_magnification: zoom.requested_magnification,
             at_limit: zoom.at_limit,
         }
+    }
+
+    fn arm_recovery_target(
+        &mut self,
+        hands: &[HandGeometry],
+        pose: &[Landmark],
+        captured_at_ms: u64,
+    ) -> Option<(f32, f32)> {
+        if self
+            .recalibrate_zoom_after_ms
+            .is_some_and(|after| captured_at_ms < after)
+        {
+            return None;
+        }
+        let arms = [
+            arm_endpoint(pose, 11, 13, 15),
+            arm_endpoint(pose, 12, 14, 16),
+        ];
+        // Match each detected hand to at most one arm, independent of hand order.
+        let mut pairs = Vec::new();
+        for (side, arm) in arms.iter().enumerate() {
+            if let Some((x, y)) = arm {
+                for (index, hand) in hands.iter().enumerate() {
+                    let distance = (x - hand.center_x).hypot(y - hand.center_y);
+                    if distance <= ARM_HAND_MATCH_DISTANCE {
+                        pairs.push((distance, side, index));
+                    }
+                }
+            }
+        }
+        pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut matched = [false; 2];
+        let mut used_hands = [false; 2];
+        for (_, side, index) in pairs {
+            if !matched[side] && !used_hands[index] {
+                matched[side] = true;
+                used_hands[index] = true;
+                self.arm_last_hand_at_ms[side] = Some(captured_at_ms);
+            }
+        }
+        if hands.len() == 2 {
+            return None;
+        }
+        let mut targets = Vec::new();
+        for (side, arm) in arms.into_iter().enumerate() {
+            let recent = self.arm_last_hand_at_ms[side].is_some_and(|last| {
+                captured_at_ms >= last && captured_at_ms - last <= ARM_RECOVERY_MS
+            });
+            if !matched[side] && recent {
+                if let Some((x, y)) = arm {
+                    if x.min(1.0 - x).min(y).min(1.0 - y) < EDGE_MARGIN_START {
+                        targets.push((x.clamp(0.0, 1.0), y.clamp(0.0, 1.0)));
+                    }
+                }
+            }
+        }
+        if targets.is_empty() {
+            return None;
+        }
+        targets.extend(hands.iter().map(|hand| (hand.center_x, hand.center_y)));
+        let count = targets.len() as f32;
+        Some((
+            targets.iter().map(|p| p.0).sum::<f32>() / count,
+            targets.iter().map(|p| p.1).sum::<f32>() / count,
+        ))
     }
 
     fn rapid_motion(&self, hands: &[HandGeometry], captured_at_ms: u64) -> bool {
@@ -378,6 +500,48 @@ impl HandsTrackingController {
     }
 }
 
+// Prefer the pose wrist; only extrapolate when the visible elbow itself is
+// near a border. Central or low-confidence arms are not evidence of an exit.
+fn arm_endpoint(
+    pose: &[Landmark],
+    shoulder: usize,
+    elbow: usize,
+    wrist: usize,
+) -> Option<(f32, f32)> {
+    if pose.len() != 33 {
+        return None;
+    }
+    let reliable = |joint: &Landmark| {
+        joint.x.is_finite()
+            && joint.y.is_finite()
+            && joint
+                .visibility
+                .is_some_and(|v| v.is_finite() && v >= ARM_MINIMUM_VISIBILITY)
+    };
+    let shoulder = &pose[shoulder];
+    let elbow = &pose[elbow];
+    if !reliable(shoulder)
+        || !reliable(elbow)
+        || !(0.0..=1.0).contains(&shoulder.x)
+        || !(0.0..=1.0).contains(&shoulder.y)
+        || !(0.0..=1.0).contains(&elbow.x)
+        || !(0.0..=1.0).contains(&elbow.y)
+    {
+        return None;
+    }
+    let wrist = &pose[wrist];
+    if reliable(wrist) && (-0.2..=1.2).contains(&wrist.x) && (-0.2..=1.2).contains(&wrist.y) {
+        return Some((wrist.x, wrist.y));
+    }
+    if elbow.x.min(1.0 - elbow.x).min(elbow.y).min(1.0 - elbow.y) > 0.2 {
+        return None;
+    }
+    Some((
+        elbow.x + (elbow.x - shoulder.x),
+        elbow.y + (elbow.y - shoulder.y),
+    ))
+}
+
 fn matched_center_distances(previous: &[(f32, f32)], hands: &[HandGeometry]) -> Vec<f32> {
     let distance = |previous: (f32, f32), hand: &HandGeometry| {
         (hand.center_x - previous.0).hypot(hand.center_y - previous.1)
@@ -538,6 +702,141 @@ mod tests {
         let mut landmarks = hand_at(left_x, 0.5, 0.1);
         landmarks.extend(hand_at(right_x, 0.5, 0.1));
         landmarks
+    }
+
+    fn rightward_arm(wrist_x: f32) -> Vec<Landmark> {
+        let mut pose = vec![
+            Landmark {
+                x: 0.5,
+                y: 0.5,
+                z: 0.0,
+                visibility: Some(0.0)
+            };
+            33
+        ];
+        for (index, x) in [(11, 0.5), (13, 0.8), (15, wrist_x)] {
+            pose[index].x = x;
+            pose[index].visibility = Some(0.9);
+        }
+        pose
+    }
+
+    #[test]
+    fn arm_recovery_zooms_out_then_returns_to_a_reappearing_hand() {
+        let mut controller = HandsTrackingController::default();
+        controller.set_enabled(true);
+        controller.observe_with_pose(
+            &hand_at(0.9, 0.5, 0.1),
+            &rightward_arm(0.9),
+            Some(2.0),
+            1_000,
+        );
+        let missing = controller.observe_with_pose(&[], &rightward_arm(1.05), Some(2.0), 1_100);
+        assert!(missing.recovering_arms);
+        assert_eq!(missing.hands_visible, 0);
+        assert_eq!(missing.motion.pan_direction, 1);
+        assert!(missing.motion.speed_fraction <= ARM_RECOVERY_SPEED);
+        assert_eq!(missing.requested_magnification, Some(1.88));
+        let too_soon = controller.observe_with_pose(&[], &rightward_arm(1.05), Some(1.88), 1_150);
+        assert_eq!(too_soon.requested_magnification, None);
+        let returned = controller.observe_with_pose(
+            &hand_at(0.9, 0.5, 0.1),
+            &rightward_arm(0.9),
+            Some(1.88),
+            1_200,
+        );
+        assert!(!returned.recovering_arms);
+        assert!(returned.zoom_frozen);
+        assert_eq!(returned.requested_magnification, None);
+    }
+
+    #[test]
+    fn arm_recovery_requires_recent_hands_and_valid_outward_arm_evidence() {
+        let mut controller = HandsTrackingController::default();
+        controller.set_enabled(true);
+        assert!(
+            !controller
+                .observe_with_pose(&[], &rightward_arm(1.05), Some(2.0), 900)
+                .recovering_arms
+        );
+        controller.observe_with_pose(
+            &hand_at(0.9, 0.5, 0.1),
+            &rightward_arm(0.9),
+            Some(2.0),
+            1_000,
+        );
+        assert!(
+            !controller
+                .observe_with_pose(&[], &rightward_arm(0.6), Some(2.0), 1_100)
+                .recovering_arms
+        );
+        let mut unreliable = rightward_arm(1.05);
+        unreliable[13].visibility = Some(0.1);
+        assert!(
+            !controller
+                .observe_with_pose(&[], &unreliable, Some(2.0), 1_200)
+                .recovering_arms
+        );
+        unreliable[13].visibility = Some(f32::NAN);
+        assert!(
+            !controller
+                .observe_with_pose(&[], &unreliable, Some(2.0), 1_300)
+                .recovering_arms
+        );
+        assert!(
+            !controller
+                .observe_with_pose(&[], &rightward_arm(1.05), Some(2.0), 1_801)
+                .recovering_arms
+        );
+    }
+
+    #[test]
+    fn arm_recovery_can_extrapolate_a_missing_wrist_and_respects_zoom_limits() {
+        let mut controller = HandsTrackingController::default();
+        controller.set_enabled(true);
+        controller.observe_with_pose(
+            &hand_at(0.9, 0.5, 0.1),
+            &rightward_arm(0.9),
+            Some(1.05),
+            1_000,
+        );
+        let mut pose = rightward_arm(1.05);
+        pose[15].visibility = Some(0.0);
+        pose[13].x = 0.85;
+        let missing = controller.observe_with_pose(&[], &pose, Some(1.05), 1_100);
+        assert!(missing.recovering_arms);
+        assert_eq!(missing.requested_magnification, Some(1.0));
+        let at_limit = controller.observe_with_pose(&[], &pose, Some(1.0), 1_200);
+        assert!(at_limit.at_limit);
+        assert_eq!(at_limit.requested_magnification, None);
+        controller.set_enabled(false);
+        controller.set_enabled(true);
+        assert!(
+            !controller
+                .observe_with_pose(&[], &pose, Some(2.0), 1_300)
+                .recovering_arms
+        );
+    }
+
+    #[test]
+    fn remaining_hand_does_not_extend_the_missing_arms_recovery_window() {
+        let mut controller = HandsTrackingController::default();
+        controller.set_enabled(true);
+        let mut pose = rightward_arm(0.9);
+        for (index, x) in [(12, 0.5), (14, 0.2), (16, 0.1)] {
+            pose[index].x = x;
+            pose[index].visibility = Some(0.9);
+        }
+        controller.observe_with_pose(&two_hands(0.1, 0.9), &pose, Some(2.0), 1_000);
+        pose[15].x = 1.05;
+        let left = hand_at(0.1, 0.5, 0.1);
+        let missing = controller.observe_with_pose(&left, &pose, Some(2.0), 1_200);
+        assert!(missing.recovering_arms);
+        assert_eq!(missing.hands_visible, 1);
+        assert!(missing.requested_magnification.unwrap() < 2.0);
+        let expired = controller.observe_with_pose(&left, &pose, Some(1.88), 1_801);
+        assert!(!expired.recovering_arms);
+        assert!(expired.zoom_frozen);
     }
 
     #[test]

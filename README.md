@@ -44,11 +44,10 @@ mischievous personality without tying its core to one camera vendor.
   face mesh disappears, and switches exclusively with the camera's built-in
   tracking; optional auto zoom calibrates the current face size, then adjusts
   the x1-to-x4 zoom conservatively to preserve that framing;
-- optional Tarsier hands tracking slowly frames up to two detected hands and
-  adjusts zoom only while both remain visible. If one hand disappears, it
-  immediately follows the remaining hand with pan/tilt while freezing zoom; a
-  rapidly moving remaining hand or loss of both hands stops camera motion
-  instead of chasing them out of frame;
+- optional Tarsier hands tracking frames up to two detected hands with progressive
+  motion and zoom. A visible arm can briefly guide zoom-out to recover a recently
+  lost hand near a border; otherwise one-hand tracking freezes zoom and loss of
+  both hands stops camera motion;
 - a supervised Python 3.12 worker performs local MediaPipe face and body-pose
   landmarking and canned gesture recognition for up to two hands at a bounded
   observation rate, while a dedicated selfie segmenter publishes person masks
@@ -553,13 +552,20 @@ reports when the x1 or x4 bound prevents preserving the calibrated size.
 Disabling Face tracking also disables Auto zoom.
 
 The separate **Hands tracking** control is exclusive with Face tracking and the
-camera's built-in tracking. With two hands visible, it slowly centers their
-combined bounds and preserves their calibrated on-screen span with conservative,
-rate-limited zoom. As soon as only one hand remains, zoom freezes and pan/tilt
-follows that hand immediately. Fast hand motion freezes all camera movement so a
-deliberately withdrawn hand is not chased; losing both hands also stops the
-gimbal. Manual movement, recentering, and preset recall stop Hands tracking in
-the same way as the other tracking modes.
+camera's built-in tracking. With two hands visible, it centers their combined
+bounds and preserves their calibrated on-screen span with rate-limited zoom.
+Zoom-out strengthens near image borders. With one hand, zoom normally freezes
+and pan/tilt follows that hand.
+
+If a recently detected hand disappears near a border, a confidently detected arm
+can guide recovery for up to 800 ms after that hand was last seen. The controller
+uses the pose wrist, or extrapolates from a visible shoulder and near-edge elbow,
+to steer gently and zoom out toward the x1 limit. It never zooms in during
+recovery. The UI reports arm recovery; normal tracking resumes when the hand
+returns. Missing or unreliable arm evidence, or expiration of the recovery
+window, restores normal one-hand zoom freeze or no-hand stop behavior. Rapid
+motion of detected hands still freezes camera movement. Manual movement,
+recentering, and preset recall stop Hands tracking like the other modes.
 
 ```sh
 cargo run -- status
@@ -773,7 +779,7 @@ requests must be same-origin. Login attempts are throttled to one per second.
 | `POST` | `/api/v1/camera/hdr` | Enable or disable HDR/WDR |
 | `POST` | `/api/v1/camera/tracking` | Enable or disable built-in tracking |
 | `POST` | `/api/v1/camera/face-tracking` | Enable or disable Tarsier face tracking |
-| `POST` | `/api/v1/camera/hands-tracking` | Enable or disable slow two-hand framing with one-hand zoom freeze |
+| `POST` | `/api/v1/camera/hands-tracking` | Enable or disable hand framing with temporary arm-guided recovery |
 | `GET` | `/api/v1/settings/avatars` | List local LivePortrait images and Personal 3D models |
 | `POST` | `/api/v1/settings/avatars/liveportrait?name=...` | Import a PNG/JPEG body into the local avatar library |
 | `POST` | `/api/v1/settings/avatars/portrait3d` | Import model files as multipart form data; validate and generate a preview |
@@ -1137,9 +1143,9 @@ run before unattended use.
 - Tarsier face-tracking direction, mutual exclusion, dead-zone hysteresis, and
   low-speed diagonal commands have automated coverage, but its physical
   framing thresholds still need live tuning across distances and lighting;
-- Hands tracking has deterministic coverage for two-hand framing, immediate
-  one-hand pan/tilt with frozen zoom, and rapid-motion hold, but its speed and
-  framing thresholds still need live tuning with the physical camera;
+- Hands tracking has deterministic coverage for two-hand framing, one-hand
+  pan/tilt, rapid-motion hold, and bounded arm-guided recovery. Arm recovery
+  still needs physical validation across motion speeds and lighting;
 - background-effect routing, privacy fallback, Green screen synthetic pans,
   live Blur output, and a short physical motion sequence have runtime or visual
   coverage; Pixel Party has focused bundled-scene coverage but still needs

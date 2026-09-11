@@ -4234,7 +4234,13 @@ async fn perception_observation(
     } else {
         &[]
     };
-    drive_hands_tracking(&state, tracking_hand_landmarks, observation.captured_at_ms).await;
+    drive_hands_tracking(
+        &state,
+        tracking_hand_landmarks,
+        tracking_pose_landmarks,
+        observation.captured_at_ms,
+    )
+    .await;
 
     let presence_change = state
         .face_presence
@@ -4450,7 +4456,12 @@ async fn drive_face_tracking(
     }
 }
 
-async fn drive_hands_tracking(state: &ApiState, hand_landmarks: &[Landmark], captured_at_ms: u64) {
+async fn drive_hands_tracking(
+    state: &ApiState,
+    hand_landmarks: &[Landmark],
+    pose_landmarks: &[Landmark],
+    captured_at_ms: u64,
+) {
     let Some(camera) = state.camera.read().await.clone() else {
         return;
     };
@@ -4485,8 +4496,9 @@ async fn drive_hands_tracking(state: &ApiState, hand_landmarks: &[Landmark], cap
         return;
     }
 
-    let decision = controller.observe(
+    let decision = controller.observe_with_pose(
         hand_landmarks,
+        pose_landmarks,
         camera.controlled_zoom_magnification(),
         captured_at_ms,
     );
@@ -4540,6 +4552,7 @@ async fn drive_hands_tracking(state: &ApiState, hand_landmarks: &[Landmark], cap
                 active: motion.active(),
                 hands_visible: decision.hands_visible,
                 rapid_motion: decision.rapid_motion,
+                recovering_arms: decision.recovering_arms,
                 zoom_frozen: decision.zoom_frozen,
                 target_x: decision.target_x,
                 target_y: decision.target_y,
@@ -8912,6 +8925,77 @@ mod tests {
                     assert!(tracking.rapid_motion);
                 }
                 _ => unreachable!(),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn hands_tracking_uses_pose_to_recover_a_missing_hand() {
+        let mut config = Config::default();
+        config.camera.adapter = CameraAdapter::Mock;
+        config.perception.enabled = false;
+        let runtime = Runtime::new();
+        let camera = camera::start(config.camera.clone(), runtime.clone())
+            .await
+            .unwrap();
+        camera.as_ref().unwrap().set_zoom(2.0).await.unwrap();
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = router(
+            config,
+            runtime.clone(),
+            PreviewHub::new(),
+            camera,
+            shutdown_rx,
+        );
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/camera/hands-tracking")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"enabled":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+        for (frame, visible) in [(1, true), (2, false), (3, true)] {
+            let hands: Vec<_> = if visible {
+                (0..21)
+                    .map(|_| json!({"x": 0.9, "y": 0.5, "z": 0.0}))
+                    .collect()
+            } else {
+                vec![]
+            };
+            let mut pose = vec![json!({"x": 0.5, "y": 0.5, "z": 0.0, "visibility": 0.0}); 33];
+            for (index, x) in [(11, 0.5), (13, 0.8), (15, if visible { 0.9 } else { 1.05 })] {
+                pose[index] = json!({"x": x, "y": 0.5, "z": 0.0, "visibility": 0.9});
+            }
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post("/api/v1/perception/observations")
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            json!({
+                                "frame_id": frame, "captured_at_ms": 1000 + frame * 100,
+                                "face_detected": false, "hand_detected": visible,
+                                "hand_landmarks": hands, "pose_detected": true, "pose_landmarks": pose,
+                                "gesture": null, "confidence": 0.0, "latency_ms": 10.0
+                            })
+                            .to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NO_CONTENT);
+            let tracking = runtime.state().await.camera.hands_tracking;
+            assert_eq!(tracking.recovering_arms, !visible);
+            assert_eq!(tracking.zoom_frozen, visible);
+            if frame >= 2 {
+                assert_eq!(tracking.zoom_magnification, Some(1.88));
             }
         }
     }
