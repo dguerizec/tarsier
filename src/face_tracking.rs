@@ -178,7 +178,13 @@ impl FaceTrackingController {
                 pan_direction,
                 image_tilt_direction,
             );
-            let current = if directions == (self.motion.pan_direction, self.motion.tilt_direction) {
+            // Keep the ramp when an axis joins or leaves an ongoing movement.
+            // Only a reversal or a fresh start requires accelerating from rest.
+            let previous = (self.motion.pan_direction, self.motion.tilt_direction);
+            let continuing = (pan_direction != 0 && pan_direction == previous.0)
+                || (tilt_direction != 0 && tilt_direction == previous.1);
+            let reversing = pan_direction * previous.0 < 0 || tilt_direction * previous.1 < 0;
+            let current = if continuing && !reversing {
                 self.motion.speed_fraction
             } else {
                 0.0
@@ -567,6 +573,44 @@ mod tests {
         assert!(second.motion.speed_fraction > first.motion.speed_fraction);
         assert!(second.motion.speed_fraction <= first.motion.speed_fraction + ACCELERATION_STEP);
         assert!(second.motion.speed_fraction <= MAXIMUM_SPEED_FRACTION);
+    }
+
+    #[test]
+    fn secondary_axis_transitions_preserve_the_ongoing_speed_ramp() {
+        for (x, y, previous, expected) in [
+            (0.9, 0.3, (1, 0), (1, 1)),
+            (0.9, 0.5, (1, 1), (1, 0)),
+            (0.7, 0.1, (0, 1), (1, 1)),
+            (0.5, 0.1, (1, 1), (0, 1)),
+        ] {
+            let mut controller = FaceTrackingController::default();
+            controller.record_motion(FaceTrackingMotion {
+                pan_direction: previous.0,
+                tilt_direction: previous.1,
+                speed_fraction: 0.06,
+            });
+            let target = controller.face_target(&face_at(x, y), &[]).unwrap();
+            assert_eq!(
+                (target.motion.pan_direction, target.motion.tilt_direction),
+                expected
+            );
+            assert!(target.motion.speed_fraction > 0.06);
+            assert!(target.motion.speed_fraction <= 0.06 + ACCELERATION_STEP);
+        }
+    }
+
+    #[test]
+    fn reversing_an_axis_still_restarts_the_speed_ramp() {
+        let mut controller = FaceTrackingController::default();
+        controller.record_motion(FaceTrackingMotion {
+            pan_direction: 1,
+            tilt_direction: 1,
+            speed_fraction: 0.08,
+        });
+        let target = controller.face_target(&face_at(0.9, 0.9), &[]).unwrap();
+        assert_eq!(target.motion.pan_direction, 1);
+        assert_eq!(target.motion.tilt_direction, -1);
+        assert!((target.motion.speed_fraction - ACCELERATION_STEP).abs() < f64::EPSILON);
     }
 
     #[test]
