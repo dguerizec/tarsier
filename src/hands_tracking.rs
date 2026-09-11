@@ -19,14 +19,14 @@ const MAXIMUM_SPEED_SAMPLE_INTERVAL_MS: u64 = 500;
 const MINIMUM_HAND_SPAN: f32 = 0.03;
 const MINIMUM_TARGET_SPAN: f32 = 0.18;
 const MAXIMUM_TARGET_SPAN: f32 = 0.62;
-const SPAN_SMOOTHING_ALPHA: f32 = 0.25;
+const SPAN_SMOOTHING_ALPHA: f32 = 0.40;
 const ZOOM_START_THRESHOLD_FRACTION: f32 = 0.08;
 const ZOOM_MAXIMUM_STEP: f32 = 0.08;
-const ZOOM_MINIMUM_STEP: f32 = 0.02;
-const ZOOM_RAMP_GAIN: f32 = 0.35;
-const ZOOM_DESTINATION_TOLERANCE: f32 = 0.02;
-const ZOOM_MINIMUM_INTERVAL_MS: u64 = 200;
-const ZOOM_SETTLE_MS: u64 = 400;
+const ZOOM_MINIMUM_STEP: f32 = 0.01;
+const ZOOM_RAMP_GAIN: f32 = 0.50;
+const ZOOM_DESTINATION_TOLERANCE: f32 = 0.005;
+const ZOOM_MINIMUM_INTERVAL_MS: u64 = 100;
+const ZOOM_SETTLE_MS: u64 = 150;
 const MINIMUM_ZOOM_MAGNIFICATION: f32 = 1.0;
 const MAXIMUM_ZOOM_MAGNIFICATION: f32 = 4.0;
 
@@ -658,6 +658,41 @@ mod tests {
         assert!(
             2.0 - decision.requested_magnification.unwrap() <= ZOOM_MAXIMUM_STEP + f32::EPSILON
         );
+    }
+
+    #[test]
+    fn two_hand_zoom_advances_on_each_100_ms_observation() {
+        let mut controller = HandsTrackingController::default();
+        controller.set_enabled(true);
+        controller.zoom_decision(Some(0.4), Some(2.0), 1_000, false);
+        let mut zoom = 2.0;
+        for at in [1_100, 1_200, 1_300] {
+            let decision = controller.zoom_decision(Some(0.8), Some(zoom), at, false);
+            let requested = decision.requested_magnification.unwrap();
+            assert!(requested < zoom);
+            assert!(zoom - requested <= ZOOM_MAXIMUM_STEP + f32::EPSILON);
+            zoom = requested;
+            let too_soon = controller.zoom_decision(Some(0.8), Some(zoom), at + 50, false);
+            assert_eq!(too_soon.requested_magnification, None);
+        }
+        assert!(zoom < 1.8);
+    }
+
+    #[test]
+    fn zoom_uses_fine_final_steps_then_resumes_after_a_short_settle() {
+        let mut controller = HandsTrackingController::default();
+        controller.set_enabled(true);
+        controller.zoom_decision(Some(0.4), Some(2.0), 1_000, false);
+        controller.zoom_destination = Some(2.01);
+        let fine = controller.zoom_decision(Some(0.4), Some(2.0), 1_100, false);
+        assert_eq!(fine.requested_magnification, Some(2.01));
+        let arrived = controller.zoom_decision(Some(0.4), Some(2.01), 1_200, false);
+        assert_eq!(arrived.requested_magnification, None);
+        assert_eq!(controller.zoom_settle_until_ms, Some(1_350));
+        let settling = controller.zoom_decision(Some(0.2), Some(2.01), 1_300, false);
+        assert_eq!(settling.requested_magnification, None);
+        let resumed = controller.zoom_decision(Some(0.2), Some(2.01), 1_400, false);
+        assert!(resumed.requested_magnification.unwrap() > 2.01);
     }
 
     #[test]
