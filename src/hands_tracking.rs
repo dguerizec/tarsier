@@ -22,6 +22,9 @@ const MAXIMUM_TARGET_SPAN: f32 = 0.62;
 const SPAN_SMOOTHING_ALPHA: f32 = 0.40;
 const ZOOM_START_THRESHOLD_FRACTION: f32 = 0.08;
 const ZOOM_MAXIMUM_STEP: f32 = 0.08;
+const EDGE_ZOOM_MAXIMUM_STEP: f32 = 0.20;
+const EDGE_MARGIN_START: f32 = 0.15;
+const EDGE_MARGIN_FULL: f32 = 0.03;
 const ZOOM_MINIMUM_STEP: f32 = 0.01;
 const ZOOM_RAMP_GAIN: f32 = 0.50;
 const ZOOM_DESTINATION_TOLERANCE: f32 = 0.005;
@@ -150,7 +153,20 @@ impl HandsTrackingController {
             let (minimum_x, maximum_x, minimum_y, maximum_y) = union_bounds(&hands);
             (maximum_x - minimum_x).max(maximum_y - minimum_y)
         });
-        let zoom = self.zoom_decision(hand_span, zoom_magnification, captured_at_ms, zoom_frozen);
+        let edge_urgency = if hands_visible == 2 {
+            let (min_x, max_x, min_y, max_y) = union_bounds(&hands);
+            let margin = min_x.min(1.0 - max_x).min(min_y).min(1.0 - max_y);
+            ((EDGE_MARGIN_START - margin) / (EDGE_MARGIN_START - EDGE_MARGIN_FULL)).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let zoom = self.zoom_decision(
+            hand_span,
+            zoom_magnification,
+            captured_at_ms,
+            zoom_frozen,
+            edge_urgency,
+        );
 
         HandsTrackingDecision {
             hands_visible,
@@ -243,6 +259,7 @@ impl HandsTrackingController {
         zoom_magnification: Option<f32>,
         captured_at_ms: u64,
         frozen: bool,
+        edge_urgency: f32,
     ) -> ZoomDecision {
         if frozen {
             self.smoothed_span = None;
@@ -271,9 +288,21 @@ impl HandsTrackingController {
             self.recalibrate_zoom_after_ms = None;
             return decision;
         }
+        // React to the current extent near a border instead of waiting for the
+        // smoothed span or a previous zoom destination to catch up.
+        let urgency = if hand_span > self.target_span.unwrap_or(hand_span) {
+            edge_urgency
+        } else {
+            0.0
+        };
+        let alpha = SPAN_SMOOTHING_ALPHA + urgency * (1.0 - SPAN_SMOOTHING_ALPHA);
         let smoothed = self.smoothed_span.map_or(hand_span, |previous| {
-            previous + SPAN_SMOOTHING_ALPHA * (hand_span - previous)
+            previous + alpha * (hand_span - previous)
         });
+        if urgency > 0.0 {
+            self.zoom_settle_until_ms = None;
+            self.zoom_destination = None;
+        }
         self.smoothed_span = Some(smoothed);
         decision.hand_span = Some(smoothed);
         let Some(current_zoom) = zoom_magnification.filter(|zoom| {
@@ -328,8 +357,12 @@ impl HandsTrackingController {
         }) {
             return decision;
         }
-        let step = (remaining.abs() * ZOOM_RAMP_GAIN)
-            .clamp(ZOOM_MINIMUM_STEP, ZOOM_MAXIMUM_STEP)
+        let outward_urgency = if remaining < 0.0 { urgency } else { 0.0 };
+        let maximum_step =
+            ZOOM_MAXIMUM_STEP + outward_urgency * (EDGE_ZOOM_MAXIMUM_STEP - ZOOM_MAXIMUM_STEP);
+        let gain = ZOOM_RAMP_GAIN + outward_urgency * (0.85 - ZOOM_RAMP_GAIN);
+        let step = (remaining.abs() * gain)
+            .clamp(ZOOM_MINIMUM_STEP, maximum_step)
             .min(remaining.abs());
         let requested = ((current_zoom + remaining.signum() * step)
             .clamp(MINIMUM_ZOOM_MAGNIFICATION, MAXIMUM_ZOOM_MAGNIFICATION)
@@ -652,7 +685,7 @@ mod tests {
         controller.set_enabled(true);
         controller.observe(&two_hands(0.35, 0.65), Some(2.0), 1_000);
 
-        let decision = controller.observe(&two_hands(0.15, 0.85), Some(2.0), 2_000);
+        let decision = controller.observe(&two_hands(0.25, 0.75), Some(2.0), 2_000);
 
         assert!(decision.requested_magnification.unwrap() < 2.0);
         assert!(
@@ -664,15 +697,15 @@ mod tests {
     fn two_hand_zoom_advances_on_each_100_ms_observation() {
         let mut controller = HandsTrackingController::default();
         controller.set_enabled(true);
-        controller.zoom_decision(Some(0.4), Some(2.0), 1_000, false);
+        controller.zoom_decision(Some(0.4), Some(2.0), 1_000, false, 0.0);
         let mut zoom = 2.0;
         for at in [1_100, 1_200, 1_300] {
-            let decision = controller.zoom_decision(Some(0.8), Some(zoom), at, false);
+            let decision = controller.zoom_decision(Some(0.8), Some(zoom), at, false, 0.0);
             let requested = decision.requested_magnification.unwrap();
             assert!(requested < zoom);
             assert!(zoom - requested <= ZOOM_MAXIMUM_STEP + f32::EPSILON);
             zoom = requested;
-            let too_soon = controller.zoom_decision(Some(0.8), Some(zoom), at + 50, false);
+            let too_soon = controller.zoom_decision(Some(0.8), Some(zoom), at + 50, false, 0.0);
             assert_eq!(too_soon.requested_magnification, None);
         }
         assert!(zoom < 1.8);
@@ -682,17 +715,46 @@ mod tests {
     fn zoom_uses_fine_final_steps_then_resumes_after_a_short_settle() {
         let mut controller = HandsTrackingController::default();
         controller.set_enabled(true);
-        controller.zoom_decision(Some(0.4), Some(2.0), 1_000, false);
+        controller.zoom_decision(Some(0.4), Some(2.0), 1_000, false, 0.0);
         controller.zoom_destination = Some(2.01);
-        let fine = controller.zoom_decision(Some(0.4), Some(2.0), 1_100, false);
+        let fine = controller.zoom_decision(Some(0.4), Some(2.0), 1_100, false, 0.0);
         assert_eq!(fine.requested_magnification, Some(2.01));
-        let arrived = controller.zoom_decision(Some(0.4), Some(2.01), 1_200, false);
+        let arrived = controller.zoom_decision(Some(0.4), Some(2.01), 1_200, false, 0.0);
         assert_eq!(arrived.requested_magnification, None);
         assert_eq!(controller.zoom_settle_until_ms, Some(1_350));
-        let settling = controller.zoom_decision(Some(0.2), Some(2.01), 1_300, false);
+        let settling = controller.zoom_decision(Some(0.2), Some(2.01), 1_300, false, 0.0);
         assert_eq!(settling.requested_magnification, None);
-        let resumed = controller.zoom_decision(Some(0.2), Some(2.01), 1_400, false);
+        let resumed = controller.zoom_decision(Some(0.2), Some(2.01), 1_400, false, 0.0);
         assert!(resumed.requested_magnification.unwrap() > 2.01);
+    }
+
+    #[test]
+    fn approaching_edges_progressively_strengthens_zoom_out() {
+        let mut previous_step = 0.0;
+        for urgency in [0.0, 0.5, 1.0] {
+            let mut controller = HandsTrackingController::default();
+            controller.zoom_decision(Some(0.4), Some(2.0), 1_000, false, 0.0);
+            let decision = controller.zoom_decision(Some(0.9), Some(2.0), 1_100, false, urgency);
+            let step = 2.0 - decision.requested_magnification.unwrap();
+            assert!(step > previous_step);
+            assert!(step <= EDGE_ZOOM_MAXIMUM_STEP + f32::EPSILON);
+            previous_step = step;
+        }
+    }
+
+    #[test]
+    fn edge_hands_bypass_settling_but_still_freeze_when_one_disappears() {
+        let mut controller = HandsTrackingController::default();
+        controller.set_enabled(true);
+        controller.observe(&two_hands(0.35, 0.65), Some(2.0), 1_000);
+        controller.zoom_settle_until_ms = Some(2_500);
+        let edge = controller.observe(&two_hands(0.08, 0.92), Some(2.0), 2_000);
+        assert!(!edge.rapid_motion);
+        assert!((edge.requested_magnification.unwrap() - 1.8).abs() < 0.001);
+        let lost = controller.observe(&hand_at(0.08, 0.5, 0.1), Some(1.8), 2_100);
+        assert!(lost.zoom_frozen);
+        assert_eq!(lost.requested_magnification, None);
+        assert_eq!(controller.zoom_destination, None);
     }
 
     #[test]
