@@ -98,8 +98,13 @@
             <button id="auto-zoom-toggle" class="secondary compact" type="button" aria-pressed="false" aria-label="Auto zoom" title="Auto zoom" disabled></button>
           </div>
           <div class="preview-overlay-tools" role="group" aria-label="Preview controls">
-            <button id="preview-audio-mute" type="button" data-audio-mute aria-label="Mute Tarsier Microphone" aria-pressed="false" title="Mute Tarsier Microphone"></button>
-            <button id="preview-video-mute" type="button" aria-label="Mute video output" aria-pressed="false" title="Mute video output"></button>
+            <div class="mute-controls" role="group" aria-label="Output mute controls">
+              <button id="preview-mute-toggle" type="button" aria-label="Mute microphone and video" aria-pressed="false" title="Mute microphone and video" disabled></button>
+              <div class="mute-options" role="group" aria-label="Individual output mute controls">
+                <button id="preview-audio-mute" type="button" data-audio-mute aria-label="Mute Tarsier Microphone" aria-pressed="false" title="Mute Tarsier Microphone"></button>
+                <button id="preview-video-mute" type="button" aria-label="Mute video output" aria-pressed="false" title="Mute video output"></button>
+              </div>
+            </div>
             <button id="preview-mirror" type="button" aria-label="Mirror preview" aria-pressed="false" title="Mirror only this preview; output and photos are unchanged"></button>
             <div class="skeleton-controls" role="group" aria-label="Landmark overlays">
               <button id="skeleton-toggle" type="button" aria-label="Skeletons" aria-pressed="false" title="Show all skeletons"></button>

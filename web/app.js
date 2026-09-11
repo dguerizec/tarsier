@@ -3,7 +3,7 @@ import { avatarDeleteButton } from "/assets/avatar-delete.js";
 import { createDaemonMonitor } from "/assets/daemon-monitor.js";
 import { installPreviewDrag, sourcePanTiltDirection } from "/assets/preview-drag.js";
 import { syncAudioCapture } from "/assets/audio.js";
-import { createElement, FolderOpen, FlipHorizontal2, Bone, Power, Video, VideoOff, ChevronDown, ScanFace, Hand, ZoomIn } from "/assets/lucide.js";
+import { createElement, FolderOpen, FlipHorizontal2, Bone, Power, Mic, MicOff, Video, VideoOff, ChevronDown, ScanFace, Hand, ZoomIn } from "/assets/lucide.js";
 
 const $ = (selector) => document.querySelector(selector);
 const cameraPanel = $("#camera-panel");
@@ -1127,12 +1127,43 @@ $("#demo-trigger").addEventListener("click", async () => {
   await fetch("/api/v1/scenarios/open-palm-demo/trigger", { method: "POST" });
 });
 
-const skeletonControls = skeletonToggle.closest(".skeleton-controls");
-skeletonControls.addEventListener("keydown", () => skeletonControls.classList.add("keyboard-open"));
-skeletonControls.addEventListener("pointerdown", () => skeletonControls.classList.remove("keyboard-open"));
-skeletonControls.addEventListener("focusout", event => {
-  if (!skeletonControls.contains(event.relatedTarget)) skeletonControls.classList.remove("keyboard-open");
+for (const controls of document.querySelectorAll(".skeleton-controls, .mute-controls")) {
+  controls.addEventListener("keydown", () => controls.classList.add("keyboard-open"));
+  controls.addEventListener("pointerdown", () => controls.classList.remove("keyboard-open"));
+  controls.addEventListener("focusout", event => {
+    if (!controls.contains(event.relatedTarget)) controls.classList.remove("keyboard-open");
+  });
+}
+
+const muteToggle = $("#preview-mute-toggle");
+const muteOutputs = [$("#preview-audio-mute"), videoMute];
+function syncMuteToggle() {
+  const muted = muteOutputs.map(button => button.getAttribute("aria-pressed") === "true");
+  const count = muted.filter(Boolean).length;
+  muteToggle.disabled = muteOutputs.some(button => button.disabled);
+  muteToggle.setAttribute("aria-pressed", count === 2 ? "true" : count ? "mixed" : "false");
+  muteToggle.title = count === 2 ? "Unmute microphone and video" : "Mute microphone and video";
+  muteToggle.setAttribute("aria-label", muteToggle.title);
+  const key = muted.join(",");
+  if (muteToggle.dataset.outputs !== key) {
+    muteToggle.dataset.outputs = key;
+    muteToggle.replaceChildren(...[muted[0] ? MicOff : Mic, muted[1] ? VideoOff : Video].map(icon =>
+      createElement(icon, {width: 12, height: 12, "aria-hidden": "true", focusable: "false"})));
+  }
+}
+const muteObserver = new MutationObserver(syncMuteToggle);
+for (const button of muteOutputs) {
+  muteObserver.observe(button, {attributes: true, attributeFilter: ["aria-pressed", "disabled"]});
+}
+muteToggle.addEventListener("click", () => {
+  const muted = !muteOutputs.every(button => button.getAttribute("aria-pressed") === "true");
+  // Reuse each output's pending state, authorization checks and error reporting.
+  for (const button of muteOutputs) {
+    if ((button.getAttribute("aria-pressed") === "true") !== muted) button.click();
+  }
 });
+syncMuteToggle();
+
 skeletonToggle.addEventListener("click", () => {
   const enabled = !Object.values(skeletonModels).some(Boolean);
   for (const model of Object.keys(skeletonModels)) setSkeletonEnabled(model, enabled, false);

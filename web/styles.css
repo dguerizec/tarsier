@@ -534,3 +534,12 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .skeleton-controls.keyboard-open .skeleton-options,
 .skeleton-controls:has(:focus-visible) .skeleton-options { visibility: visible; pointer-events: auto; }
 .preview-overlay-tools #skeleton-toggle[aria-pressed="mixed"] { background: #35472a; border-color: var(--green); color: var(--green); }
+
+.mute-controls { position: relative; }
+.mute-options { position: absolute; width: max-content; right: 100%; top: 0; display: flex; gap: 6px; padding-right: 6px; visibility: hidden; pointer-events: none; }
+.mute-controls:hover .mute-options,
+.mute-controls.keyboard-open .mute-options,
+.mute-controls:has(:focus-visible) .mute-options { visibility: visible; pointer-events: auto; }
+.preview-overlay-tools #preview-mute-toggle { display: flex; justify-content: center; gap: 1px; }
+.preview-overlay-tools #preview-mute-toggle[aria-pressed="true"] { background: #3a211b; border-color: #ef806b; color: #ffb6a5; }
+.preview-overlay-tools #preview-mute-toggle[aria-pressed="mixed"] { background: #392f1d; border-color: #e3b66d; color: #f4cf91; }
