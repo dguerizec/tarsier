@@ -85,8 +85,10 @@ pub fn internal(config: &crate::config::Config, state: &crate::model::RuntimeSta
             || state.camera.face_tracking.auto_zoom.enabled
             || config.perception.phone_near_mouth.enabled,
         hands: state.camera.hands_tracking.enabled || config.perception.phone_near_mouth.enabled,
-        pose: state.video_effects.output_mode == crate::model::VideoOutputMode::Camera
-            && state.video_effects.background_enabled,
+        // Face tracking uses calibrated shoulders when the face mesh is lost.
+        pose: state.camera.face_tracking.enabled
+            || (state.video_effects.output_mode == crate::model::VideoOutputMode::Camera
+                && state.video_effects.background_enabled),
     };
     for scenario in config.scenarios.iter().filter(|s| s.enabled) {
         if let Some(required) = Models::event(&scenario.event) {
@@ -135,6 +137,25 @@ mod tests {
         drop(a);
         assert_eq!(registry.models(), Models::default());
     }
+    #[test]
+    fn face_tracking_keeps_its_shoulder_fallback_available_without_background_effects() {
+        let mut config = crate::config::Config::default();
+        config.perception.phone_near_mouth.enabled = false;
+        config.scenarios.clear();
+        let mut state = crate::model::RuntimeState::default();
+        state.camera.face_tracking.enabled = true;
+        assert_eq!(
+            internal(&config, &state),
+            Models {
+                face: true,
+                hands: false,
+                pose: true
+            }
+        );
+        state.camera.face_tracking.enabled = false;
+        assert_eq!(internal(&config, &state), Models::default());
+    }
+
     #[test]
     fn internal_dependencies_preserve_gestures_and_background_pose() {
         let mut config = crate::config::Config::default();
