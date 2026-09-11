@@ -24,7 +24,10 @@ tracking is a separate model instance and keeps its existing effect-based lifeti
 
 ## UI consumers
 
-The preview has separate Face, Hands and Body landmark buttons. Their selections
+The preview groups Face, Hands and Body controls behind a Skeletons button. Hover
+or keyboard focus reveals the three choices horizontally to its left. Clicking
+Skeletons hides every trace when any is enabled, or enables all three when none
+is enabled. A mixed button state indicates a partial selection. Their selections
 are stored independently; an existing all-skeleton preference initializes all
 three. Visible camera previews request only their enabled traces. Hidden pages,
 non-camera identities and disconnected pages release that demand. Another page

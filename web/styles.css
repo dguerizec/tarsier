@@ -526,3 +526,11 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .performance-delegate-row button { padding: 4px 9px; font-size: 11px; background: #223343; color: #dfe8ef; }
 .performance-delegate-row button[aria-pressed="true"] { background: #b6ed78; color: #0e1908; }
 .performance-delegate-row button:disabled { opacity: .5; cursor: default; }
+
+/* Expand toward the image without moving the vertical preview toolbar. */
+.skeleton-controls { position: relative; }
+.skeleton-options { position: absolute; width: max-content; right: 100%; top: 0; display: flex; gap: 6px; padding-right: 6px; visibility: hidden; pointer-events: none; }
+.skeleton-controls:hover .skeleton-options,
+.skeleton-controls.keyboard-open .skeleton-options,
+.skeleton-controls:has(:focus-visible) .skeleton-options { visibility: visible; pointer-events: auto; }
+.preview-overlay-tools #skeleton-toggle[aria-pressed="mixed"] { background: #35472a; border-color: var(--green); color: var(--green); }

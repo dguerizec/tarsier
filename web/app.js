@@ -84,6 +84,7 @@ const photoStatus = $("#photo-status");
 const preview = $("#preview");
 const overlay = $("#landmark-overlay");
 const overlayContext = overlay.getContext("2d");
+const skeletonToggle = $("#skeleton-toggle");
 const skeletonToggles = Object.fromEntries(["face", "hands", "pose"].map(model => [model, $(`#skeleton-${model}`)]));
 const outputModeInputs = [...document.querySelectorAll("[data-output-mode]")];
 const backgroundToggle = $("#background-toggle");
@@ -574,15 +575,20 @@ function syncDetectionDemand() {
   eventClient.setPerceptionDemand(Object.fromEntries(Object.entries(skeletonModels).map(([model, enabled]) => [model, visible && enabled])));
 }
 
-function setSkeletonEnabled(model, enabled) {
+function setSkeletonEnabled(model, enabled, publish = true) {
   skeletonModels[model] = enabled;
   localStorage.setItem(`tarsier.skeleton.${model}`, String(enabled));
   const button = skeletonToggles[model];
   button.setAttribute("aria-pressed", String(enabled));
   const label = model === "pose" ? "body" : model;
   button.title = `${enabled ? "Hide" : "Show"} ${label} landmarks. Detection may remain active for gestures or other consumers.`;
-  syncDetectionDemand();
-  drawSkeletons();
+  const count = Object.values(skeletonModels).filter(Boolean).length;
+  skeletonToggle.setAttribute("aria-pressed", count === 3 ? "true" : count ? "mixed" : "false");
+  skeletonToggle.title = count ? "Hide all skeletons" : "Show all skeletons";
+  if (publish) {
+    syncDetectionDemand();
+    drawSkeletons();
+  }
 }
 
 function refreshPreview() {
@@ -834,6 +840,7 @@ function renderOutputMode(videoEffects) {
   }
   modelChoose.disabled = modelPending || !socketConnected;
   portraitChoose.disabled = portraitPending || !socketConnected;
+  skeletonToggle.disabled = identity !== "camera";
   Object.values(skeletonToggles).forEach(button => { button.disabled = identity !== "camera"; });
   syncDetectionDemand();
   const status = outputModeError
@@ -1120,6 +1127,18 @@ $("#demo-trigger").addEventListener("click", async () => {
   await fetch("/api/v1/scenarios/open-palm-demo/trigger", { method: "POST" });
 });
 
+const skeletonControls = skeletonToggle.closest(".skeleton-controls");
+skeletonControls.addEventListener("keydown", () => skeletonControls.classList.add("keyboard-open"));
+skeletonControls.addEventListener("pointerdown", () => skeletonControls.classList.remove("keyboard-open"));
+skeletonControls.addEventListener("focusout", event => {
+  if (!skeletonControls.contains(event.relatedTarget)) skeletonControls.classList.remove("keyboard-open");
+});
+skeletonToggle.addEventListener("click", () => {
+  const enabled = !Object.values(skeletonModels).some(Boolean);
+  for (const model of Object.keys(skeletonModels)) setSkeletonEnabled(model, enabled, false);
+  syncDetectionDemand();
+  drawSkeletons();
+});
 for (const [model, button] of Object.entries(skeletonToggles)) {
   button.addEventListener("click", () => setSkeletonEnabled(model, !skeletonModels[model]));
 }
@@ -2000,7 +2019,7 @@ for (const [button, icon] of [[faceTrackingToggle, ScanFace], [handsTrackingTogg
 
 cameraPowerToggle.append(createElement(Power, { width: 18, height: 18, "aria-hidden": "true", focusable: "false" }));
 
-for (const [button, icon] of [[$("#preview-mirror"), FlipHorizontal2], [skeletonToggles.face, ScanFace], [skeletonToggles.hands, Hand], [skeletonToggles.pose, Bone]]) {
+for (const [button, icon] of [[$("#preview-mirror"), FlipHorizontal2], [skeletonToggles.face, ScanFace], [skeletonToggles.hands, Hand], [skeletonToggles.pose, Bone], [skeletonToggle, Bone]]) {
   button.append(createElement(icon, { width: 15, height: 15, "aria-hidden": "true", focusable: "false" }));
 }
 $("#preview-mirror").addEventListener("click", () => setPreviewMirror(!previewMirrorEnabled));
