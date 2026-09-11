@@ -543,9 +543,14 @@ when the face disappears, stable shoulders therefore preserve the inferred
 head height instead of causing a tilt jump. Manual pan, tilt, recenter, and
 preset controls stop either tracking mode before moving and remain available
 whenever the camera is connected. Auto zoom requires Face tracking and a valid
-face mesh. It measures the horizontal face-mesh span, smooths it, starts
-correcting beyond 6%, and derives one zoom destination from the observed size
-ratio. When the face mesh disappears, any pending zoom destination is cancelled,
+face mesh. It measures the horizontal face-mesh span and starts correcting
+beyond a symmetric 6% deviation from the calibrated size. A pending correction
+stops when the measured size returns within 2%, or is reconsidered immediately
+when the face crosses the reference size. Frames captured before the latest
+applied zoom command cannot trigger another correction, and smoothing restarts
+after that command to avoid blending measurements from different zoom levels.
+The controller derives its zoom destination from the observed size ratio. When
+the face mesh disappears, any pending zoom destination is cancelled,
 the size filter is reset, and zoom remains frozen until a valid face mesh
 returns. Shoulder fallback remains available for pan and tilt but never affects
 zoom. The controller approaches each destination with proportional bounded

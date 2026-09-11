@@ -4402,6 +4402,9 @@ async fn drive_face_tracking(
     } else {
         None
     };
+    if auto_zoom.requested_magnification.is_some() && auto_zoom_error.is_none() {
+        controller.record_auto_zoom_applied(unix_ms());
+    }
     let motion = controller.motion();
     drop(controller);
     let controlled_zoom = camera.controlled_zoom_magnification();

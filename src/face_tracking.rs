@@ -23,6 +23,7 @@ const MAXIMUM_IMAGE_ERROR: f32 = 0.5;
 const MINIMUM_FACE_SIZE: f32 = 0.02;
 const FACE_SIZE_SMOOTHING_ALPHA: f32 = 0.35;
 const AUTO_ZOOM_START_THRESHOLD_FRACTION: f32 = 0.06;
+const AUTO_ZOOM_STOP_THRESHOLD_FRACTION: f32 = 0.02;
 const AUTO_ZOOM_MAXIMUM_STEP: f32 = 0.16;
 const AUTO_ZOOM_MINIMUM_STEP: f32 = 0.03;
 const AUTO_ZOOM_RAMP_GAIN: f32 = 0.55;
@@ -75,6 +76,7 @@ pub struct FaceTrackingController {
     smoothed_face_size: Option<f32>,
     recalibrate_auto_zoom_after_ms: Option<u64>,
     last_auto_zoom_command_at_ms: Option<u64>,
+    last_auto_zoom_applied_at_ms: Option<u64>,
     auto_zoom_destination: Option<f32>,
     auto_zoom_settle_until_ms: Option<u64>,
 }
@@ -103,6 +105,7 @@ impl FaceTrackingController {
         self.smoothed_face_size = None;
         self.recalibrate_auto_zoom_after_ms = enabled.then_some(calibrate_after_ms);
         self.last_auto_zoom_command_at_ms = None;
+        self.last_auto_zoom_applied_at_ms = None;
         self.auto_zoom_destination = None;
         self.auto_zoom_settle_until_ms = None;
     }
@@ -115,8 +118,16 @@ impl FaceTrackingController {
         self.smoothed_face_size = None;
         self.recalibrate_auto_zoom_after_ms = Some(calibrate_after_ms);
         self.last_auto_zoom_command_at_ms = None;
+        self.last_auto_zoom_applied_at_ms = None;
         self.auto_zoom_destination = None;
         self.auto_zoom_settle_until_ms = None;
+    }
+
+    pub fn record_auto_zoom_applied(&mut self, applied_at_ms: u64) {
+        self.last_auto_zoom_applied_at_ms = Some(applied_at_ms);
+        // The next image has a different scale; do not blend it with samples
+        // taken before the zoom command.
+        self.smoothed_face_size = None;
     }
 
     pub fn set_tracking_zoom(&mut self, zoom: Option<f32>) {
@@ -261,6 +272,13 @@ impl FaceTrackingController {
             return decision;
         }
 
+        if self
+            .last_auto_zoom_applied_at_ms
+            .is_some_and(|applied| captured_at_ms <= applied)
+        {
+            return decision;
+        }
+
         if self.auto_zoom_target_face_size.is_none() {
             self.auto_zoom_target_face_size = Some(face_size);
             self.smoothed_face_size = Some(face_size);
@@ -282,7 +300,32 @@ impl FaceTrackingController {
             return decision;
         };
 
+        let target = self.auto_zoom_target_face_size.unwrap_or(face_size);
+        let observed_error = face_size / target - 1.0;
+        // A destination estimated from an older frame must not keep zooming
+        // once the measured face has regained its reference size.
+        if observed_error.abs() <= AUTO_ZOOM_STOP_THRESHOLD_FRACTION {
+            if self.auto_zoom_destination.take().is_some() {
+                self.auto_zoom_settle_until_ms =
+                    Some(captured_at_ms.saturating_add(AUTO_ZOOM_SETTLE_MS));
+            }
+            self.smoothed_face_size = Some(face_size);
+            decision.face_size = Some(face_size);
+            return decision;
+        }
         let mut current_size = smoothed;
+        if self
+            .auto_zoom_destination
+            .is_some_and(|destination| observed_error * (destination - current_zoom) > 0.0)
+        {
+            // The subject crossed the target size. Discard lagging samples
+            // before choosing the opposite correction direction.
+            self.auto_zoom_destination = None;
+            self.auto_zoom_settle_until_ms = None;
+            self.smoothed_face_size = Some(face_size);
+            current_size = face_size;
+            decision.face_size = Some(face_size);
+        }
         if let Some(settle_until) = self.auto_zoom_settle_until_ms {
             if captured_at_ms < settle_until {
                 return decision;
@@ -293,8 +336,9 @@ impl FaceTrackingController {
             decision.face_size = Some(face_size);
         }
 
-        let target = self.auto_zoom_target_face_size.unwrap_or(current_size);
-        let relative_error = target / current_size - 1.0;
+        // Compare both directions to the same reference size, not to the
+        // measured size (which gave zoom-in and zoom-out different thresholds).
+        let relative_error = 1.0 - current_size / target;
         if let Some(destination) = self.auto_zoom_destination {
             let destination_direction = (destination - current_zoom).signum();
             if relative_error.abs() >= AUTO_ZOOM_START_THRESHOLD_FRACTION
@@ -341,6 +385,12 @@ impl FaceTrackingController {
             .round()
             / 100.0;
         if (requested - current_zoom).abs() < AUTO_ZOOM_DESTINATION_TOLERANCE {
+            // Rounding can make the last step smaller than the send threshold
+            // while the unrounded destination remains outside its tolerance.
+            // Finish this segment so fresh geometry can choose the next one.
+            self.auto_zoom_destination = None;
+            self.auto_zoom_settle_until_ms =
+                Some(captured_at_ms.saturating_add(AUTO_ZOOM_SETTLE_MS));
             return decision;
         }
         self.last_auto_zoom_command_at_ms = Some(captured_at_ms);
@@ -834,6 +884,132 @@ mod tests {
 
         assert_eq!(decision.requested_magnification, None);
         assert!(!decision.at_limit);
+    }
+
+    #[test]
+    fn auto_zoom_uses_symmetric_reference_size_thresholds() {
+        for size in [0.1884, 0.2116] {
+            let mut controller = FaceTrackingController::default();
+            controller.set_auto_zoom_enabled(true, 0);
+            controller.auto_zoom(Some(0.2), Some(2.0), 1_000);
+            controller.smoothed_face_size = Some(size);
+            assert_eq!(
+                controller
+                    .auto_zoom(Some(size), Some(2.0), 1_100)
+                    .requested_magnification,
+                None
+            );
+        }
+        for size in [0.186, 0.214] {
+            let mut controller = FaceTrackingController::default();
+            controller.set_auto_zoom_enabled(true, 0);
+            controller.auto_zoom(Some(0.2), Some(2.0), 1_000);
+            controller.smoothed_face_size = Some(size);
+            let requested = controller
+                .auto_zoom(Some(size), Some(2.0), 1_100)
+                .requested_magnification
+                .unwrap();
+            assert_eq!(requested > 2.0, size < 0.2);
+        }
+    }
+
+    #[test]
+    fn auto_zoom_cancels_old_destinations_when_reference_size_is_recovered() {
+        for initial_size in [0.1, 0.35] {
+            let mut controller = FaceTrackingController::default();
+            controller.set_auto_zoom_enabled(true, 0);
+            controller.auto_zoom(Some(0.2), Some(2.0), 1_000);
+            let zoom = controller
+                .auto_zoom(Some(initial_size), Some(2.0), 1_100)
+                .requested_magnification
+                .unwrap();
+            assert!(controller.auto_zoom_destination.is_some());
+            let recovered = controller.auto_zoom(Some(0.2), Some(zoom), 1_200);
+            assert_eq!(recovered.requested_magnification, None);
+            assert_eq!(controller.auto_zoom_destination, None);
+            assert_eq!(controller.smoothed_face_size, Some(0.2));
+        }
+    }
+
+    #[test]
+    fn auto_zoom_reverses_on_measured_overshoot_without_waiting_for_smoothing() {
+        let mut controller = FaceTrackingController::default();
+        controller.set_auto_zoom_enabled(true, 0);
+        controller.auto_zoom(Some(0.2), Some(2.0), 1_000);
+        let zoom = controller
+            .auto_zoom(Some(0.1), Some(2.0), 1_100)
+            .requested_magnification
+            .unwrap();
+        let returned = controller.auto_zoom(Some(0.22), Some(zoom), 1_200);
+        assert!(returned.requested_magnification.unwrap() < zoom);
+        assert_eq!(returned.target_face_size, Some(0.2));
+    }
+
+    #[test]
+    fn auto_zoom_ignores_pre_command_frames_and_reacts_to_a_fast_return() {
+        let mut controller = FaceTrackingController::default();
+        controller.set_auto_zoom_enabled(true, 0);
+        controller.auto_zoom(Some(0.2), Some(2.0), 1_000);
+        let zoom = controller
+            .auto_zoom(Some(0.1), Some(2.0), 1_100)
+            .requested_magnification
+            .unwrap();
+        controller.record_auto_zoom_applied(1_250);
+        for captured in [1_200, 1_250] {
+            let stale = controller.auto_zoom(Some(0.1), Some(zoom), captured);
+            assert_eq!(stale.requested_magnification, None);
+            assert_eq!(controller.smoothed_face_size, None);
+        }
+        let returned = controller.auto_zoom(Some(0.22), Some(zoom), 1_300);
+        assert!(returned.requested_magnification.unwrap() < zoom);
+        assert_eq!(returned.target_face_size, Some(0.2));
+    }
+
+    #[test]
+    fn auto_zoom_reassesses_after_a_rounded_final_step_cannot_be_sent() {
+        let mut controller = FaceTrackingController::default();
+        controller.set_auto_zoom_enabled(true, 0);
+        controller.auto_zoom(Some(0.2), Some(2.0), 1_000);
+        controller.auto_zoom_destination = Some(2.580645);
+        controller.smoothed_face_size = Some(0.1792);
+        let last_step = controller.auto_zoom(Some(0.1792), Some(2.56), 1_100);
+        assert_eq!(last_step.requested_magnification, None);
+        assert_eq!(controller.auto_zoom_destination, None);
+        let reassessed = controller.auto_zoom(Some(0.1792), Some(2.56), 1_400);
+        assert!(reassessed.requested_magnification.unwrap() > 2.58);
+    }
+
+    #[test]
+    fn auto_zoom_preserves_reference_size_across_simulated_distance_round_trips() {
+        for transition_frames in [1, 5, 20] {
+            let mut controller = FaceTrackingController::default();
+            controller.set_auto_zoom_enabled(true, 0);
+            let mut zoom = 2.0;
+            let mut timestamp = 1_000;
+            let mut previous_scale = 0.1;
+            controller.auto_zoom(Some(0.2), Some(zoom), timestamp);
+            // Ideal linear digital zoom with different subject movement speeds.
+            // This checks the controller's ratio, not physical camera latency.
+            for target_scale in [0.07, 0.1, 0.07, 0.1] {
+                for frame in 1..=transition_frames + 80 {
+                    let progress = (frame as f32 / transition_frames as f32).min(1.0);
+                    let scale = previous_scale + (target_scale - previous_scale) * progress;
+                    timestamp += 100;
+                    let decision = controller.auto_zoom(Some(scale * zoom), Some(zoom), timestamp);
+                    if let Some(requested) = decision.requested_magnification {
+                        zoom = requested;
+                        controller.record_auto_zoom_applied(timestamp + 50);
+                    }
+                    assert_eq!(decision.target_face_size, Some(0.2));
+                }
+                assert!(
+                    (target_scale * zoom / 0.2 - 1.0).abs() <= 0.061,
+                    "frames={transition_frames}, scale={target_scale}, zoom={zoom}, destination={:?}",
+                    controller.auto_zoom_destination
+                );
+                previous_scale = target_scale;
+            }
+        }
     }
 
     #[test]
