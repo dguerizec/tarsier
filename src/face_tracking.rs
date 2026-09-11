@@ -14,7 +14,9 @@ const PAN_STOP_THRESHOLD: f32 = 0.04;
 const TILT_START_THRESHOLD: f32 = 0.09;
 const TILT_STOP_THRESHOLD: f32 = 0.045;
 const MINIMUM_SPEED_FRACTION: f64 = 0.01;
-const MAXIMUM_SPEED_FRACTION: f64 = 0.10;
+const BASE_MAXIMUM_SPEED_FRACTION: f64 = 0.10;
+const MAXIMUM_SPEED_FRACTION: f64 = 0.40;
+const MAXIMUM_ACCELERATION_STEP: f64 = 0.12;
 const ACCELERATION_STEP: f64 = 0.018;
 const DECELERATION_STEP: f64 = 0.02;
 const MAXIMUM_IMAGE_ERROR: f32 = 0.5;
@@ -172,7 +174,7 @@ impl FaceTrackingController {
         let speed_fraction = if directions == (0, 0) {
             0.0
         } else {
-            let requested = proportional_speed(
+            let strength = tracking_strength(
                 x - TARGET_X,
                 y - TARGET_Y,
                 pan_direction,
@@ -189,7 +191,19 @@ impl FaceTrackingController {
             } else {
                 0.0
             };
-            ramp_speed(current, requested)
+            let offset = ((strength - 0.15) / 0.85).clamp(0.0, 1.0);
+            // Smoothstep brings catch-up forward into medium offsets and flattens
+            // its response near the edge, without a slope jump at either end.
+            let catch_up = offset * offset * (3.0 - 2.0 * offset);
+            let requested = MINIMUM_SPEED_FRACTION
+                + strength * (BASE_MAXIMUM_SPEED_FRACTION - MINIMUM_SPEED_FRACTION)
+                + catch_up * (MAXIMUM_SPEED_FRACTION - BASE_MAXIMUM_SPEED_FRACTION);
+            let acceleration = if reversing {
+                ACCELERATION_STEP
+            } else {
+                ACCELERATION_STEP + catch_up * (MAXIMUM_ACCELERATION_STEP - ACCELERATION_STEP)
+            };
+            ramp_speed(current, requested, acceleration)
         };
         FaceTarget {
             x,
@@ -322,7 +336,7 @@ impl FaceTrackingController {
     }
 }
 
-fn proportional_speed(
+fn tracking_strength(
     pan_error: f32,
     tilt_error: f32,
     pan_direction: i8,
@@ -330,8 +344,7 @@ fn proportional_speed(
 ) -> f64 {
     let pan_strength = axis_strength(pan_error, pan_direction, PAN_STOP_THRESHOLD);
     let tilt_strength = axis_strength(tilt_error, image_tilt_direction, TILT_STOP_THRESHOLD);
-    let strength = f64::from(pan_strength.max(tilt_strength));
-    MINIMUM_SPEED_FRACTION + strength * (MAXIMUM_SPEED_FRACTION - MINIMUM_SPEED_FRACTION)
+    f64::from(pan_strength.max(tilt_strength))
 }
 
 fn axis_strength(error: f32, direction: i8, stop_threshold: f32) -> f32 {
@@ -341,11 +354,13 @@ fn axis_strength(error: f32, direction: i8, stop_threshold: f32) -> f32 {
     ((error.abs() - stop_threshold) / (MAXIMUM_IMAGE_ERROR - stop_threshold)).clamp(0.0, 1.0)
 }
 
-fn ramp_speed(current: f64, requested: f64) -> f64 {
+fn ramp_speed(current: f64, requested: f64, acceleration: f64) -> f64 {
     if requested > current {
-        requested.min(current + ACCELERATION_STEP)
+        requested.min(current + acceleration)
     } else {
-        requested.max(current - DECELERATION_STEP)
+        // Brake faster after a catch-up movement to avoid carrying its speed
+        // into the center of the image.
+        requested.max(current - DECELERATION_STEP.max(current * 0.25))
     }
 }
 
@@ -571,8 +586,69 @@ mod tests {
         controller.record_motion(first.motion);
         let second = controller.face_target(&face_at(0.9, 0.5), &[]).unwrap();
         assert!(second.motion.speed_fraction > first.motion.speed_fraction);
-        assert!(second.motion.speed_fraction <= first.motion.speed_fraction + ACCELERATION_STEP);
+        assert!(
+            second.motion.speed_fraction <= first.motion.speed_fraction + MAXIMUM_ACCELERATION_STEP
+        );
         assert!(second.motion.speed_fraction <= MAXIMUM_SPEED_FRACTION);
+    }
+
+    #[test]
+    fn larger_offsets_accelerate_faster_and_reach_catch_up_speed() {
+        let mut previous_start = 0.0;
+        for x in [0.59, 0.7, 0.8, 0.9, 1.0] {
+            let mut controller = FaceTrackingController::default();
+            let first = controller.face_target(&face_at(x, 0.5), &[]).unwrap();
+            assert!(first.motion.speed_fraction > previous_start);
+            assert!(first.motion.speed_fraction <= MAXIMUM_ACCELERATION_STEP);
+            previous_start = first.motion.speed_fraction;
+            controller.record_motion(first.motion);
+            for _ in 0..20 {
+                let target = controller.face_target(&face_at(x, 0.5), &[]).unwrap();
+                assert!(target.motion.speed_fraction <= MAXIMUM_SPEED_FRACTION);
+                controller.record_motion(target.motion);
+            }
+            if x >= 0.8 {
+                assert!(controller.motion().speed_fraction > BASE_MAXIMUM_SPEED_FRACTION);
+            }
+        }
+    }
+
+    #[test]
+    fn catch_up_builds_at_medium_offsets_and_flattens_near_the_edge() {
+        let starts: Vec<f64> = [0.7, 0.8, 0.9, 1.0]
+            .into_iter()
+            .map(|x| {
+                FaceTrackingController::default()
+                    .face_target(&face_at(x, 0.5), &[])
+                    .unwrap()
+                    .motion
+                    .speed_fraction
+            })
+            .collect();
+        assert!(starts[0] > 0.025);
+        assert!(starts[1] > 0.06);
+        let middle_increase = starts[1] - starts[0];
+        let edge_increase = starts[3] - starts[2];
+        assert!(edge_increase < middle_increase * 0.5);
+    }
+
+    #[test]
+    fn catch_up_motion_brakes_and_stops_at_the_center() {
+        let mut controller = FaceTrackingController::default();
+        controller.record_motion(FaceTrackingMotion {
+            pan_direction: 1,
+            tilt_direction: 0,
+            speed_fraction: MAXIMUM_SPEED_FRACTION,
+        });
+        for _ in 0..8 {
+            let previous = controller.motion().speed_fraction;
+            let target = controller.face_target(&face_at(0.57, 0.5), &[]).unwrap();
+            assert!(target.motion.speed_fraction < previous);
+            controller.record_motion(target.motion);
+        }
+        assert!(controller.motion().speed_fraction < 0.04);
+        let centered = controller.face_target(&face_at(0.5, 0.5), &[]).unwrap();
+        assert_eq!(centered.motion, FaceTrackingMotion::default());
     }
 
     #[test]
@@ -595,7 +671,7 @@ mod tests {
                 expected
             );
             assert!(target.motion.speed_fraction > 0.06);
-            assert!(target.motion.speed_fraction <= 0.06 + ACCELERATION_STEP);
+            assert!(target.motion.speed_fraction <= 0.06 + MAXIMUM_ACCELERATION_STEP);
         }
     }
 
