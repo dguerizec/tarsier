@@ -1,4 +1,5 @@
 mod api;
+mod background;
 mod audio;
 mod audio_gain;
 mod audio_noise;
@@ -286,6 +287,7 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
     preview
         .effects()
         .set_transform(user_settings.video_transform);
+    preview.effects().set_background_plugin(&user_settings.background_plugin);
     preview.effects().set_background(
         user_settings.background_enabled,
         user_settings.background_effect,
@@ -300,6 +302,7 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
             state.video_effects.avatar_engine = avatar_engine;
             state.video_effects.background_enabled = user_settings.background_enabled;
             state.video_effects.background_effect = user_settings.background_effect;
+            state.video_effects.background_plugin = user_settings.background_plugin.clone();
             state.video_effects.green_screen_enabled = user_settings.background_enabled
                 && user_settings.background_effect == crate::model::BackgroundEffect::GreenScreen;
         })
@@ -355,6 +358,7 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
     }
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     telemetry::start(runtime.clone(), shutdown_rx.clone());
+    let background_task = background::start(preview.effects().clone(), runtime.clone(), shutdown_rx.clone());
     let (daemon_restart, restart_rx) = if std::env::var_os("INVOCATION_ID").is_some() {
         let (restart_tx, restart_rx) = tokio::sync::oneshot::channel();
         (Some(api::DaemonRestart::new(restart_tx)), Some(restart_rx))
@@ -422,6 +426,7 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
         recorder.shutdown().await;
         let _ = shutdown_tx.send(true);
         let _ = audio_task.await;
+        let _ = background_task.await;
         if let Some(perception) = perception {
             // Stop the worker before Axum drains any remaining requests.
             perception.shutdown().await;

@@ -813,7 +813,7 @@ function renderCameraPower(camera) {
 }
 
 function backgroundState(videoEffects) {
-  const effect = ["green-screen", "blur", "pixel-party"].includes(videoEffects.background_effect)
+  const effect = ["green-screen", "blur", "pixel-party", "shader"].includes(videoEffects.background_effect)
     ? videoEffects.background_effect
     : "green-screen";
   const enabled = videoEffects.background_enabled
@@ -860,6 +860,9 @@ function renderOutputMode(videoEffects) {
 
 function renderBackground(videoEffects) {
   const current = backgroundDraft || backgroundState(videoEffects);
+  const pluginSelect = $("#background-plugin");
+  $("#background-plugin-control").hidden = current.effect !== "shader";
+  if (!backgroundPending) pluginSelect.value = videoEffects.background_plugin || "kelp";
   const publishedFresh = videoEffects.mask_published_at_ms != null
     && Date.now() - videoEffects.mask_published_at_ms <= 200;
   const capturedFresh = videoEffects.mask_captured_at_ms != null
@@ -873,6 +876,7 @@ function renderBackground(videoEffects) {
     : publishedFresh && capturedFresh;
   const alternateOutputActive = videoEffects.output_mode !== "camera" && !portraitActive;
   backgroundToggle.disabled = backgroundPending || alternateOutputActive || cameraOnly4k();
+  pluginSelect.disabled = backgroundToggle.disabled;
   backgroundToggle.checked = current.enabled;
   for (const input of backgroundEffectInputs) {
     input.disabled = backgroundPending || alternateOutputActive || cameraOnly4k();
@@ -883,12 +887,15 @@ function renderBackground(videoEffects) {
     "green-screen": "Green screen",
     blur: "Blur",
     "pixel-party": "Pixel Party",
+    shader: $("#background-plugin").selectedOptions[0]?.textContent || "Animated landscape",
   }[current.effect] || "Green screen";
   const status = backgroundError
     ? "Change failed"
     : (alternateOutputActive ? "Available for Camera and Personal 3D"
       : backgroundPending ? `Applying ${effectLabel.toLowerCase()}…`
       : !current.enabled ? "Off"
+      : current.effect === "shader" && videoEffects.background_error ? videoEffects.background_error
+      : current.effect === "shader" && !videoEffects.background_ready ? "Preparing animated landscape…"
       : !maskFresh ? "Privacy fallback · waiting for a fresh mask"
       : `${effectLabel} active`);
   $("#background-status").textContent = status;
@@ -1211,7 +1218,7 @@ skeletonToggle.addEventListener("click", () => {
 for (const [model, button] of Object.entries(skeletonToggles)) {
   button.addEventListener("click", () => setSkeletonEnabled(model, !skeletonModels[model]));
 }
-async function setBackground(enabled, effect) {
+async function setBackground(enabled, effect, plugin = $("#background-plugin").value || "kelp") {
   if (backgroundPending || !state) return;
   backgroundPending = true;
   backgroundError = null;
@@ -1221,7 +1228,7 @@ async function setBackground(enabled, effect) {
     const response = await fetch("/api/v1/video/background", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ enabled, effect }),
+      body: JSON.stringify({ enabled, effect, plugin }),
     });
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}));
@@ -1230,6 +1237,7 @@ async function setBackground(enabled, effect) {
     Object.assign(state.video_effects, {
       background_enabled: enabled,
       background_effect: effect,
+      background_plugin: plugin,
       green_screen_enabled: enabled && effect === "green-screen",
     });
   } catch (error) {
@@ -2279,3 +2287,18 @@ function localMediaOpenControls(url, mediaName) {
   });
   return [fileLink, openStatus];
 }
+
+$("#background-plugin").addEventListener("change", event => {
+  void setBackground(true, "shader", event.target.value);
+});
+async function refreshBackgroundPlugins() {
+  try {
+    const response = await fetch("/api/v1/video/background/plugins");
+    if (!response.ok) return;
+    const packages = await response.json();
+    const select = $("#background-plugin");
+    select.replaceChildren(...packages.map(plugin => new Option(plugin.name, plugin.id)));
+    select.value = state?.video_effects?.background_plugin || "kelp";
+  } catch { /* The bundled option remains available while disconnected. */ }
+}
+void refreshBackgroundPlugins();

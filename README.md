@@ -1567,3 +1567,11 @@ to avoid JPEG encoding and decoding between the daemon and perception.
 
 [Observation model demand](docs/perception-demand.md) independently controls face,
 hands and body detection for internal features, preview traces and external clients.
+
+## Shader backgrounds
+
+Select **Animated landscape → Kelp forest** in the background controls for a
+GPU-rendered kelp scene. Content packages share one supervised shader worker;
+the core composites its shared-memory frames with the subject mask. See
+[background packages](docs/background-plugins.md) for the package format,
+installation, rendering requirements and lifecycle guarantees.

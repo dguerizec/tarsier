@@ -145,6 +145,8 @@ pub struct UserSettings {
     pub video_identity: VideoIdentity,
     pub background_enabled: bool,
     pub background_effect: BackgroundEffect,
+    #[serde(default = "crate::background::default_plugin")]
+    pub background_plugin: String,
     pub face_tracking_enabled: bool,
     #[serde(default)]
     pub auto_zoom_enabled: bool,
@@ -184,6 +186,7 @@ impl UserSettings {
             video_identity: identity_from_mode(config.video.output_mode, config.avatar.engine),
             background_enabled: config.video.background_enabled,
             background_effect: config.video.background_effect,
+            background_plugin: crate::background::default_plugin(),
             face_tracking_enabled: false,
             auto_zoom_enabled: false,
             hands_tracking_enabled: false,
@@ -371,6 +374,14 @@ impl UserSettingsStore {
     ) -> Result<()> {
         self.replace(|settings| settings.video_transform = transform)
             .await
+    }
+
+    pub async fn set_background_selection(&self, enabled: bool, effect: BackgroundEffect, plugin: String) -> Result<()> {
+        self.replace(|settings| {
+            settings.background_enabled = enabled;
+            settings.background_effect = effect;
+            settings.background_plugin = plugin;
+        }).await
     }
 
     pub async fn set_background(&self, enabled: bool, effect: BackgroundEffect) -> Result<()> {

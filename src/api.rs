@@ -431,6 +431,7 @@ pub fn router_with_controls(
         .route("/api/v1/settings/video-mute/default", post(restore_default_mute_media))
         .route("/api/v1/video/resolution", post(set_resolution))
         .route("/api/v1/video/background", post(set_background))
+        .route("/api/v1/video/background/plugins", get(background_plugins))
         .route(
             "/api/v1/video/transform",
             get(current_transform).post(set_transform),
@@ -1936,6 +1937,7 @@ struct GreenScreenRequest {
 struct BackgroundRequest {
     enabled: bool,
     effect: BackgroundEffect,
+    plugin: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -3159,14 +3161,31 @@ async fn set_green_screen(
     StatusCode::ACCEPTED.into_response()
 }
 
+async fn background_plugins() -> Json<Vec<crate::background::Package>> {
+    Json(crate::background::catalog())
+}
+
 async fn set_background(
     State(state): State<ApiState>,
     Json(request): Json<BackgroundRequest>,
 ) -> Response {
     let _guard = state.video_output_control.lock().await;
-    if let Some(response) = persist_background(&state, request.enabled, request.effect).await {
-        return response;
+    let plugin = request.plugin.unwrap_or_else(|| state.preview.effects().backgrounds.selection().0);
+    if !crate::background::valid_id(&plugin) {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": "invalid background plugin id"}))).into_response();
     }
+    if request.enabled && request.effect == BackgroundEffect::Shader {
+        if let Err(error) = crate::background::load(&plugin) {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": error.to_string()}))).into_response();
+        }
+    }
+    if state.config.video.width >= 3840 && request.enabled { return effects_unavailable_in_4k(); }
+    if let Some(settings) = &state.user_settings {
+        if let Err(error) = settings.set_background_selection(request.enabled, request.effect, plugin.clone()).await {
+            return user_settings_error(error);
+        }
+    }
+    state.preview.effects().set_background_plugin(&plugin);
     state
         .preview
         .effects()
@@ -3176,6 +3195,9 @@ async fn set_background(
         .update(|runtime| {
             runtime.video_effects.background_enabled = request.enabled;
             runtime.video_effects.background_effect = request.effect;
+            runtime.video_effects.background_plugin = plugin.clone();
+            runtime.video_effects.background_ready = false;
+            runtime.video_effects.background_error = None;
             runtime.video_effects.green_screen_enabled =
                 request.enabled && request.effect == BackgroundEffect::GreenScreen;
         })
@@ -3186,7 +3208,7 @@ async fn set_background(
             "video.effect.background",
             "api",
             None,
-            json!({"enabled": request.enabled, "effect": request.effect}),
+            json!({"enabled": request.enabled, "effect": request.effect, "plugin": plugin}),
         )
         .await;
     StatusCode::ACCEPTED.into_response()
@@ -7061,6 +7083,25 @@ mod tests {
         let events = runtime.recent_events().await;
         assert_eq!(events[0].kind, "video.effect.green_screen");
         assert_eq!(events[0].data["enabled"], true);
+    }
+
+    #[tokio::test]
+    async fn shader_background_selection_validates_packages_before_mutating() {
+        let config = Config::default();
+        let runtime = Runtime::new();
+        let preview = PreviewHub::new();
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = router(config, runtime.clone(), preview.clone(), None, shutdown_rx);
+        for (plugin, expected) in [("../escape", StatusCode::BAD_REQUEST), ("kelp", StatusCode::ACCEPTED)] {
+            let response = app.clone().oneshot(Request::post("/api/v1/video/background")
+                .header("content-type", "application/json")
+                .body(Body::from(json!({"enabled": true, "effect": "shader", "plugin": plugin}).to_string())).unwrap()).await.unwrap();
+            assert_eq!(response.status(), expected);
+            assert_eq!(preview.effects().background_enabled(), expected == StatusCode::ACCEPTED);
+        }
+        assert_eq!(runtime.state().await.video_effects.background_plugin, "kelp");
+        let response = app.oneshot(Request::get("/api/v1/video/background/plugins").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test]

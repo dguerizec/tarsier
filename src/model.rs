@@ -62,6 +62,7 @@ pub enum BackgroundEffect {
     GreenScreen,
     Blur,
     PixelParty,
+    Shader,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -99,6 +100,12 @@ pub struct VideoEffectsState {
     pub avatar_engine: Option<AvatarEngine>,
     pub background_enabled: bool,
     pub background_effect: BackgroundEffect,
+    #[serde(default = "crate::background::default_plugin")]
+    pub background_plugin: String,
+    pub background_ready: bool,
+    pub background_worker_pid: Option<u32>,
+    pub background_renderer: Option<String>,
+    pub background_error: Option<String>,
     // Compatibility state for clients using the original dedicated control.
     pub green_screen_enabled: bool,
     pub mask_available: bool,

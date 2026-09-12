@@ -356,7 +356,7 @@ fn project_path(path: &std::path::Path) -> PathBuf {
 }
 
 #[cfg(target_os = "linux")]
-fn close_inherited_file_descriptors(command: &mut Command) {
+pub(crate) fn close_inherited_file_descriptors(command: &mut Command) {
     // GStreamer may leave device descriptors without FD_CLOEXEC. Mark every
     // non-stdio descriptor close-on-exec so the worker cannot inherit camera ownership.
     unsafe {
@@ -377,7 +377,7 @@ fn close_inherited_file_descriptors(command: &mut Command) {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn close_inherited_file_descriptors(_: &mut Command) {}
+pub(crate) fn close_inherited_file_descriptors(_: &mut Command) {}
 
 #[cfg(test)]
 mod tests {

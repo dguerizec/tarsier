@@ -75,7 +75,10 @@ main { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(17rem, .85
 .output-heading > span, .background-heading > span { color: var(--muted); font-size: .7rem; text-align: right; }
 .output-mode-list, .background-effect-list { display: grid; gap: .55rem; }
 .output-mode-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.background-effect-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.background-effect-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+#background-plugin-control { margin-top: .7rem; }
+#background-plugin-control label { color: var(--muted); font-size: .76rem; }
+#background-plugin { display: block; width: 100%; margin-top: .35rem; padding: .6rem; color: #f2f5ef; background: #151d17; border: 1px solid var(--panel-edge); border-radius: .5rem; font: inherit; font-size: .8rem; }
 .output-mode-option, .background-effect-option { position: relative; cursor: pointer; }
 .output-mode-option input, .background-effect-option input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .output-mode-card, .background-effect-card { display: grid; gap: .2rem; min-height: 3.7rem; padding: .7rem .8rem; border: 1px solid var(--panel-edge); border-radius: .7rem; background: #0a0e0c; transition: border-color .15s ease, background .15s ease; }

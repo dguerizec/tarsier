@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "id": "kelp",
+  "name": "Kelp forest",
+  "shader": "kelp.frag",
+  "width": 640,
+  "height": 360,
+  "fps": 24,
+  "parameters": {"speed": 0.45, "relief": 1.0, "palette": 0}
+}

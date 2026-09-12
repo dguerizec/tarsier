@@ -232,6 +232,7 @@ fn mask_len(width: u32, height: u32) -> Result<usize> {
 
 #[derive(Clone)]
 pub struct VideoEffects {
+    pub backgrounds: crate::background::Backgrounds,
     transform: Arc<AtomicU8>,
     transform_scratch: Arc<Mutex<crate::video_transform::TransformScratch>>,
     output_mode: Arc<AtomicU8>,
@@ -269,6 +270,7 @@ impl VideoEffects {
         let (avatar_tx, _) = watch::channel(None);
         let (depth_tx, _) = watch::channel(None);
         Self {
+            backgrounds: Default::default(),
             output_mode: Arc::new(AtomicU8::new(output_mode_code(VideoOutputMode::Camera))),
             transform: Arc::new(AtomicU8::new(0)),
             transform_scratch: Arc::new(Mutex::new(Default::default())),
@@ -293,6 +295,7 @@ impl VideoEffects {
             .unwrap_or_else(|error| error.into_inner());
         *held = HeldOutput::default();
         if mode != self.output_mode() {
+            self.backgrounds.invalidate();
             self.clear_mask();
         }
         self.output_mode
@@ -328,11 +331,21 @@ impl VideoEffects {
             .unwrap_or_else(|error| error.into_inner());
         if enabled != self.background_enabled() || effect != self.background_effect() {
             *held = HeldOutput::default();
+            self.backgrounds.invalidate();
             self.clear_mask();
         }
         self.background_effect
             .store(effect_code(effect), Ordering::Relaxed);
         self.background_enabled.store(enabled, Ordering::Relaxed);
+    }
+
+    pub fn set_background_plugin(&self, id: &str) {
+        let mut held = self.held_output.lock().unwrap_or_else(|e| e.into_inner());
+        if self.backgrounds.selection().0 != id {
+            self.backgrounds.select(id);
+            *held = HeldOutput::default();
+            self.clear_mask();
+        }
     }
 
     #[cfg(test)]
@@ -434,7 +447,8 @@ impl VideoEffects {
                     avatar.is_fresh(now_ms) && avatar.width == width && avatar.height == height
                 });
                 match (expected_len, avatar) {
-                    (Some(expected_len), Some(avatar)) if frame.len() >= expected_len => {
+                    (Some(expected_len), Some(avatar)) if frame.len() >= expected_len
+                        && (avatar.mask.is_none() || !self.background_enabled() || self.background_effect() != BackgroundEffect::Shader || self.backgrounds.latest().is_some()) => {
                         frame[..expected_len].copy_from_slice(&avatar.pixels);
                         if let Some(mask) = &avatar.mask {
                             let background = self.background_effect();
@@ -457,6 +471,11 @@ impl VideoEffects {
                                             now_ms,
                                             &mut scratch,
                                         );
+                                    }
+                                    BackgroundEffect::Shader => {
+                                        if let Some(background) = self.backgrounds.latest() {
+                                            apply_shader_background(frame, width as usize, height as usize, mask, &background);
+                                        }
                                     }
                                     BackgroundEffect::Blur => unreachable!(),
                                 }
@@ -583,6 +602,13 @@ impl VideoEffects {
         let width = width as usize;
         let height = height as usize;
         match self.background_effect() {
+            BackgroundEffect::Shader => {
+                let Some(background) = self.backgrounds.latest() else {
+                    frame[..expected_len].fill(0);
+                    return None;
+                };
+                apply_shader_background(frame, width, height, &mask, &background);
+            }
             BackgroundEffect::GreenScreen => {
                 apply_green_screen(frame, width, height, &mask);
             }
@@ -636,6 +662,7 @@ fn effect_code(effect: BackgroundEffect) -> u8 {
         BackgroundEffect::GreenScreen => 0,
         BackgroundEffect::Blur => 1,
         BackgroundEffect::PixelParty => 2,
+        BackgroundEffect::Shader => 3,
     }
 }
 
@@ -643,6 +670,7 @@ fn effect_from_code(code: u8) -> BackgroundEffect {
     match code {
         1 => BackgroundEffect::Blur,
         2 => BackgroundEffect::PixelParty,
+        3 => BackgroundEffect::Shader,
         _ => BackgroundEffect::GreenScreen,
     }
 }
@@ -1448,5 +1476,63 @@ mod tests {
             pixel_party_color(4, 3, 12, 8, PIXEL_PARTY_CYCLE_MS / 4)
         );
         assert_ne!(start, pixel_party_color(5, 3, 12, 8, 0));
+    }
+}
+
+fn apply_shader_background(frame: &mut [u8], width: usize, height: usize, mask: &VideoMask, background: &crate::background::Frame) {
+    for y in 0..height {
+        let mask_row = y * mask.height as usize / height * mask.width as usize;
+        let background_row = y * background.height / height * background.stride;
+        for x in 0..width {
+            let alpha = mask.alpha(mask_row + x * mask.width as usize / width) as u32;
+            let source = background_row + x * background.width / width * 3;
+            let offset = (y * width + x) * 4;
+            for channel in 0..3 {
+                frame[offset + channel] = ((frame[offset + channel] as u32 * alpha
+                    + background.pixels[source + channel] as u32 * (255 - alpha)) / 255) as u8;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod shader_tests {
+    use super::*;
+    #[test]
+    fn baked_avatar_background_does_not_wait_for_shader() {
+        let effects = VideoEffects::new();
+        effects.set_background(true, BackgroundEffect::Shader);
+        effects.set_output_mode(VideoOutputMode::ComicAvatar);
+        let now = unix_ms();
+        effects.publish_avatar(AvatarFrame::new(1, now, 2, 1, vec![70; 8]).unwrap());
+        let mut frame = vec![200; 8];
+        effects.apply_output(&mut frame, 2, 1, now);
+        assert_eq!(frame, vec![70; 8]);
+    }
+
+    #[test]
+    fn shader_composition_preserves_subject_and_holds_on_missing_mask() {
+        let effects = VideoEffects::new();
+        effects.set_background(true, BackgroundEffect::Shader);
+        let now = unix_ms();
+        let mut frame = vec![90; 8];
+        effects.publish_mask(VideoMask::new(1, now, 2, 1, vec![255, 0]).unwrap());
+        effects.apply_output(&mut frame, 2, 1, now);
+        assert_eq!(frame, vec![0; 8]);
+        let generation = effects.backgrounds.selection().1;
+        effects.backgrounds.publish(generation, crate::background::Frame { width: 1, height: 1, stride: 3, pixels: vec![10, 20, 30] });
+        frame.fill(90);
+        effects.apply_output(&mut frame, 2, 1, now);
+        assert_eq!(&frame[..4], &[90; 4]);
+        assert_eq!(&frame[4..7], &[10, 20, 30]);
+        let expected = frame.clone();
+        effects.clear_mask();
+        frame.fill(200);
+        effects.apply_output(&mut frame, 2, 1, now);
+        assert_eq!(frame, expected);
+        effects.set_background_plugin("another-plugin");
+        frame.fill(200);
+        effects.apply_output(&mut frame, 2, 1, now);
+        assert_eq!(frame, vec![0; 8]);
     }
 }
