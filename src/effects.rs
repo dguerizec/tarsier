@@ -644,6 +644,13 @@ impl VideoEffects {
             {
                 return store.pending.remove(index);
             }
+            // Perception uses latest-frame queues and may skip this source frame.
+            // Once a newer mask is available, holding the last safe output is
+            // preferable to stalling the video branch for an obsolete mask.
+            // Always prefer an exact match above, even with out-of-order delivery.
+            if store.pending.iter().any(|mask| mask.frame_id > frame_id) {
+                return None;
+            }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return None;
@@ -1508,6 +1515,37 @@ mod shader_tests {
         let mut frame = vec![200; 8];
         effects.apply_output(&mut frame, 2, 1, now);
         assert_eq!(frame, vec![70; 8]);
+    }
+
+    #[test]
+    fn skipped_mask_reuses_safe_output_without_waiting_for_timeout() {
+        let effects = VideoEffects::new();
+        effects.set_background(true, BackgroundEffect::PixelParty);
+        let now = unix_ms();
+        effects.publish_mask(VideoMask::new(10, now, 2, 1, vec![255, 0]).unwrap());
+        let mut frame = vec![90; 8];
+        effects.apply_output_for_frame(&mut frame, 2, 1, now, Some(10));
+        let held = frame.clone();
+        // Frame 11 was dropped upstream; the next completed mask is for 12.
+        effects.publish_mask(VideoMask::new(12, now, 2, 1, vec![255, 0]).unwrap());
+        frame.fill(200);
+        let started = Instant::now();
+        effects.apply_output_for_frame(&mut frame, 2, 1, now, Some(11));
+        assert!(started.elapsed() < Duration::from_millis(75));
+        assert_eq!(frame, held);
+        frame.fill(200);
+        effects.apply_output_for_frame(&mut frame, 2, 1, now, Some(12));
+        assert_eq!(&frame[..4], &[200; 4]);
+    }
+
+    #[test]
+    fn exact_mask_wins_when_a_newer_mask_is_also_buffered() {
+        let effects = VideoEffects::new();
+        let now = unix_ms();
+        effects.publish_mask(VideoMask::new(12, now, 1, 1, vec![0]).unwrap());
+        effects.publish_mask(VideoMask::new(11, now, 1, 1, vec![255]).unwrap());
+        assert_eq!(effects.wait_for_mask(11).unwrap().frame_id, 11);
+        assert_eq!(effects.wait_for_mask(12).unwrap().frame_id, 12);
     }
 
     #[test]
