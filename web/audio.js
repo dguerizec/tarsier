@@ -287,6 +287,7 @@ export function syncAudioCapture(sources, output, currentReservations, released,
   enabledSources = new Set(sources);
   for (const track of tracks.values()) syncTrack(track);
   renderOutput();
+  renderNoise();
 }
 
 function syncTrack(track) {
@@ -362,6 +363,7 @@ function start(track) {
     const input = mutedOutput ? tracks.get(virtualState.source) : null;
     const reference = input?.enabled && input.level && now - input.level.time < 500
       ? input.level : track.level;
+    if (level.spectrum) track.spectra.push({ spectrum: level.spectrum, time: now });
     track.history.push(mutedOutput ? { ...reference, time: now, muted: true } : track.level);
     if (track.history.length > 500) track.history.splice(0, track.history.length - 500);
     if (level.clipped) track.clipUntil = now + 1500;
@@ -389,7 +391,7 @@ function create(source) {
   row.querySelector('strong').textContent = source.name;
   row.querySelector('strong').title = source.name;
   const track = {
-    id: source.id, name: source.name, row, history: [], level: null, socket: null, clipUntil: 0, maxPeak: [0, 0],
+    id: source.id, name: source.name, row, history: [], spectra: [], level: null, socket: null, clipUntil: 0, maxPeak: [0, 0],
     enabled: source.enabled === true, pending: false, unavailable: false, retryAt: 0,
     label: row.querySelector('.audio-track-state'), canvas: row.querySelector('canvas'),
     buttons: [...row.querySelectorAll('[role=group] > button')], meters: [...row.querySelectorAll('meter')],
@@ -398,6 +400,33 @@ function create(source) {
   row.querySelector('[role="group"]').setAttribute('aria-label', `${source.name} capture`);
   track.canvas.setAttribute('aria-label', `${source.name}: logarithmic amplitude envelope over the last 10 seconds, minus 60 to 0 dBFS`);
   track.canvas.title = 'Last 10 seconds · Logarithmic amplitude · −60 to 0 dBFS, matching the peak meters';
+  const viewToggle = document.createElement('button');
+  viewToggle.type = 'button';
+  viewToggle.className = 'audio-view-toggle secondary compact';
+  let mode = 'spectrogram';
+  try { mode = localStorage.getItem('tarsier.audio.view') || mode; } catch {}
+  function setView(value) {
+    track.view = value === 'waveform' ? 'waveform' : 'spectrogram';
+    track.lastDraw = -Infinity;
+    const spectrogram = track.view === 'spectrogram';
+    viewToggle.innerHTML = spectrogram
+      ? '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M2 12h3l2-7 3 14 4-14 3 14 2-7h3"/></svg>'
+      : '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 4v16M8 9v8M12 3v18M16 7v12M20 5v11"/></svg>';
+    viewToggle.title = spectrogram ? 'Show waveform' : 'Show spectrogram';
+    viewToggle.setAttribute('aria-label', `${viewToggle.title} · ${track.name}`);
+    track.canvas.setAttribute('aria-label', `${track.name}: ${spectrogram ? 'spectrogram, low frequencies at bottom, high at top' : 'waveform'} over the last 10 seconds`);
+    track.canvas.title = spectrogram
+      ? 'Last 10 seconds · 50 Hz (bottom) to 20 kHz (top) · Dark: quiet, bright: loud · Actual signal, including output mute'
+      : 'Last 10 seconds · −60 to 0 dBFS · Gray output waveform: input before mute';
+  }
+  track.setView = setView;
+  setView(mode);
+  viewToggle.onclick = () => {
+    const next = track.view === 'spectrogram' ? 'waveform' : 'spectrogram';
+    for (const item of tracks.values()) item.setView(next);
+    try { localStorage.setItem('tarsier.audio.view', next); } catch {}
+  };
+  row.querySelector('.audio-waveform').append(viewToggle);
   track.meters.forEach((meter, index) => meter.setAttribute('aria-label', `${source.name} ${index ? 'right' : 'left'} peak in dBFS`));
   track.buttons[0].onclick = () => void setCapture(track, !track.enabled);
   stop(track);
@@ -429,7 +458,7 @@ function create(source) {
   if (source.id === virtualId) {
     const controls = row.querySelector('[role="group"]');
     controls.setAttribute('aria-label', 'Virtual microphone output');
-    track.canvas.title += ' · Gray: selected input before Tarsier mute; meters show actual output';
+
     track.buttons[0].setAttribute('data-audio-output', '');
     track.buttons[0].setAttribute('aria-label', 'Virtual microphone');
     track.buttons[0].onclick = () => void updateOutput({ enabled: !virtualState.enabled });
@@ -499,30 +528,58 @@ function waveformAmplitude(value) {
   return Math.sign(value) * (amplitudeDb(Math.abs(value)) + 60) / 60;
 }
 
+const spectralColors = Array.from({ length: 91 }, (_, value) => {
+  const t = value / 90;
+  return `rgb(${Math.round(12 + 220 * t ** 3)},${Math.round(20 + 215 * t ** 1.4)},${Math.round(27 + 90 * Math.sin(t * Math.PI))})`;
+});
+function drawSpectrogram(context, spectra, now, width, height) {
+  context.fillStyle = '#0c141b';
+  context.fillRect(0, 0, width, height);
+  for (const column of spectra) {
+    const x = width * (1 - (now - column.time) / 10000);
+    column.spectrum.forEach((db, band) => {
+      context.fillStyle = spectralColors[Math.round(Math.max(0, Math.min(90, db + 90)))];
+      context.fillRect(x, height * (1 - (band + 1) / 80), Math.max(1, width / 100), Math.ceil(height / 80));
+    });
+  }
+  context.font = `${10 * devicePixelRatio}px system-ui`;
+  context.fillStyle = '#dbe8e0';
+  context.fillText('20k', width - 28 * devicePixelRatio, 11 * devicePixelRatio);
+  context.fillText('50 Hz', 4 * devicePixelRatio, height - 4 * devicePixelRatio);
+}
+
 function draw(now) {
   for (const track of tracks.values()) {
     track.history = track.history.filter((level) => now - level.time < 10000);
+    track.spectra = track.spectra.filter((level) => now - level.time < 10000);
     const canvas = track.canvas;
     const width = Math.max(1, Math.round(canvas.clientWidth * devicePixelRatio));
     const height = Math.max(1, Math.round(canvas.clientHeight * devicePixelRatio));
     if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
-    const context = canvas.getContext('2d');
-    context.clearRect(0, 0, width, height);
-    context.strokeStyle = '#28352f';
-    context.lineWidth = devicePixelRatio;
-    context.beginPath();
-    context.moveTo(0, height / 2); context.lineTo(width, height / 2);
-    for (let second = 1; second < 10; second++) {
-      context.moveTo(width * second / 10, 0); context.lineTo(width * second / 10, height);
-    }
-    context.stroke();
-    for (const level of track.history) {
-      const x = width * (1 - (now - level.time) / 10000);
-      context.fillStyle = level.muted ? '#7c8580' : level.clipped ? '#f37878' : '#94dba7';
-      const top = waveformAmplitude(level.max);
-      const bottom = waveformAmplitude(level.min);
-      context.fillRect(x, height / 2 - top * height * 0.46,
-        Math.max(devicePixelRatio, width / 500), Math.max(devicePixelRatio, (top - bottom) * height * 0.46));
+    if (now - (track.lastDraw ?? -Infinity) >= 100 && canvas.clientWidth && canvas.clientHeight) {
+      track.lastDraw = now;
+      const context = canvas.getContext('2d');
+      context.clearRect(0, 0, width, height);
+      if (track.view === 'spectrogram') {
+        drawSpectrogram(context, track.spectra, now, width, height);
+      } else {
+        context.strokeStyle = '#28352f';
+        context.lineWidth = devicePixelRatio;
+        context.beginPath();
+        context.moveTo(0, height / 2); context.lineTo(width, height / 2);
+        for (let second = 1; second < 10; second++) {
+          context.moveTo(width * second / 10, 0); context.lineTo(width * second / 10, height);
+        }
+        context.stroke();
+        for (const level of track.history) {
+          const x = width * (1 - (now - level.time) / 10000);
+          context.fillStyle = level.muted ? '#7c8580' : level.clipped ? '#f37878' : '#94dba7';
+          const top = waveformAmplitude(level.max);
+          const bottom = waveformAmplitude(level.min);
+          context.fillRect(x, height / 2 - top * height * 0.46,
+            Math.max(devicePixelRatio, width / 500), Math.max(devicePixelRatio, (top - bottom) * height * 0.46));
+        }
+      }
     }
     const live = track.level && now - track.level.time < 500 ? track.level : null;
     track.meters.forEach((meter, index) => { meter.value = live ? amplitudeDb(live.peak[index]) : -60; });
@@ -542,6 +599,78 @@ function draw(now) {
 }
 
 create({ id: virtualId, name: `${virtualId.replaceAll('_', ' ')} · Output` });
+let noiseState = null;
+let noisePending = false;
+let noisePollPending = false;
+let noiseRevision = 0;
+let noiseError = '';
+const noiseControls = document.createElement('div');
+noiseControls.className = 'audio-noise-controls';
+noiseControls.innerHTML = `<div class="audio-gain-controls"><span>Noise reduction</span>
+  <button type="button" class="secondary compact" data-noise-analyze>Analyze ambient noise</button>
+  <button type="button" class="secondary compact" data-noise-toggle aria-pressed="false">Reduce this noise</button>
+  <label class="audio-noise-strength" hidden>Strength <input type="range" min="0" max="100" value="65" step="5" aria-label="Noise reduction strength"><output>65%</output></label></div>
+  <progress max="1" value="0" aria-label="Ambient noise analysis progress" hidden></progress>
+  <p class="audio-noise-status" role="status"></p>`;
+tracks.get(virtualId).row.append(noiseControls);
+const noiseAnalyze = noiseControls.querySelector('[data-noise-analyze]');
+const noiseToggle = noiseControls.querySelector('[data-noise-toggle]');
+const noiseStrength = noiseControls.querySelector('input');
+function renderNoise() {
+  const current = noiseState?.source === virtualState.source ? noiseState : null;
+  const analyzing = !!current?.analyzing;
+  noiseAnalyze.textContent = analyzing ? 'Cancel analysis' : current?.ready ? 'Analyze again' : 'Analyze ambient noise';
+  noiseAnalyze.disabled = noisePending || !virtualState.running || !virtualState.enabled;
+  noiseToggle.textContent = current?.enabled ? 'On' : 'Reduce this noise';
+  noiseToggle.setAttribute('aria-pressed', String(!!current?.enabled));
+  noiseToggle.disabled = noisePending || !current?.ready;
+  noiseToggle.title = 'Compare with and without noise reduction. Applies to Tarsier Microphone calls and recordings.';
+  noiseControls.querySelector('label').hidden = !current?.ready;
+  noiseStrength.disabled = noisePending;
+  if (document.activeElement !== noiseStrength) noiseStrength.value = Math.round((current?.strength ?? 0.65) * 100);
+  noiseControls.querySelector('output').textContent = `${noiseStrength.value}%`;
+  const progress = noiseControls.querySelector('progress');
+  progress.hidden = !analyzing;
+  progress.value = current?.progress || 0;
+  noiseControls.querySelector('[role="status"]').textContent = noiseError || current?.error || (analyzing
+    ? `Stay silent… ${Math.ceil(3 * (1 - current.progress))} s remaining`
+    : !virtualState.enabled || !virtualState.running ? 'Turn on audio output to analyze the selected microphone.'
+    : current?.ready ? (current.enabled ? 'Reducing steady background noise · Lower strength if the voice sounds distorted.' : 'Noise profile ready · Enable reduction to compare.')
+    : 'Stay silent for 3 seconds to measure steady background noise. The profile is kept until the microphone changes or Tarsier restarts.');
+}
+async function pollNoise() {
+  if (noisePending || noisePollPending || document.hidden) return;
+  noisePollPending = true;
+  const revision = noiseRevision;
+  try {
+    const response = await fetch('/api/v1/audio/noise', { cache: 'no-store' });
+    if (!response.ok) throw new Error('Noise reduction unavailable');
+    const result = await response.json();
+    if (revision === noiseRevision) { noiseState = result; noiseError = ''; }
+  } catch (error) { noiseError = error.message; }
+  finally { noisePollPending = false; renderNoise(); }
+}
+async function updateNoise(action, strength) {
+  if (noisePending) return;
+  noiseRevision++;
+  noisePending = true; noiseError = ''; renderNoise();
+  try {
+    const response = await fetch('/api/v1/audio/noise', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source: virtualState.source, action, ...(strength === undefined ? {} : { strength }) }) });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || 'Could not update noise reduction');
+    noiseState = body;
+  } catch (error) { noiseError = error.message; }
+  finally { noisePending = false; renderNoise(); }
+}
+noiseAnalyze.onclick = () => void updateNoise(noiseState?.source === virtualState.source && noiseState.analyzing ? 'cancel' : 'analyze');
+noiseToggle.onclick = () => void updateNoise(noiseState?.enabled ? 'disable' : 'enable');
+noiseStrength.oninput = () => { noiseControls.querySelector('output').textContent = `${noiseStrength.value}%`; };
+noiseStrength.onchange = () => void updateNoise('strength', Number(noiseStrength.value) / 100);
+renderNoise();
+void pollNoise();
+const noiseTimer = setInterval(pollNoise, 500);
+window.addEventListener('pagehide', () => clearInterval(noiseTimer));
 refresh();
 const refreshTimer = setInterval(refresh, 5000);
 requestAnimationFrame(draw);

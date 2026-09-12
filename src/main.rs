@@ -1,6 +1,7 @@
 mod api;
 mod audio;
 mod audio_gain;
+mod audio_noise;
 mod audit;
 mod auth;
 mod avatar_source;

@@ -311,6 +311,7 @@ pub(crate) enum Packet {
 #[derive(Clone, Default)]
 pub struct AudioHub {
     config: crate::config::AudioConfig,
+    pub(crate) noise: Arc<Mutex<crate::audio_noise::NoiseReducer>>,
     reservation_policy: Arc<Mutex<Option<(bool, BTreeMap<String, bool>)>>>,
     channels: Arc<Mutex<HashMap<String, broadcast::Sender<Packet>>>>,
     terminated: Arc<Mutex<HashSet<ProcessIdentity>>>,
@@ -554,6 +555,7 @@ impl AudioHub {
                 _ = &mut stop => break,
                 result = self.publish(&runtime) => result,
             };
+            self.noise.lock().unwrap().interrupt();
             let error = result.err().map(|e| e.to_string());
             runtime
                 .update(|s| {
@@ -565,6 +567,7 @@ impl AudioHub {
                 .await;
             tokio::select! { _ = &mut stop => break, _ = sleep(Duration::from_secs(2)) => {} }
         }
+        self.noise.lock().unwrap().interrupt();
         runtime
             .update(|s| {
                 s.audio_virtual.running = false;
@@ -687,10 +690,28 @@ impl AudioHub {
                     .as_ref()
                     .is_some_and(|id| state.audio_capture_sources.contains(id));
             let pcm = output_pcm(frame.as_ref(), allowed, &silence);
+            let cleaned = {
+                let mut noise = self.noise.lock().unwrap();
+                noise.select(selected.as_deref());
+                if allowed
+                    && frame
+                        .as_ref()
+                        .is_some_and(|f| f.captured.elapsed() <= MAX_AGE)
+                {
+                    noise.process(pcm)
+                } else {
+                    if allowed {
+                        noise.gap();
+                    } else {
+                        noise.interrupt();
+                    }
+                    silence.clone()
+                }
+            };
             let (processed, gain_status) = if automatic {
-                auto_gain.process(pcm)
+                auto_gain.process(&cleaned)
             } else {
-                (pcm.to_vec(), crate::audio_gain::GainStatus::default())
+                (cleaned, crate::audio_gain::GainStatus::default())
             };
             let voice_settings = state.audio_voice.clone();
             if voice
@@ -801,6 +822,8 @@ impl AudioHub {
         mut states: watch::Receiver<crate::model::RuntimeState>,
     ) {
         let mut packets = self.channel(&source).subscribe();
+        let spectrum = crate::audio_noise::Spectrum::default();
+        let mut last_spectrum = Instant::now() - Duration::from_secs(1);
         let (mut sender, mut receiver) = socket.split();
         loop {
             tokio::select! {
@@ -817,7 +840,14 @@ impl AudioHub {
                 },
                 packet = packets.recv() => {
                     let payload = match packet {
-                        Ok(Packet::Audio(frame)) => serde_json::to_string(&measure(&frame.pcm)).unwrap(),
+                        Ok(Packet::Audio(frame)) => {
+                            let mut level = measure(&frame.pcm);
+                            if last_spectrum.elapsed() >= Duration::from_millis(100) {
+                                level.spectrum = Some(spectrum.measure(&frame.pcm));
+                                last_spectrum = Instant::now();
+                            }
+                            serde_json::to_string(&level).unwrap()
+                        },
                         Ok(Packet::Error(error)) => serde_json::json!({"error": error}).to_string(),
                         Err(broadcast::error::RecvError::Lagged(_)) => continue,
                         Err(_) => break,
@@ -1193,6 +1223,8 @@ async fn discover(
 
 #[derive(Clone, Debug, Serialize)]
 struct Level {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    spectrum: Option<Vec<f32>>,
     min: f32,
     max: f32,
     peak: [f32; 2],
@@ -1202,6 +1234,7 @@ struct Level {
 
 fn measure(bytes: &[u8]) -> Level {
     let mut level = Level {
+        spectrum: None,
         min: 0.0,
         max: 0.0,
         peak: [0.0; 2],

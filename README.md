@@ -1304,7 +1304,7 @@ ffprobe -v error -show_entries format_tags=tarsier_settings -of json video.mp4
 
 The panel below the preview lists the daemon host's microphones by name. Enable
 an input with **On** to use its captured audio for meters and virtual output. All viewers see the same
-controls and receive the same ten-second waveform history window and stereo peak
+controls and receive a ten-second spectrogram or waveform history window and stereo peak
 levels. Closing a page does not stop capture; **Off** stops metering for every
 viewer and silences a virtual output using it, while retaining the reservation. History itself is local to each
 viewer. Speaker monitors and Tarsier's own output are excluded from input selection.
@@ -1314,6 +1314,43 @@ At daemon startup, every discovered input is automatically captured with
 listener triggers discovery on source arrival/removal; a five-second scan also
 recovers missed events. Tarsier's own virtual output and speaker monitor sources
 are excluded, so applications can share **Tarsier Microphone**.
+
+The default view is a spectrogram: time runs left to right, frequencies run from
+50 Hz at the bottom to 20 kHz at the top, and brighter colors indicate louder
+sound on a fixed −90 to 0 dBFS scale. The small button in the bottom-right corner
+switches all tracks between spectrogram and waveform; the browser remembers the
+choice. Spectra contain 80 logarithmic bands, updated at about 10 Hz. Input graphs
+show raw capture; the output spectrogram shows the actual published signal after
+processing and mute. Only level/spectrum summaries reach the browser, not PCM.
+
+**Analyze ambient noise** measures three seconds of the selected input. Keep
+silent while the progress bar runs; **Cancel analysis** stops it. Both input and
+virtual output must be on, but output mute does not prevent analysis. Then click
+**Reduce this noise** to enable suppression. Toggle it off for comparison, adjust
+**Strength**, or **Analyze again** when the background changes. Re-analysis keeps
+the previous working profile until a new non-silent profile completes. Analysis
+interruption is reported, and a silent/muted input cannot create a profile.
+
+The local processor targets stationary background noise; it does not classify
+speech or reliably remove keyboard clicks and other voices. Speaking during
+analysis can cause your voice to be attenuated. Lower strength if speech sounds
+distorted. Noise power is retained only in RAM, shared across viewers and cleared
+on microphone selection changes or daemon restart; no calibration recording is
+saved. Closing a browser does not stop an ongoing three-second analysis.
+
+Processing uses stereo-linked spectral attenuation with a 40 ms sine window and
+20 ms overlap, before automatic gain and voice conversion. The output path adds
+20 ms of algorithmic delay, including while reduction is bypassed, to keep A/B
+timing consistent. Input meters and raw event-gated audio subscriptions remain
+unprocessed. Calls and recordings must use **Tarsier Microphone** to receive the
+cleaned output.
+
+`GET /api/v1/audio/noise` returns `source`, `enabled`, `ready`, `analyzing`,
+`progress` (0–1), `strength` (0–1), and `error`. POST to the same authenticated
+endpoint with `{ "source": "selected-input-id", "action": "analyze" }`;
+actions are `analyze`, `cancel`, `enable`, `disable`, and `strength` (the latter
+requires a `strength` number). Stale source IDs are rejected. Settings/profile
+are session-only and reduction starts disabled.
 
 Audio waveform envelopes use a signed logarithmic display from -60 to 0 dBFS,
 matching the peak meter range. The waveform shows ten seconds of history; meters
@@ -1356,12 +1393,12 @@ WirePlumber's exclusive linking policy prevents ordinary new captures after
 reservation, but cannot guarantee priority over an application that connects first
 at startup/hotplug, or replace access control against manually created links.
 
-Click an input waveform or name to select it; a green bar marks the selected
+Click an input graph or name to select it; a green bar marks the selected
 input. Then turn the output **On** to publish
 **Tarsier Microphone** as an audio input in KDE, browsers, and call applications.
 Enabling the virtual microphone or switching its input enables capture of that
-selected source. The audio is passed through as 48 kHz, 16-bit stereo PCM, without
-denoising. Mono sources are converted to stereo. **Auto gain** is enabled by default:
+selected source. Audio uses 48 kHz, 16-bit stereo PCM with optional local noise
+reduction. Mono sources are converted to stereo. **Auto gain** is enabled by default:
 [WebRTC's local voice activity detector](https://docs.rs/webrtc-vad/0.4.0/webrtc_vad/) gates a bounded gain controller, with no
 countdown, GPU, model download, or paid API. It targets −18 dBFS voice RMS with
 3 dB peak headroom, bounded to ±24 dB. Speech energy is smoothed across syllables;

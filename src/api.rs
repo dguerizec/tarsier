@@ -331,6 +331,7 @@ pub fn router_with_controls(
         )
         .route("/api/v1/audio/sources", get(audio_sources))
         .route("/api/v1/audio/meter", get(audio_meter))
+        .route("/api/v1/audio/noise", get(audio_noise).post(set_audio_noise))
         .route("/api/v1/audio/utterances", get(audio_utterances))
         .route("/api/v1/audio/capture", post(set_audio_capture))
         .route("/api/v1/audio/exclusive", post(set_audio_exclusive))
@@ -5067,6 +5068,55 @@ async fn audio_meter(
     })
 }
 
+async fn audio_noise(State(state): State<ApiState>) -> Response {
+    let Some(audio) = &state.audio else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let _guard = state.audio_settings_control.lock().await;
+    let runtime = state.runtime.state().await;
+    let mut noise = audio.noise.lock().unwrap();
+    noise.select(runtime.audio_virtual.source.as_deref());
+    if !runtime.audio_virtual.enabled || !runtime.audio_virtual.running {
+        noise.interrupt();
+    }
+    Json(noise.status()).into_response()
+}
+
+async fn set_audio_noise(
+    State(state): State<ApiState>,
+    Json(request): Json<crate::audio_noise::Request>,
+) -> Response {
+    let Some(audio) = &state.audio else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let _guard = state.audio_settings_control.lock().await;
+    let runtime = state.runtime.state().await;
+    if runtime.audio_virtual.source.as_deref() != Some(request.source.as_str()) {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "The selected microphone changed. Try again."})),
+        )
+            .into_response();
+    }
+    if matches!(request.action, crate::audio_noise::Action::Analyze)
+        && (!runtime.audio_virtual.enabled
+            || !runtime.audio_virtual.running
+            || !runtime.audio_capture_sources.contains(&request.source))
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "Turn on the selected input and audio output before analyzing."})),
+        )
+            .into_response();
+    }
+    let mut noise = audio.noise.lock().unwrap();
+    noise.select(Some(&request.source));
+    match noise.command(request.action, request.strength) {
+        Ok(status) => Json(status).into_response(),
+        Err(error) => (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response(),
+    }
+}
+
 async fn virtual_audio(State(state): State<ApiState>) -> Json<crate::audio::VirtualMicrophone> {
     Json(state.runtime.state().await.audio_virtual)
 }
@@ -5149,6 +5199,11 @@ async fn set_virtual_audio_locked(state: ApiState, request: VirtualAudioRequest)
         return user_settings_error(error);
     }
     state.runtime.update(|current| audio.apply(current)).await;
+    if let Some(hub) = &state.audio {
+        let mut noise = hub.noise.lock().unwrap();
+        noise.select(next.audio_virtual.source.as_deref());
+        if !next.audio_virtual.enabled { noise.interrupt(); }
+    }
     Json(state.runtime.state().await.audio_virtual).into_response()
 }
 
@@ -5325,6 +5380,42 @@ mod tests {
                 .status(),
             StatusCode::SERVICE_UNAVAILABLE
         );
+    }
+
+    #[tokio::test]
+    async fn audio_noise_requires_current_source_live_capture_and_valid_profile() {
+        let runtime = Runtime::new();
+        runtime.update(|s| s.audio_virtual.source = Some("mic".into())).await;
+        let hub = crate::audio::AudioHub::default();
+        let (_stop, shutdown) = watch::channel(false);
+        let app = router_with_controls(Config::default(), runtime.clone(), PreviewHub::new(), None,
+            ApiOptions { audio: Some(hub.clone()), ..Default::default() }, shutdown);
+        for (body, status) in [
+            (json!({"source":"other","action":"analyze"}), StatusCode::CONFLICT),
+            (json!({"source":"mic","action":"analyze"}), StatusCode::CONFLICT),
+            (json!({"source":"mic","action":"enable"}), StatusCode::BAD_REQUEST),
+            (json!({"source":"mic","action":"strength","strength":2}), StatusCode::BAD_REQUEST),
+        ] {
+            let response = app.clone().oneshot(Request::post("/api/v1/audio/noise")
+                .header("content-type", "application/json").body(Body::from(body.to_string())).unwrap()).await.unwrap();
+            assert_eq!(response.status(), status);
+        }
+        runtime.update(|s| {
+            s.audio_virtual.enabled = true;
+            s.audio_virtual.running = true;
+            s.audio_capture_sources.push("mic".into());
+        }).await;
+        let response = app.clone().oneshot(Request::post("/api/v1/audio/noise")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"source":"mic","action":"analyze"}"#)).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(hub.noise.lock().unwrap().status().analyzing);
+        runtime.update(|s| s.audio_virtual.enabled = false).await;
+        let response = app.oneshot(Request::get("/api/v1/audio/noise").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let status: Value = serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+        assert_eq!(status["analyzing"], false);
+        assert!(status["error"].is_string());
     }
 
     #[tokio::test]

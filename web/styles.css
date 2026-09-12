@@ -546,3 +546,13 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .track-controls.keyboard-open .track-options,
 .track-controls:has(:focus-visible) .track-options { visibility: visible; pointer-events: auto; }
 .preview-overlay-tools #preview-track-toggle { font-size: 9px; }
+
+.audio-waveform .audio-view-toggle { position: absolute; bottom: .2rem; right: .2rem; z-index: 2; display: grid; place-items: center; width: 26px; height: 26px; padding: 3px; background: #111b22d9; color: var(--muted); border: 1px solid #ffffff24; opacity: .8; }
+.audio-waveform .audio-view-toggle:hover, .audio-waveform .audio-view-toggle:focus-visible { opacity: 1; color: var(--green); }
+.audio-noise-controls { margin-top: .5rem; }
+.audio-noise-status { margin: .3rem 0 0; font-size: .7rem; color: var(--muted); }
+.audio-noise-strength { display: inline-flex; align-items: center; gap: .35rem; }
+.audio-noise-strength input { width: 95px; accent-color: var(--green); }
+.audio-noise-controls progress { width: 100%; height: 5px; accent-color: var(--green); }
+
+.audio-track-overlay { right: 2.2rem; }
