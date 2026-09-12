@@ -392,10 +392,12 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
         config.avatar.clone(),
         config.depth.clone(),
         config.video.clone(),
-        config.server.bind,
+        perception::WorkerConnection {
+            server_address: config.server.bind,
+            worker_token,
+            shared_source,
+        },
         runtime,
-        worker_token,
-        shared_source,
     );
     audit::record(
         "daemon.ready",

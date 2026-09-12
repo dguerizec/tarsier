@@ -64,7 +64,7 @@ impl Led {
             && now < deadline
         {
             let phase = now.duration_since(start).as_nanos() * 6 / 1_000_000_000;
-            return if phase % 2 == 0 {
+            return if phase.is_multiple_of(2) {
                 if baseline == 0 { 3 } else { 0 }
             } else {
                 baseline
@@ -79,7 +79,7 @@ impl Led {
             LedMode::Steady => 3,
             // Derive the phase from elapsed time so delayed I/O never queues a burst.
             LedMode::Blinking => {
-                if (now.duration_since(self.epoch).as_nanos() * 6 / 1_000_000_000) % 2 == 0 {
+                if (now.duration_since(self.epoch).as_nanos() * 6 / 1_000_000_000).is_multiple_of(2) {
                     3
                 } else {
                     0

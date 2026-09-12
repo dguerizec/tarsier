@@ -181,10 +181,10 @@ impl PreviewHub {
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 frames.changed().await.ok()?;
-                if let Some(frame) = frames.borrow_and_update().clone() {
-                    if unix_ms().saturating_sub(frame.frame.captured_at_ms) <= 1000 {
-                        return Some(frame);
-                    }
+                if let Some(frame) = frames.borrow_and_update().clone()
+                    && unix_ms().saturating_sub(frame.frame.captured_at_ms) <= 1000
+                {
+                    return Some(frame);
                 }
             }
         }).await.ok().flatten()

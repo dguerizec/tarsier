@@ -456,13 +456,12 @@ pub async fn run(config: Option<PathBuf>, fix: bool) -> Result<()> {
             .output(),
     )
     .await
+        && output.status.success()
     {
-        if output.status.success() {
-            println!(
-                "[INFO] {} (yes: user services can start before login)",
-                String::from_utf8_lossy(&output.stdout).trim()
-            );
-        }
+        println!(
+            "[INFO] {} (yes: user services can start before login)",
+            String::from_utf8_lossy(&output.stdout).trim()
+        );
     }
     if report.errors > 0 {
         bail!(

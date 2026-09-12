@@ -95,10 +95,8 @@ impl Config {
         if self.video.output_mode == VideoOutputMode::DepthMap && !self.depth.enabled {
             bail!("depth output mode requires depth processing to be enabled");
         }
-        if self.avatar.enabled {
-            if self.avatar.source_image.as_os_str().is_empty() {
-                bail!("avatar source_image must not be empty when avatar output is enabled");
-            }
+        if self.avatar.enabled && self.avatar.source_image.as_os_str().is_empty() {
+            bail!("avatar source_image must not be empty when avatar output is enabled");
         }
         if !(0.0..=1.0).contains(&self.perception.minimum_confidence)
             || !(0.0..=1.0).contains(&self.perception.release_confidence)

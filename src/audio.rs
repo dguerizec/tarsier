@@ -308,11 +308,16 @@ pub(crate) enum Packet {
     Error(String),
 }
 
+struct ReservationPolicy {
+    reserve_inputs: bool,
+    input_reservations: BTreeMap<String, bool>,
+}
+
 #[derive(Clone, Default)]
 pub struct AudioHub {
     config: crate::config::AudioConfig,
     pub(crate) noise: Arc<Mutex<crate::audio_noise::NoiseReducer>>,
-    reservation_policy: Arc<Mutex<Option<(bool, BTreeMap<String, bool>)>>>,
+    reservation_policy: Arc<Mutex<Option<ReservationPolicy>>>,
     channels: Arc<Mutex<HashMap<String, broadcast::Sender<Packet>>>>,
     terminated: Arc<Mutex<HashSet<ProcessIdentity>>>,
 }
@@ -330,9 +335,9 @@ impl AudioHub {
 
     pub fn reservation_config(&self) -> crate::config::AudioConfig {
         let mut config = self.config.clone();
-        if let Some((enabled, preferences)) = self.reservation_policy.lock().unwrap().as_ref() {
-            config.reserve_inputs = *enabled;
-            config.input_reservations = preferences.clone();
+        if let Some(policy) = self.reservation_policy.lock().unwrap().as_ref() {
+            config.reserve_inputs = policy.reserve_inputs;
+            config.input_reservations = policy.input_reservations.clone();
         }
         config
     }
@@ -343,7 +348,10 @@ impl AudioHub {
         preferences: BTreeMap<String, bool>,
     ) {
         let previous = self.reservation_config();
-        *self.reservation_policy.lock().unwrap() = Some((true, preferences.clone()));
+        *self.reservation_policy.lock().unwrap() = Some(ReservationPolicy {
+            reserve_inputs: true,
+            input_reservations: preferences.clone(),
+        });
         runtime
             .update(|state| {
                 for source in state.audio_reservations.keys() {

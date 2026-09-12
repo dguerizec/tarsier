@@ -184,12 +184,12 @@ mod tests {
         }
         #[cfg(unix)]
         std::os::unix::fs::symlink("a.png", directory.join("link.png")).unwrap();
-        let portraits = catalog(&[directory.clone()], &directory.join("a.png")).unwrap();
+        let portraits = catalog(std::slice::from_ref(&directory), &directory.join("a.png")).unwrap();
         assert_eq!(portraits.len(), 2);
         assert_eq!(portraits[0].name, "a.png");
         assert!(portraits[0].selected);
         assert!(!portraits[1].selected);
-        let again = catalog(&[directory.clone()], &directory.join("a.png")).unwrap();
+        let again = catalog(std::slice::from_ref(&directory), &directory.join("a.png")).unwrap();
         assert_eq!(portraits[0].id, again[0].id);
         std::fs::remove_dir_all(directory).unwrap();
     }

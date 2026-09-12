@@ -126,10 +126,10 @@ async fn guard_mcp_commands(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    if request.uri().path().starts_with("/mcp/") {
-        if let Some(camera) = state.camera.read().await.as_ref() {
-            camera.notify_mcp_activity();
-        }
+    if request.uri().path().starts_with("/mcp/")
+        && let Some(camera) = state.camera.read().await.as_ref()
+    {
+        camera.notify_mcp_activity();
     }
     if request.method() == axum::http::Method::POST
         && request.uri().path().starts_with("/mcp/")
@@ -1077,8 +1077,10 @@ async fn upload_video_input(
         Err(error) => return command_error(error.into()),
     };
     if let Err(error) = settings.remember_video_input(selection.clone()).await {
-        if !library.iter().any(|item| item.filename == selection.filename) {
-            if let Ok(path) = selection.path(&directory) { let _ = tokio::fs::remove_file(path).await; }
+        if !library.iter().any(|item| item.filename == selection.filename)
+            && let Ok(path) = selection.path(&directory)
+        {
+            let _ = tokio::fs::remove_file(path).await;
         }
         return user_settings_error(error);
     }
@@ -1202,16 +1204,16 @@ async fn set_device_settings(
     audio
         .set_reservation_preferences(&state.runtime, request.input_reservations.clone())
         .await;
-    if camera_changed {
-        if let Err(error) = switch_camera(&state, &request.camera, current.pipeline.enabled).await {
-            let rollback = switch_camera(&state, &previous_camera, current.pipeline.enabled).await;
-            let persisted = settings
-                .set_devices(previous_camera, request.input_reservations)
-                .await;
-            return command_error(anyhow::anyhow!(
-                "Camera switch failed: {error:#}; restore capture: {rollback:?}; restore settings: {persisted:?}"
-            ));
-        }
+    if camera_changed
+        && let Err(error) = switch_camera(&state, &request.camera, current.pipeline.enabled).await
+    {
+        let rollback = switch_camera(&state, &previous_camera, current.pipeline.enabled).await;
+        let persisted = settings
+            .set_devices(previous_camera, request.input_reservations)
+            .await;
+        return command_error(anyhow::anyhow!(
+            "Camera switch failed: {error:#}; restore capture: {rollback:?}; restore settings: {persisted:?}"
+        ));
     }
     Json(json!({"applied": true})).into_response()
 }
@@ -1645,10 +1647,10 @@ fn spawn_video_connection_monitor(state: ApiState) {
                     // Apply mute before persistence so a storage error cannot leave output live.
                     state.preview.set_output_muted(true);
                     state.runtime.update(|runtime| runtime.pipeline.output_muted = true).await;
-                    if let Some(settings) = &state.user_settings {
-                        if let Err(error) = settings.set_video_output_muted(true).await {
-                            tracing::warn!(%error, "could not persist automatic video mute");
-                        }
+                    if let Some(settings) = &state.user_settings
+                        && let Err(error) = settings.set_video_output_muted(true).await
+                    {
+                        tracing::warn!(%error, "could not persist automatic video mute");
                     }
                     state.runtime.emit("video.output", "video-connection", None,
                         json!({"muted": true, "reason": "no_confirmed_application"})).await;
@@ -1870,10 +1872,10 @@ async fn apply_reserved_camera_power(state: &ApiState, enabled: bool) -> Respons
     };
     state.preview.set_output_muted(true);
     state.runtime.update(|runtime| runtime.pipeline.output_muted = true).await;
-    if let Some(settings) = &state.user_settings {
-        if let Err(error) = settings.set_video_output_muted(true).await {
-            return user_settings_error(error);
-        }
+    if let Some(settings) = &state.user_settings
+        && let Err(error) = settings.set_video_output_muted(true).await
+    {
+        return user_settings_error(error);
     }
     if !enabled {
         let _ = state.recorder.stop().await;
@@ -3366,10 +3368,10 @@ async fn upload_mute_media(
     let library = settings.video_mute_library().await;
     if let Err(error) = settings.set_video_mute_media(Some(selection.clone())).await {
         drop(media);
-        if !library.iter().any(|item| item.filename == selection.filename) {
-            if let Ok(path) = selection.path(&directory) {
-                let _ = tokio::fs::remove_file(path).await;
-            }
+        if !library.iter().any(|item| item.filename == selection.filename)
+            && let Ok(path) = selection.path(&directory)
+        {
+            let _ = tokio::fs::remove_file(path).await;
         }
         return user_settings_error(error);
     }
@@ -3446,12 +3448,11 @@ async fn delete_saved_mute_media(
     if active {
         state.preview.set_replacement(crate::mute_media::default_selection(), default_media, None);
     }
-    if let Ok(path) = selection.path(&settings.mute_media_directory()) {
-        if let Err(error) = tokio::fs::remove_file(path).await {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                return command_error(error.into());
-            }
-        }
+    if let Ok(path) = selection.path(&settings.mute_media_directory())
+        && let Err(error) = tokio::fs::remove_file(path).await
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        return command_error(error.into());
     }
     mute_media_settings(State(state.clone())).await
 }
@@ -4677,10 +4678,10 @@ async fn set_voice_settings(
         )
             .into_response();
     }
-    if let Some(settings) = &state.user_settings {
-        if let Err(error) = settings.set_audio(audio.clone()).await {
-            return user_settings_error(error);
-        }
+    if let Some(settings) = &state.user_settings
+        && let Err(error) = settings.set_audio(audio.clone()).await
+    {
+        return user_settings_error(error);
     }
     state.runtime.update(|s| audio.apply(s)).await;
     Json(state.runtime.state().await.audio_voice).into_response()
@@ -5534,7 +5535,7 @@ mod tests {
         let (_, restored) = UserSettingsStore::load(path, fallback).await.unwrap();
         assert_eq!(restored.camera_device.as_deref(), Some(""));
         assert!(restored.video_output_muted);
-        assert_eq!(restored.audio_input_reservations["remembered-mic"], false);
+        assert!(!restored.audio_input_reservations["remembered-mic"]);
         assert_eq!(restored.audio.capture_sources, vec!["remembered-mic"]);
         let response = app
             .oneshot(

@@ -40,9 +40,9 @@ pub fn catalog(directories: &[PathBuf], current: &Path) -> Result<Vec<Portrait>>
             continue;
         };
         if manifest["schema_version"] != 1
-            || !manifest["draws"]
+            || manifest["draws"]
                 .as_array()
-                .is_some_and(|draws| !draws.is_empty())
+                .is_none_or(|draws| draws.is_empty())
         {
             continue;
         }

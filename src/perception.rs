@@ -14,6 +14,12 @@ use crate::{
     runtime::Runtime,
 };
 
+pub struct WorkerConnection {
+    pub server_address: SocketAddr,
+    pub worker_token: String,
+    pub shared_source: Option<String>,
+}
+
 pub struct PerceptionSupervisor {
     shutdown: watch::Sender<bool>,
     task: JoinHandle<()>,
@@ -25,10 +31,8 @@ impl PerceptionSupervisor {
         avatar: AvatarConfig,
         depth: DepthConfig,
         video: VideoConfig,
-        server_address: SocketAddr,
+        connection: WorkerConnection,
         runtime: Runtime,
-        worker_token: String,
-        shared_source: Option<String>,
     ) -> Option<Self> {
         if !config.enabled || !config.supervise_worker {
             return None;
@@ -39,7 +43,7 @@ impl PerceptionSupervisor {
             avatar,
             depth,
             video,
-            (server_address, worker_token, shared_source),
+            connection,
             runtime,
             receiver,
         ));
@@ -57,11 +61,15 @@ async fn supervise(
     avatar: AvatarConfig,
     depth: DepthConfig,
     video: VideoConfig,
-    connection: (SocketAddr, String, Option<String>),
+    connection: WorkerConnection,
     runtime: Runtime,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    let (server_address, worker_token, shared_source) = connection;
+    let WorkerConnection {
+        server_address,
+        worker_token,
+        shared_source,
+    } = connection;
     let daemon_url = worker_daemon_url(server_address);
     let mut states = runtime.subscribe_state();
     loop {

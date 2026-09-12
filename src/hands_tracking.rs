@@ -286,12 +286,12 @@ impl HandsTrackingController {
             let recent = self.arm_last_hand_at_ms[side].is_some_and(|last| {
                 captured_at_ms >= last && captured_at_ms - last <= ARM_RECOVERY_MS
             });
-            if !matched[side] && recent {
-                if let Some((x, y)) = arm {
-                    if x.min(1.0 - x).min(y).min(1.0 - y) < EDGE_MARGIN_START {
-                        targets.push((x.clamp(0.0, 1.0), y.clamp(0.0, 1.0)));
-                    }
-                }
+            if !matched[side]
+                && recent
+                && let Some((x, y)) = arm
+                && x.min(1.0 - x).min(y).min(1.0 - y) < EDGE_MARGIN_START
+            {
+                targets.push((x.clamp(0.0, 1.0), y.clamp(0.0, 1.0)));
             }
         }
         if targets.is_empty() {
