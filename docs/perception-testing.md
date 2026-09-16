@@ -1,14 +1,14 @@
 # Local perception video fixture
 
-The reusable gesture and movement recording is:
+This optional local validation tool requires your own video recording, supplied
+explicitly with `--input`. There is no default input and no video bundled with a
+fresh clone. It is separate from the automated test suite. Keep private recordings
+outside Git; `local-test-media/` is ignored for local videos and comparison results.
 
-`local-test-media/gestures-and-motion.mp4`
+The recorded validation results below used a private gesture and movement clip
+with the following properties:
 
-This is a private local fixture, intentionally excluded from Git by
-`local-test-media/.gitignore`. A fresh session in this checkout can reuse it;
-a fresh clone will not contain the video. Keep the original recording intact.
-
-- Original: `20260910-170229-0.mp4`
+- Original filename: `20260910-170229-0.mp4`
 - Duration: 41.574333 seconds
 - Video: H.264, 1280x720, 30 fps
 - Audio: AAC (not consumed by the perception comparison)
@@ -19,6 +19,7 @@ From the repository root, run:
 
 ```sh
 uv run --project worker python tools/compare_perception_delegates.py \
+  --input /path/to/your/video.mp4 \
   --output local-test-media/cpu-gpu-comparison.json
 ```
 

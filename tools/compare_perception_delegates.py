@@ -17,7 +17,7 @@ from tarsier_perception.worker import (
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument(
-    "--input", type=Path, default=Path("local-test-media/gestures-and-motion.mp4")
+    "--input", type=Path, required=True, help="Path to your local video recording"
 )
 parser.add_argument("--output", type=Path, required=True)
 parser.add_argument(
