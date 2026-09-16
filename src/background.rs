@@ -128,12 +128,11 @@ pub fn catalog() -> Vec<Package> {
     let mut packages = vec![load("kelp").expect("bundled background is valid").0];
     if let Ok(entries) = std::fs::read_dir(directory()) {
         for entry in entries.flatten().take(128) {
-            if let Some(id) = entry.file_name().to_str() {
-                if id != "kelp" {
-                    if let Ok((package, _)) = load(id) {
-                        packages.push(package);
-                    }
-                }
+            if let Some(id) = entry.file_name().to_str()
+                && id != "kelp"
+                && let Ok((package, _)) = load(id)
+            {
+                packages.push(package);
             }
         }
     }

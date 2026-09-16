@@ -3174,16 +3174,16 @@ async fn set_background(
     if !crate::background::valid_id(&plugin) {
         return (StatusCode::BAD_REQUEST, Json(json!({"error": "invalid background plugin id"}))).into_response();
     }
-    if request.enabled && request.effect == BackgroundEffect::Shader {
-        if let Err(error) = crate::background::load(&plugin) {
-            return (StatusCode::BAD_REQUEST, Json(json!({"error": error.to_string()}))).into_response();
-        }
+    if request.enabled && request.effect == BackgroundEffect::Shader
+        && let Err(error) = crate::background::load(&plugin)
+    {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": error.to_string()}))).into_response();
     }
     if state.config.video.width >= 3840 && request.enabled { return effects_unavailable_in_4k(); }
-    if let Some(settings) = &state.user_settings {
-        if let Err(error) = settings.set_background_selection(request.enabled, request.effect, plugin.clone()).await {
-            return user_settings_error(error);
-        }
+    if let Some(settings) = &state.user_settings
+        && let Err(error) = settings.set_background_selection(request.enabled, request.effect, plugin.clone()).await
+    {
+        return user_settings_error(error);
     }
     state.preview.effects().set_background_plugin(&plugin);
     state
