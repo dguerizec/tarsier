@@ -1611,6 +1611,47 @@ Check framing in the local preview and unmute explicitly. There is no automatic
 fallback or simultaneous capture of multiple cameras.
 
 
+### Screencast audio mix
+
+Enable **Tarsier Screencast** in the Audio section to publish a second virtual
+recording source, `tarsier_screencast`. It mixes **Tarsier Microphone** (including
+its voice processing, mute, and system volume) with the monitor of the default
+playback device. In SimpleScreenRecorder, select the **PulseAudio** backend and
+**Tarsier Screencast** as the audio source.
+
+Keep Tarsier Microphone enabled. The screencast controls provide independent
+0–100% microphone and system levels and mute buttons. Preferences survive a daemon
+restart. The mix follows changes to the default playback device within roughly
+one second; audio can briefly pause during reconnection. It captures all audio
+sent to that device, including notification sounds, and does not send microphone
+audio to your speakers. Use headphones to avoid acoustic echo from speakers
+being picked up by the physical microphone.
+
+The source uses the existing PipeWire tools plus GStreamer's `pulsesrc`,
+`audiomixer`, `volume`, `audioconvert`, and `audioresample` elements. Mixing uses
+floating point at 48 kHz stereo, followed by saturating 16-bit conversion. Start
+with the default 70% levels and lower them if loud simultaneous signals distort;
+peak clipping prevents integer overflow but is not an automatic loudness limiter.
+The virtual source is owned by the daemon and removed when disabled or stopped.
+It is excluded from microphone discovery to prevent feedback and is never made
+the default microphone by Tarsier.
+
+`GET /api/v1/audio/screencast` returns `settings`, `running`, `monitor`, and `error`.
+`POST /api/v1/audio/screencast` replaces the settings object:
+
+```json
+{
+  "enabled": true,
+  "microphone_volume": 70,
+  "system_volume": 70,
+  "microphone_muted": false,
+  "system_muted": false
+}
+```
+
+Runtime status is also included as `audio_screencast` in the shared state stream.
+
+
 ### Voice conversion library
 
 Settings → Voice conversion manages local RVC `.pth` imports, per-model availability,

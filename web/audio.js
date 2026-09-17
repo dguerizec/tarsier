@@ -275,8 +275,10 @@ async function updateOutput(patch) {
 document.querySelector('#audio-output-applications').onclick = () => showApplications(tracks.get(virtualId));
 document.querySelector('#preview-audio-mute').onclick = () => void updateOutput({ muted: !virtualState.muted });
 
-export function syncAudioCapture(sources, output, currentReservations, released, busy, outputApplications = 0, currentGain = {}, currentVoice = {}) {
+export function syncAudioCapture(sources, output, currentReservations, released, busy, outputApplications = 0, currentGain = {}, currentVoice = {}, currentScreencast = {}) {
   document.querySelector('#audio-output-applications').textContent = `${outputApplications} ${outputApplications === 1 ? 'app' : 'apps'}`;
+  screencastState = currentScreencast;
+  renderScreencast();
   gainState = currentGain;
   voiceState = currentVoice;
   reservations = currentReservations || {};
@@ -758,3 +760,51 @@ voicePitch.onchange = () => updateVoice(!!voiceState.enabled, Number(voicePitch.
 
 voiceModel.onchange = () => updateVoice(!!voiceState.enabled, Number(voicePitch.value), voiceModel.value);
 renderVoice();
+
+
+let screencastState = {};
+let screencastPending = false;
+let screencastError = '';
+const screencastToggle = document.querySelector('#screencast-toggle');
+function renderScreencast() {
+  const settings = screencastState.settings || {};
+  screencastToggle.textContent = settings.enabled ? 'On' : 'Off';
+  screencastToggle.setAttribute('aria-pressed', String(!!settings.enabled));
+  screencastToggle.disabled = screencastPending || !audioConfig.audio.virtual_output_enabled;
+  for (const channel of ['microphone', 'system']) {
+    const slider = document.querySelector(`#screencast-${channel}-volume`);
+    const mute = document.querySelector(`#screencast-${channel}-mute`);
+    if (document.activeElement !== slider) slider.value = settings[`${channel}_volume`] ?? 70;
+    document.querySelector(`#screencast-${channel}-value`).textContent = `${slider.value}%`;
+    slider.disabled = screencastPending;
+    mute.disabled = screencastPending;
+    mute.setAttribute('aria-pressed', String(!!settings[`${channel}_muted`]));
+    mute.textContent = `${settings[`${channel}_muted`] ? 'Unmute' : 'Mute'} ${channel === 'system' ? 'system audio' : 'microphone'}`;
+  }
+  document.querySelector('#screencast-status').textContent = screencastError || (!settings.enabled ? 'Off' : screencastState.error ||
+    (screencastState.running ? 'Ready · Following the default playback device' : 'Starting…'));
+}
+async function updateScreencast(patch) {
+  if (screencastPending) return;
+  screencastPending = true;
+  screencastError = '';
+  renderScreencast();
+  try {
+    const response = await fetch('/api/v1/audio/screencast', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({...screencastState.settings, ...patch}),
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || 'Could not update screencast audio');
+    // The shared state stream remains authoritative for all open clients.
+  } catch (error) { screencastError = error.message; }
+  finally { screencastPending = false; renderScreencast(); }
+}
+screencastToggle.onclick = () => updateScreencast({enabled: !screencastState.settings?.enabled});
+for (const channel of ['microphone', 'system']) {
+  const slider = document.querySelector(`#screencast-${channel}-volume`);
+  slider.oninput = () => { document.querySelector(`#screencast-${channel}-value`).textContent = `${slider.value}%`; };
+  slider.onchange = () => updateScreencast({[`${channel}_volume`]: Number(slider.value)});
+  document.querySelector(`#screencast-${channel}-mute`).onclick = () => updateScreencast({[`${channel}_muted`]: !screencastState.settings?.[`${channel}_muted`]});
+}
+renderScreencast();

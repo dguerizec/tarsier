@@ -27,6 +27,7 @@ mod pipeline_reservation;
 mod recording;
 mod runtime;
 mod scenario;
+mod screencast;
 mod settings;
 mod service;
 mod telemetry;
@@ -368,6 +369,11 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
     let recorder = recording::Recorder::default();
     let (audio, audio_task) =
         audio::AudioHub::start(config.audio.clone(), runtime.clone(), shutdown_rx.clone());
+    let screencast_task = tokio::spawn(screencast::run(
+        runtime.clone(),
+        config.audio.clone(),
+        shutdown_rx.clone(),
+    ));
     let app = api::router_with_controls(
         config.clone(),
         runtime.clone(),
@@ -426,6 +432,7 @@ async fn serve(path: Option<PathBuf>) -> Result<()> {
         recorder.shutdown().await;
         let _ = shutdown_tx.send(true);
         let _ = audio_task.await;
+        let _ = screencast_task.await;
         let _ = background_task.await;
         if let Some(perception) = perception {
             // Stop the worker before Axum drains any remaining requests.

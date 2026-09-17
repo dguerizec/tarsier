@@ -329,6 +329,10 @@ pub fn router_with_controls(
             "/api/v1/audio/voice/models/{name}",
             axum::routing::delete(delete_voice_model),
         )
+        .route(
+            "/api/v1/audio/screencast",
+            get(screencast_audio).post(set_screencast_audio),
+        )
         .route("/api/v1/audio/sources", get(audio_sources))
         .route("/api/v1/audio/meter", get(audio_meter))
         .route("/api/v1/audio/noise", get(audio_noise).post(set_audio_noise))
@@ -5140,6 +5144,31 @@ async fn set_audio_noise(
     }
 }
 
+async fn screencast_audio(State(state): State<ApiState>) -> Json<crate::screencast::State> {
+    Json(state.runtime.state().await.audio_screencast)
+}
+
+async fn set_screencast_audio(
+    State(state): State<ApiState>,
+    Json(request): Json<crate::screencast::Settings>,
+) -> Response {
+    let _guard = state.audio_settings_control.lock().await;
+    if let Err(error) = request.validate() {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": error.to_string()}))).into_response();
+    }
+    if request.enabled && !state.config.audio.virtual_output_enabled {
+        return (StatusCode::CONFLICT, Json(json!({"error": "Virtual output is disabled by daemon configuration"}))).into_response();
+    }
+    let mut audio = crate::settings::AudioSettings::from_state(&state.runtime.state().await);
+    audio.screencast = request;
+    if let Some(settings) = &state.user_settings
+        && let Err(error) = settings.set_audio(audio.clone()).await {
+        return user_settings_error(error);
+    }
+    state.runtime.update(|s| audio.apply(s)).await;
+    Json(state.runtime.state().await.audio_screencast).into_response()
+}
+
 async fn virtual_audio(State(state): State<ApiState>) -> Json<crate::audio::VirtualMicrophone> {
     Json(state.runtime.state().await.audio_virtual)
 }
@@ -6191,6 +6220,28 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn screencast_controls_are_validated_and_do_not_change_microphone() {
+        let runtime = Runtime::new();
+        let (_stop, shutdown) = watch::channel(false);
+        let app = router(Config::default(), runtime.clone(), PreviewHub::new(), None, shutdown);
+        for (body, status) in [
+            (r#"{"enabled":true,"microphone_volume":45,"system_muted":true}"#, StatusCode::OK),
+            (r#"{"system_volume":101}"#, StatusCode::BAD_REQUEST),
+        ] {
+            let response = app.clone().oneshot(Request::builder().method("POST")
+                .uri("/api/v1/audio/screencast").header("content-type", "application/json")
+                .body(Body::from(body)).unwrap()).await.unwrap();
+            assert_eq!(response.status(), status);
+        }
+        let state = runtime.state().await;
+        assert!(state.audio_screencast.settings.enabled);
+        assert_eq!(state.audio_screencast.settings.microphone_volume, 45);
+        assert!(state.audio_screencast.settings.system_muted);
+        assert!(!state.audio_virtual.enabled);
+        assert!(state.audio_capture_sources.is_empty());
     }
 
     #[tokio::test]

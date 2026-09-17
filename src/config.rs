@@ -193,6 +193,7 @@ impl AudioConfig {
     }
     pub fn allows(&self, source: &str) -> bool {
         source != self.virtual_source
+            && source != crate::screencast::SOURCE
             && self
                 .allowed_sources
                 .as_ref()

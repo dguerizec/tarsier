@@ -885,18 +885,18 @@ fn output_pcm<'a>(frame: Option<&'a Frame>, allowed: bool, silence: &'a [u8]) ->
     }
 }
 
-struct Pipe {
-    path: PathBuf,
+pub(crate) struct Pipe {
+    pub(crate) path: PathBuf,
 }
 impl Pipe {
-    fn new() -> Result<Self> {
+    pub(crate) fn new() -> Result<Self> {
         let base = std::env::var_os("XDG_RUNTIME_DIR")
             .map(PathBuf::from)
             .context("XDG_RUNTIME_DIR is required for virtual audio")?;
         let dir = base.join(format!(
             "tarsier-audio-{}-{}",
             std::process::id(),
-            crate::model::unix_ms()
+            rand::random::<u64>()
         ));
         std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
         Ok(Self {

@@ -37,6 +37,7 @@ impl VideoResolution {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct AudioSettings {
+    pub screencast: crate::screencast::Settings,
     pub voice_show_controls: bool,
     pub voice_disabled_models: std::collections::BTreeSet<String>,
     pub voice_enabled: bool,
@@ -52,6 +53,7 @@ pub struct AudioSettings {
 impl Default for AudioSettings {
     fn default() -> Self {
         Self {
+            screencast: Default::default(),
             voice_show_controls: true,
             voice_disabled_models: Default::default(),
             voice_enabled: false,
@@ -69,6 +71,7 @@ impl Default for AudioSettings {
 impl AudioSettings {
     pub fn from_state(state: &crate::model::RuntimeState) -> Self {
         Self {
+            screencast: state.audio_screencast.settings.clone(),
             voice_show_controls: state.audio_voice.show_controls,
             voice_disabled_models: state.audio_voice.disabled_models.clone(),
             voice_enabled: state.audio_voice.enabled,
@@ -103,6 +106,7 @@ impl AudioSettings {
             && self.voice_show_controls
             && !self.voice_disabled_models.contains(&self.voice_model);
         state.audio_voice.pitch = self.voice_pitch;
+        state.audio_screencast.settings = self.screencast.clone();
         state.audio_capture_sources = self.capture_sources.clone();
         state.audio_virtual.source = self.output_source.clone();
         state.audio_virtual.enabled = self.output_enabled;
@@ -659,6 +663,7 @@ mod tests {
             .await
             .unwrap();
         let audio = AudioSettings {
+            screencast: crate::screencast::Settings { enabled: true, system_volume: 35, microphone_muted: true, ..Default::default() },
             voice_show_controls: true,
             voice_disabled_models: std::collections::BTreeSet::from(["Disabled.pth".into()]),
             capture_sources: vec!["disconnected-mic".into()],
