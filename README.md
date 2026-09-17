@@ -1,9 +1,17 @@
 # Tarsier
 
-Tarsier is a local-first control and perception daemon for motorized cameras.
-It owns camera capture and vendor control traffic, publishes a stable V4L2
-virtual camera, exposes a local API and MCP gateway, and turns MediaPipe
-observations into debounced semantic events.
+Tarsier turns a Linux webcam into a locally controlled video source with
+background effects, avatars, gesture recognition, and a virtual camera for
+other applications. A local web interface lets you control capture and image
+settings; an HTTP API and MCP gateway make these features available to scripts
+and AI assistants. Video processing and perception run on your machine.
+
+Tarsier is intended to work with any non-motorized camera supported by Linux
+V4L2, including ordinary USB and built-in webcams. A motorized camera is optional:
+supported models additionally offer physical pan/tilt, automatic face or hands
+framing, and vendor-specific controls. The OBSBOT Tiny 2 is the currently
+supported motorized model. Actual webcam compatibility depends on the driver's
+capture formats and controls; not every camera has been tested.
 
 The name comes from the tarsier: a small primate with very large eyes and a
 highly mobile head. The project inherits the creature's attentive and slightly
@@ -32,7 +40,8 @@ weights and private recordings are not included in this source repository.
 
 ## What works
 
-- one Rust daemon owns `/dev/video0` and serializes OBSBOT extension-unit I/O;
+- one Rust daemon owns camera capture and exposes standard V4L2 image controls;
+  with an OBSBOT Tiny 2, it also serializes vendor extension-unit I/O;
 - a GStreamer pipeline keeps a raw internal perception branch separate from
   the final MJPEG preview and `/dev/video42` output at 720p30;
 - a video supervisor closes stale streams and rebuilds the pipeline against the
@@ -105,7 +114,7 @@ not a primary product target and is not required by Tarsier.
 
 ```mermaid
 flowchart LR
-    Camera[Motorized UVC camera] -->|MJPEG| Pipeline[Managed GStreamer pipeline]
+    Camera[V4L2 webcam or supported motorized camera] -->|MJPEG| Pipeline[Managed GStreamer pipeline]
     Camera <-->|serialized UVC/XU| Adapter[Camera adapter]
 
     Pipeline --> RawPreview[Raw internal MJPEG branch]
@@ -146,8 +155,9 @@ The current prototype targets Linux and expects:
 - GStreamer runtime, base/good plugins, and development headers;
 - FFmpeg with the `libx264` encoder for video recording;
 - `v4l2loopback`, `v4l-utils`, and a free virtual device;
-- an OBSBOT Tiny 2 reachable through the configured video-device path for the
-  real adapter.
+- a Linux V4L2 camera with capture formats supported by the pipeline; ordinary
+  non-motorized webcams use the `v4l2` adapter. An OBSBOT Tiny 2 is required only
+  for its motorized and vendor-specific features via the `obsbot-tiny-2` adapter.
 
 On Ubuntu, the native packages can be installed with:
 
@@ -1133,7 +1143,10 @@ run before unattended use.
 
 ## Known limitations
 
-- only the OBSBOT Tiny 2 and its tested Linux UVC/XU path have a real adapter;
+- ordinary webcams use the generic V4L2 adapter, with controls limited to what
+  their drivers expose; compatibility has not been validated on every camera.
+  Motorized and vendor-specific control is currently implemented only for the
+  OBSBOT Tiny 2 and its tested Linux UVC/XU path;
 - device discovery is configuration-driven; automatic recovery uses the stable
   configured path and has synthetic EOS coverage, but a physical unplug/reset
   recovery cycle and long soak have not yet been revalidated;
