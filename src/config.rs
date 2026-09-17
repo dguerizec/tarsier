@@ -53,6 +53,9 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<()> {
+        if self.audio.virtual_source == crate::satellite_audio::DEVICE {
+            bail!("audio virtual_source is reserved for the satellite device");
+        }
         if !valid_identifier(&self.audio.virtual_source) {
             bail!("audio virtual_source must be a safe identifier of at most 64 characters");
         }
@@ -193,6 +196,7 @@ impl AudioConfig {
     }
     pub fn allows(&self, source: &str) -> bool {
         source != self.virtual_source
+            && source != crate::satellite_audio::DEVICE
             && source != crate::screencast::SOURCE
             && self
                 .allowed_sources

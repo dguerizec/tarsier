@@ -42,7 +42,7 @@ enum Subscribe {
 struct Subscription {
     #[serde(rename = "type")]
     kind: Subscribe,
-    source: String,
+    device: String,
     start: Condition,
     end: Condition,
     #[serde(default = "default_pre_roll")]
@@ -66,8 +66,8 @@ impl Subscription {
                     .bytes()
                     .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"._-".contains(&c))
         };
-        if self.source.is_empty() || self.source.len() > 512 {
-            return Err("invalid_source");
+        if self.device.is_empty() || self.device.len() > 512 {
+            return Err("invalid_device");
         }
         if !event_valid(&self.start.event)
             || !event_valid(&self.end.event)
@@ -327,7 +327,6 @@ pub(crate) async fn stream(
     runtime: Runtime,
     auth: Option<Auth>,
     headers: HeaderMap,
-    virtual_source: String,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let (mut sender, mut receiver) = socket.split();
@@ -364,22 +363,15 @@ pub(crate) async fn stream(
         return;
     }
     let mut states = runtime.subscribe_state();
-    if subscription.source == virtual_source
-        || !states
-            .borrow()
-            .audio_capture_sources
-            .contains(&subscription.source)
-    {
-        send(
-            &mut sender,
-            vec![metadata(
-                json!({"type":"error", "code":"source_not_enabled"}),
-            )],
-        )
-        .await;
+    if subscription.device != crate::satellite_audio::DEVICE {
+        send(&mut sender, vec![metadata(json!({"type":"error", "code":"invalid_device"}))]).await;
         return;
     }
-    let mut packets = audio.subscribe_raw(&subscription.source);
+    if !states.borrow().audio_satellite.enabled {
+        send(&mut sender, vec![metadata(json!({"type":"error", "code":"device_disabled"}))]).await;
+        return;
+    }
+    let mut packets = audio.subscribe_raw(&subscription.device);
     let mut events = runtime.subscribe_events();
     let mut gate = Gate::new(subscription);
     if !send(
@@ -388,7 +380,7 @@ pub(crate) async fn stream(
             json!({"type":"subscribed", "subscription_id":gate.id,
         "subscription":gate.subscription,
         "format":{"encoding":"pcm_s16le", "sample_rate":RATE, "channels":2, "block_ms":20},
-        "processing":"raw_capture"}),
+        "processing":"routed_capture"}),
         )],
     )
     .await
@@ -409,7 +401,7 @@ pub(crate) async fn stream(
                 if !send(&mut sender, vec![metadata(json!({"type":"heartbeat", "active":gate.active.as_ref().map(|active| &active.id)}))]).await { break "slow_client"; }
             },
             changed = states.changed() => {
-                if changed.is_err() || !states.borrow_and_update().audio_capture_sources.contains(&gate.subscription.source) { break "source_disabled"; }
+                if changed.is_err() || !states.borrow_and_update().audio_satellite.enabled { break "device_disabled"; }
             },
             event = events.recv() => {
                 let event: SemanticEvent = match event {
@@ -472,7 +464,7 @@ mod tests {
     };
 
     fn subscription(pre_roll_ms: u64) -> Subscription {
-        serde_json::from_value(json!({"type":"subscribe", "source":"test-mic",
+        serde_json::from_value(json!({"type":"subscribe", "device":"tarsier_satellites",
             "start":{"event":"gesture.phone_near_mouth.started"},
             "end":{"event":"gesture.phone_near_mouth.ended"}, "pre_roll_ms":pre_roll_ms}))
         .unwrap()
@@ -608,7 +600,7 @@ mod tests {
         );
         assert!(
             serde_json::from_value::<Subscription>(
-                json!({"type":"subscribe", "source":"test", "command":"rm"})
+                json!({"type":"subscribe", "device":"test", "command":"rm"})
             )
             .is_err()
         );
@@ -652,7 +644,7 @@ mod tests {
     ) {
         let runtime = Runtime::new();
         runtime
-            .update(|state| state.audio_capture_sources = vec!["test-mic".into()])
+            .update(|state| state.audio_satellite.enabled = true)
             .await;
         let audio = AudioHub::default();
         let (stop, shutdown) = watch::channel(false);
@@ -719,7 +711,7 @@ mod tests {
             next_text(&mut socket, "subscribed").await["format"]["sample_rate"],
             RATE
         );
-        audio.publish_test_audio("test-mic", Packet::Audio(frame(Instant::now(), 1)));
+        audio.publish_test_audio(crate::satellite_audio::DEVICE, Packet::Audio(frame(Instant::now(), 1)));
         runtime
             .emit("unrelated.event", "test", None, json!({}))
             .await;
@@ -728,7 +720,7 @@ mod tests {
             .await;
         next_text(&mut socket, "started").await;
         tokio::time::sleep(Duration::from_millis(25)).await;
-        audio.publish_test_audio("test-mic", Packet::Audio(frame(Instant::now(), 7)));
+        audio.publish_test_audio(crate::satellite_audio::DEVICE, Packet::Audio(frame(Instant::now(), 7)));
         let bytes = tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 if let ClientFrame::Binary(bytes) = socket.next().await.unwrap().unwrap() {
@@ -740,11 +732,11 @@ mod tests {
         .unwrap();
         assert_eq!(bytes.as_ref(), vec![7; BLOCK_BYTES]);
         runtime
-            .update(|state| state.audio_capture_sources.clear())
+            .update(|state| state.audio_satellite.enabled = false)
             .await;
         assert_eq!(
             next_text(&mut socket, "ended").await["reason"],
-            "source_disabled"
+            "device_disabled"
         );
         next_text(&mut socket, "closed").await;
         drop(socket);
@@ -815,7 +807,7 @@ mod tests {
                 let mut tick = tokio::time::interval(Duration::from_millis(20));
                 loop {
                     tick.tick().await;
-                    audio.publish_test_audio("test-mic", Packet::Audio(frame(Instant::now(), 1)));
+                    audio.publish_test_audio(crate::satellite_audio::DEVICE, Packet::Audio(frame(Instant::now(), 1)));
                 }
             });
             runtime
@@ -904,8 +896,8 @@ mod tests {
                 "tarsier-whisper",
                 "--url",
                 &base,
-                "--source",
-                "test-mic",
+                "--audio-device",
+                "tarsier_satellites",
                 "--pre-roll-ms",
                 "300",
                 "--json",
@@ -937,7 +929,7 @@ mod tests {
             for (index, block) in pcm.chunks_exact(BLOCK_BYTES).enumerate() {
                 tokio::time::sleep(Duration::from_millis(20)).await;
                 audio.publish_test_audio(
-                    "test-mic",
+                    crate::satellite_audio::DEVICE,
                     Packet::Audio(Frame {
                         captured: Instant::now(),
                         pcm: Arc::new(block.to_vec()),
@@ -954,7 +946,7 @@ mod tests {
                 .await;
             for _ in 0..3 {
                 tokio::time::sleep(Duration::from_millis(20)).await;
-                audio.publish_test_audio("test-mic", Packet::Audio(frame(Instant::now(), 0)));
+                audio.publish_test_audio(crate::satellite_audio::DEVICE, Packet::Audio(frame(Instant::now(), 0)));
             }
         });
         let final_text = tokio::time::timeout(Duration::from_secs(30), async {
@@ -987,6 +979,97 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn virtual_device_keeps_utterance_open_across_routing_and_mute_changes() {
+        let (url, runtime, audio, stop, server) = test_server().await;
+        runtime
+            .update(|state| {
+                state.audio_capture_sources = vec!["mic-a".into(), "mic-b".into()];
+                state.audio_satellite.source = Some("mic-a".into());
+            })
+            .await;
+        let router = tokio::spawn(crate::satellite_audio::route(
+            audio.clone(),
+            runtime.clone(),
+            stop.subscribe(),
+        ));
+        let feed = tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_millis(20));
+            loop {
+                tick.tick().await;
+                audio.publish_test_audio("mic-a", Packet::Audio(frame(Instant::now(), 1)));
+                audio.publish_test_audio("mic-b", Packet::Audio(frame(Instant::now(), 2)));
+            }
+        });
+        let (mut socket, _) = connect_async(&url).await.unwrap();
+        socket
+            .send(ClientFrame::Text(
+                serde_json::to_string(&subscription(0)).unwrap().into(),
+            ))
+            .await
+            .unwrap();
+        let ack = next_text(&mut socket, "subscribed").await;
+        assert_eq!(
+            ack["subscription"]["device"],
+            crate::satellite_audio::DEVICE
+        );
+        assert!(ack["subscription"].get("source").is_none());
+        runtime
+            .emit("gesture.phone_near_mouth.started", "test", None, json!({}))
+            .await;
+        let started = next_text(&mut socket, "started").await;
+        for (source, muted, expected) in [
+            ("mic-a", false, 1),
+            ("mic-b", false, 2),
+            ("mic-b", true, 0),
+            ("mic-b", false, 2),
+            ("missing", false, 0),
+        ] {
+            runtime
+                .update(|state| {
+                    state.audio_satellite.source = Some(source.into());
+                    state.audio_satellite.muted = muted;
+                })
+                .await;
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    match socket.next().await.unwrap().unwrap() {
+                        ClientFrame::Binary(bytes) if bytes.as_ref() == vec![expected; BLOCK_BYTES] => {
+                            break;
+                        }
+                        ClientFrame::Text(text) => {
+                            let value: Value = serde_json::from_str(&text).unwrap();
+                            assert_ne!(value["type"], "closed");
+                            assert_ne!(value["type"], "ended");
+                        }
+                        _ => {}
+                    }
+                }
+            })
+            .await
+            .unwrap();
+        }
+        runtime
+            .emit("gesture.phone_near_mouth.ended", "test", None, json!({}))
+            .await;
+        let ended = next_text(&mut socket, "ended").await;
+        assert_eq!(ended["utterance_id"], started["utterance_id"]);
+        assert_eq!(ended["reason"], "condition");
+        feed.abort();
+        let _ = feed.await;
+        stop.send(true).unwrap();
+        router.await.unwrap();
+        drop(socket);
+        server.await.unwrap();
+    }
+
+    #[test]
+    fn physical_source_selector_is_not_part_of_the_subscription_contract() {
+        let mut value = serde_json::to_value(subscription(300)).unwrap();
+        value["source"] = json!("mic-a");
+        assert!(serde_json::from_value::<Subscription>(value).is_err());
+    }
+
+    #[tokio::test]
     async fn utterances_rejects_unavailable_sources_and_invalid_subscriptions() {
         let (url, _, _, stop, server) = test_server().await;
         for source in ["unknown", "tarsier_microphone"] {
@@ -994,7 +1077,7 @@ mod tests {
                 .await
                 .unwrap();
             let mut request = subscription(300);
-            request.source = source.into();
+            request.device = source.into();
             socket
                 .send(ClientFrame::Text(
                     serde_json::to_string(&request).unwrap().into(),
@@ -1003,7 +1086,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 next_text(&mut socket, "error").await["code"],
-                "source_not_enabled"
+                "invalid_device"
             );
         }
         stop.send(true).unwrap();

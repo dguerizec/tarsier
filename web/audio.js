@@ -275,9 +275,10 @@ async function updateOutput(patch) {
 document.querySelector('#audio-output-applications').onclick = () => showApplications(tracks.get(virtualId));
 document.querySelector('#preview-audio-mute').onclick = () => void updateOutput({ muted: !virtualState.muted });
 
-export function syncAudioCapture(sources, output, currentReservations, released, busy, outputApplications = 0, currentGain = {}, currentVoice = {}, currentScreencast = {}) {
+export function syncAudioCapture(sources, output, currentReservations, released, busy, outputApplications = 0, currentGain = {}, currentVoice = {}, currentScreencast = {}, currentSatellite = {}) {
   document.querySelector('#audio-output-applications').textContent = `${outputApplications} ${outputApplications === 1 ? 'app' : 'apps'}`;
   screencastState = currentScreencast;
+  satelliteState = currentSatellite;
   renderScreencast();
   gainState = currentGain;
   voiceState = currentVoice;
@@ -289,6 +290,7 @@ export function syncAudioCapture(sources, output, currentReservations, released,
   enabledSources = new Set(sources);
   for (const track of tracks.values()) syncTrack(track);
   renderOutput();
+  renderSatellite();
   renderNoise();
 }
 
@@ -515,6 +517,7 @@ async function refresh() {
       }
     }
     renderOutput();
+    renderSatellite();
   } catch (error) {
     status.hidden = false;
     status.textContent = error.message;
@@ -819,3 +822,54 @@ for (const channel of ['microphone', 'system']) {
   document.querySelector(`#screencast-${channel}-mute`).onclick = () => updateScreencast({[`${channel}_muted`]: !screencastState.settings?.[`${channel}_muted`]});
 }
 renderScreencast();
+
+
+let satelliteState = {};
+let satellitePending = false;
+let satelliteError = '';
+const satelliteSource = document.querySelector('#satellite-source');
+const satelliteToggle = document.querySelector('#satellite-toggle');
+const satelliteMute = document.querySelector('#satellite-mute');
+function renderSatellite() {
+  const sources = [...tracks.values()].filter(track => track.id !== virtualId && !track.unavailable);
+  const options = sources.map(track => [track.id, track.name]);
+  if (satelliteState.source && !options.some(([id]) => id === satelliteState.source)) {
+    options.push([satelliteState.source, 'Selected input · Disconnected']);
+  }
+  const key = JSON.stringify(options);
+  if (satelliteSource.dataset.options !== key) {
+    satelliteSource.replaceChildren(new Option('No input selected', ''), ...options.map(([id, name]) => new Option(name, id)));
+    satelliteSource.dataset.options = key;
+  }
+  satelliteSource.value = satelliteState.source || '';
+  satelliteSource.disabled = satellitePending;
+  satelliteToggle.textContent = satelliteState.enabled ? 'On' : 'Off';
+  satelliteToggle.setAttribute('aria-pressed', String(!!satelliteState.enabled));
+  satelliteToggle.disabled = satellitePending;
+  satelliteMute.setAttribute('aria-pressed', String(!!satelliteState.muted));
+  satelliteMute.textContent = satelliteState.muted ? 'Unmute' : 'Mute';
+  satelliteMute.disabled = satellitePending;
+  const active = sources.some(track => track.id === satelliteState.source && track.enabled);
+  document.querySelector('#satellite-status').textContent = satelliteError || (!satelliteState.enabled ? 'Off'
+    : satelliteState.muted ? 'Muted · Channel connected'
+    : !active ? 'Silent · Select and enable an available input' : 'Ready · tarsier_satellites');
+}
+async function updateSatellite(patch) {
+  if (satellitePending) return;
+  satellitePending = true;
+  satelliteError = '';
+  renderSatellite();
+  try {
+    const response = await fetch('/api/v1/audio/satellite', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({enabled: !!satelliteState.enabled, source: satelliteState.source || null, muted: !!satelliteState.muted, ...patch}),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Could not update satellite microphone');
+    // Shared state updates remain authoritative across browser tabs.
+  } catch (error) { satelliteError = error.message; }
+  finally { satellitePending = false; renderSatellite(); }
+}
+satelliteSource.onchange = () => updateSatellite({source: satelliteSource.value || null});
+satelliteToggle.onclick = () => updateSatellite({enabled: !satelliteState.enabled});
+satelliteMute.onclick = () => updateSatellite({muted: !satelliteState.muted});

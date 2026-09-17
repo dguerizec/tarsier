@@ -333,6 +333,7 @@ pub fn router_with_controls(
             "/api/v1/audio/screencast",
             get(screencast_audio).post(set_screencast_audio),
         )
+        .route("/api/v1/audio/satellite", get(satellite_audio).post(set_satellite_audio))
         .route("/api/v1/audio/sources", get(audio_sources))
         .route("/api/v1/audio/meter", get(audio_meter))
         .route("/api/v1/audio/noise", get(audio_noise).post(set_audio_noise))
@@ -5040,6 +5041,49 @@ async fn set_audio_capture(
     Json(json!({"source": request.source, "enabled": request.enabled})).into_response()
 }
 
+async fn satellite_audio(State(state): State<ApiState>) -> Json<crate::satellite_audio::Settings> {
+    Json(state.runtime.state().await.audio_satellite)
+}
+
+async fn set_satellite_audio(
+    State(state): State<ApiState>,
+    Json(request): Json<crate::satellite_audio::Settings>,
+) -> Response {
+    let _guard = state.audio_settings_control.lock().await;
+    let mut next = state.runtime.state().await;
+    if let Some(source) = &request.source
+        && next.audio_satellite.source.as_ref() != Some(source)
+    {
+        match crate::audio::sources(&state.config.audio).await {
+            Ok(sources) if sources.iter().any(|s| &s.id == source) => {}
+            Ok(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error":"Select an available input microphone"})),
+                )
+                    .into_response();
+            }
+            Err(error) => return command_error(error),
+        }
+    }
+    if request.enabled
+        && let Some(source) = &request.source
+        && !next.audio_capture_sources.contains(source)
+    {
+        next.audio_capture_sources.push(source.clone());
+        next.audio_capture_sources.sort();
+    }
+    next.audio_satellite = request;
+    let audio = crate::settings::AudioSettings::from_state(&next);
+    if let Some(settings) = &state.user_settings
+        && let Err(error) = settings.set_audio(audio.clone()).await
+    {
+        return user_settings_error(error);
+    }
+    state.runtime.update(|current| audio.apply(current)).await;
+    Json(state.runtime.state().await.audio_satellite).into_response()
+}
+
 async fn audio_utterances(
     State(state): State<ApiState>,
     headers: HeaderMap,
@@ -5062,7 +5106,6 @@ async fn audio_utterances(
                 state.runtime,
                 state.auth,
                 headers,
-                state.config.audio.virtual_source,
                 state.shutdown,
             )
             .await
@@ -5397,6 +5440,62 @@ mod tests {
 
     use super::*;
     use crate::{camera, config::CameraAdapter, settings::UserSettings};
+
+    #[tokio::test]
+    async fn satellite_routing_controls_are_independent_and_work_with_a_missing_input() {
+        let runtime = Runtime::new();
+        runtime
+            .update(|state| {
+                state.audio_virtual.source = Some("conference-mic".into());
+                state.audio_satellite.source = Some("unplugged-mic".into());
+                state.audio_satellite.enabled = true;
+            })
+            .await;
+        let (_stop, shutdown) = watch::channel(false);
+        let app = router_with_controls(
+            Config::default(),
+            runtime.clone(),
+            PreviewHub::new(),
+            None,
+            ApiOptions::default(),
+            shutdown,
+        );
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/audio/satellite")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"enabled":true,"source":"unplugged-mic","muted":true}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let state = runtime.state().await;
+        assert!(state.audio_satellite.muted);
+        assert_eq!(
+            state.audio_virtual.source.as_deref(),
+            Some("conference-mic")
+        );
+        assert!(!state.audio_virtual.muted);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/audio/satellite")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+        assert_eq!(body["muted"], true);
+        assert_eq!(body["source"], "unplugged-mic");
+    }
 
     #[test]
     fn mcp_usage_guard_detects_capture_without_visible_processes() {

@@ -134,6 +134,15 @@
             <button id="audio-output-applications" type="button" class="link-button" title="Show applications connected to Tarsier Microphone" aria-haspopup="dialog">0 apps</button>
             <p id="audio-output-error" class="error" role="alert" hidden></p>
             <div id="audio-output-track"></div>
+            <section id="satellite-controls" class="audio-noise-controls" aria-labelledby="satellite-heading">
+              <div class="audio-gain-controls"><strong id="satellite-heading">Satellite microphone</strong>
+                <button id="satellite-toggle" type="button" class="secondary compact" aria-pressed="false">Off</button>
+                <button id="satellite-mute" type="button" class="secondary compact" aria-pressed="false">Mute</button>
+              </div>
+              <label class="audio-gain-controls">Input <select id="satellite-source" aria-label="Satellite microphone input"><option value="">No input selected</option></select></label>
+              <p class="hint">Dedicated to Allô and other satellites. Changing input keeps their audio channel connected. Independent of Tarsier Microphone mute and effects.</p>
+              <p id="satellite-status" class="hint" role="status">Off</p>
+            </section>
             <div id="screencast-controls" class="audio-noise-controls">
               <div class="audio-gain-controls"><strong><button id="screencast-fold" type="button" aria-expanded="true" aria-controls="screencast-settings">Tarsier Screencast</button></strong>
                 <button id="screencast-toggle" aria-label="Tarsier Screencast" type="button" class="secondary compact" aria-pressed="false">Off</button>

@@ -1611,6 +1611,19 @@ Check framing in the local preview and unmute explicitly. There is no automatic
 fallback or simultaneous capture of multiple cameras.
 
 
+### Satellite microphone
+
+The Audio section includes a dedicated **Satellite microphone** with its own
+input selector, On/Off control and mute. Its routing is independent of Tarsier
+Microphone and is saved across restarts. Enable it and select an input before
+using Allô or another gesture client.
+
+Clients request the stable API device `tarsier_satellites`, never a physical
+microphone. Changing input preserves their connection and active utterance;
+missing or muted input produces silence. This WebSocket device is not a separate
+OS recording source. See [audio subscriptions](docs/audio-subscriptions.md) for
+the protocol and migration from raw-source subscriptions.
+
 ### Screencast audio mix
 
 Enable **Tarsier Screencast** in the Audio section to publish a second virtual

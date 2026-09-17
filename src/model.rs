@@ -15,6 +15,8 @@ pub struct RuntimeState {
     #[serde(default)]
     pub audio_capture_sources: Vec<String>,
     #[serde(default)]
+    pub audio_satellite: crate::satellite_audio::Settings,
+    #[serde(default)]
     pub audio_screencast: crate::screencast::State,
     #[serde(default)]
     pub audio_virtual: crate::audio::VirtualMicrophone,
@@ -45,6 +47,7 @@ impl Default for RuntimeState {
             perception: PerceptionState::default(),
             last_scenario: None,
             audio_capture_sources: Vec::new(),
+            audio_satellite: Default::default(),
             audio_screencast: Default::default(),
             audio_virtual: Default::default(),
             audio_voice: Default::default(),

@@ -410,7 +410,7 @@ impl AudioHub {
         Ok(())
     }
 
-    fn channel(&self, source: &str) -> broadcast::Sender<Packet> {
+    pub(crate) fn channel(&self, source: &str) -> broadcast::Sender<Packet> {
         self.channels
             .lock()
             .unwrap()
@@ -433,6 +433,7 @@ impl AudioHub {
     }
 
     async fn supervise(self, runtime: Runtime, mut shutdown: watch::Receiver<bool>) {
+        let satellite = tokio::spawn(crate::satellite_audio::route(self.clone(), runtime.clone(), shutdown.clone()));
         let mut captures: HashMap<String, (bool, oneshot::Sender<()>, JoinHandle<()>)> =
             HashMap::new();
         let (inventory_tx, inventory) = watch::channel(None);
@@ -553,6 +554,7 @@ impl AudioHub {
             let _ = stop.send(());
             let _ = task.await;
         }
+        let _ = satellite.await;
         let _ = discovery.await;
         let _ = connections.await;
     }
@@ -867,7 +869,7 @@ impl AudioHub {
     }
 }
 
-fn next_frame(input: &mut broadcast::Receiver<Packet>) -> Option<Frame> {
+pub(crate) fn next_frame(input: &mut broadcast::Receiver<Packet>) -> Option<Frame> {
     // Keep at most two blocks queued to absorb scheduling jitter without replaying old audio.
     while input.len() > 2 {
         let _ = input.try_recv();
@@ -878,7 +880,7 @@ fn next_frame(input: &mut broadcast::Receiver<Packet>) -> Option<Frame> {
     }
 }
 
-fn output_pcm<'a>(frame: Option<&'a Frame>, allowed: bool, silence: &'a [u8]) -> &'a [u8] {
+pub(crate) fn output_pcm<'a>(frame: Option<&'a Frame>, allowed: bool, silence: &'a [u8]) -> &'a [u8] {
     match frame {
         Some(frame) if allowed && frame.captured.elapsed() <= MAX_AGE => &frame.pcm,
         _ => silence,

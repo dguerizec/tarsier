@@ -27,6 +27,7 @@ mod pipeline_reservation;
 mod recording;
 mod runtime;
 mod scenario;
+mod satellite_audio;
 mod screencast;
 mod settings;
 mod service;

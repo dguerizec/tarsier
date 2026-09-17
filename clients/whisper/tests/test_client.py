@@ -20,23 +20,11 @@ def test_connection_requires_a_token_before_any_network_request(monkeypatch):
         connection(SimpleNamespace(url="http://127.0.0.1:8742", source=None))
 
 
-def test_connection_uses_only_bearer_auth_for_http_and_websocket(monkeypatch):
-    import io
-
+def test_connection_uses_bearer_auth_without_resolving_physical_input(monkeypatch):
     monkeypatch.setenv("TARSIER_API_TOKEN", "test-api-token")
-
-    def urlopen(request, timeout):
-        assert request.full_url == "http://127.0.0.1:8742/api/v1/audio/virtual"
-        assert request.get_header("Authorization") == "Bearer test-api-token"
-        assert request.get_header("Cookie") is None
-        assert request.data is None
-        return io.BytesIO(b'{"source":"test-mic"}')
-
-    monkeypatch.setattr("urllib.request.urlopen", urlopen)
-    url, headers, source = connection(SimpleNamespace(url="http://127.0.0.1:8742", source=None))
+    url, headers = connection(SimpleNamespace(url="http://127.0.0.1:8742"))
     assert url == "ws://127.0.0.1:8742/api/v1/audio/utterances"
     assert headers == {"Authorization": "Bearer test-api-token"}
-    assert source == "test-mic"
 
 
 def test_invalid_token_is_rejected_without_disclosing_it(monkeypatch):

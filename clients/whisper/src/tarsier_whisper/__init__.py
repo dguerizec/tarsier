@@ -5,8 +5,6 @@ import asyncio
 import json
 import os
 import sys
-import urllib.error
-import urllib.request
 from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -155,24 +153,15 @@ def connection(args):
         raise ValueError("Use an http(s) base URL without embedded credentials")
     if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
         raise ValueError("Use a server base URL without path, query or fragment")
-    base = args.url.rstrip("/")
     token = os.environ.get("TARSIER_API_TOKEN", "").strip()
     if not token:
         raise ValueError("Set TARSIER_API_TOKEN to a token with the API destination enabled")
     if any(character.isspace() for character in token):
         raise ValueError("TARSIER_API_TOKEN must not contain whitespace")
     headers = {"Authorization": f"Bearer {token}"}
-    source = args.source
-    if source is None:
-        with urllib.request.urlopen(
-            urllib.request.Request(base + "/api/v1/audio/virtual", headers=headers), timeout=10
-        ) as response:
-            source = json.load(response).get("source")
-        if not source:
-            raise ValueError("Select an audio input in Tarsier or pass --source")
     scheme = "wss" if parsed.scheme == "https" else "ws"
     url = urlunsplit((scheme, parsed.netloc, "/api/v1/audio/utterances", "", ""))
-    return url, headers, source
+    return url, headers
 
 
 async def consume(url, headers, subscription, transcriber):
@@ -210,7 +199,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default="http://127.0.0.1:8742")
     parser.add_argument(
-        "--source", help="Enabled capture source ID; defaults to Tarsier's selected input"
+        "--audio-device", default="tarsier_satellites", help="Tarsier virtual audio device"
     )
     parser.add_argument("--start-event", default="gesture.phone_near_mouth.started")
     parser.add_argument("--end-event", default="gesture.phone_near_mouth.ended")
@@ -233,7 +222,7 @@ def main():
     if not 0.25 <= args.interval <= 10:
         parser.error("interval must be 0.25..10 seconds")
     try:
-        url, headers, source = connection(args)
+        url, headers = connection(args)
         from faster_whisper import WhisperModel
 
         print(f"Loading local Whisper {args.model} ({args.device})…", file=sys.stderr, flush=True)
@@ -256,7 +245,7 @@ def main():
 
         subscription = {
             "type": "subscribe",
-            "source": source,
+            "device": args.audio_device,
             "start": {"event": args.start_event},
             "end": {"event": args.end_event},
             "pre_roll_ms": args.pre_roll_ms,

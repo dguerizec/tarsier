@@ -37,6 +37,7 @@ impl VideoResolution {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct AudioSettings {
+    pub satellite: crate::satellite_audio::Settings,
     pub screencast: crate::screencast::Settings,
     pub voice_show_controls: bool,
     pub voice_disabled_models: std::collections::BTreeSet<String>,
@@ -53,6 +54,7 @@ pub struct AudioSettings {
 impl Default for AudioSettings {
     fn default() -> Self {
         Self {
+            satellite: Default::default(),
             screencast: Default::default(),
             voice_show_controls: true,
             voice_disabled_models: Default::default(),
@@ -71,6 +73,7 @@ impl Default for AudioSettings {
 impl AudioSettings {
     pub fn from_state(state: &crate::model::RuntimeState) -> Self {
         Self {
+            satellite: state.audio_satellite.clone(),
             screencast: state.audio_screencast.settings.clone(),
             voice_show_controls: state.audio_voice.show_controls,
             voice_disabled_models: state.audio_voice.disabled_models.clone(),
@@ -106,6 +109,7 @@ impl AudioSettings {
             && self.voice_show_controls
             && !self.voice_disabled_models.contains(&self.voice_model);
         state.audio_voice.pitch = self.voice_pitch;
+        state.audio_satellite = self.satellite.clone();
         state.audio_screencast.settings = self.screencast.clone();
         state.audio_capture_sources = self.capture_sources.clone();
         state.audio_virtual.source = self.output_source.clone();
@@ -663,6 +667,7 @@ mod tests {
             .await
             .unwrap();
         let audio = AudioSettings {
+            satellite: crate::satellite_audio::Settings { enabled: true, source: Some("satellite-mic".into()), muted: true },
             screencast: crate::screencast::Settings { enabled: true, system_volume: 35, microphone_muted: true, ..Default::default() },
             voice_show_controls: true,
             voice_disabled_models: std::collections::BTreeSet::from(["Disabled.pth".into()]),

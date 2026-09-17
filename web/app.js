@@ -915,7 +915,7 @@ function render(next) {
   }
   state = next;
   renderVideoOutput();
-  syncAudioCapture(next.audio_capture_sources || [], next.audio_virtual, next.audio_reservations, next.audio_released_sources, next.audio_busy_sources, next.audio_output_applications, next.audio_gain, next.audio_voice, next.audio_screencast);
+  syncAudioCapture(next.audio_capture_sources || [], next.audio_virtual, next.audio_reservations, next.audio_released_sources, next.audio_busy_sources, next.audio_output_applications, next.audio_gain, next.audio_voice, next.audio_screencast, next.audio_satellite);
   if (next.last_photo) renderSavedPhoto(next.last_photo);
   renderVideoTransform();
   const camera = next.camera;
