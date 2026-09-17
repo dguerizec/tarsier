@@ -1619,6 +1619,10 @@ its voice processing, mute, and system volume) with the monitor of the default
 playback device. In SimpleScreenRecorder, select the **PulseAudio** backend and
 **Tarsier Screencast** as the audio source.
 
+Click the chevron or **Tarsier Screencast** heading to hide or show its settings.
+The On/Off button remains visible and works independently of folding. The browser
+remembers the folded state; folding does not change the mix or its settings.
+
 Keep Tarsier Microphone enabled. The screencast controls provide independent
 0–100% microphone and system levels and mute buttons. Preferences survive a daemon
 restart. The mix follows changes to the default playback device within roughly

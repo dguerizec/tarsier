@@ -135,19 +135,21 @@
             <p id="audio-output-error" class="error" role="alert" hidden></p>
             <div id="audio-output-track"></div>
             <div id="screencast-controls" class="audio-noise-controls">
-              <div class="audio-gain-controls"><strong>Tarsier Screencast</strong>
+              <div class="audio-gain-controls"><strong><button id="screencast-fold" type="button" aria-expanded="true" aria-controls="screencast-settings">Tarsier Screencast</button></strong>
                 <button id="screencast-toggle" aria-label="Tarsier Screencast" type="button" class="secondary compact" aria-pressed="false">Off</button>
               </div>
-              <p class="hint">Mix Tarsier Microphone with the default playback device. Select Tarsier Screencast in your screen recorder.</p>
-              <div class="audio-gain-controls">
-                <label>Microphone <input id="screencast-microphone-volume" type="range" min="0" max="100" value="70"> <output id="screencast-microphone-value">70%</output></label>
-                <button id="screencast-microphone-mute" type="button" class="secondary compact" aria-pressed="false">Mute microphone</button>
+              <div id="screencast-settings">
+                <p class="hint">Mix Tarsier Microphone with the default playback device. Select Tarsier Screencast in your screen recorder.</p>
+                <div class="audio-gain-controls">
+                  <label>Microphone <input id="screencast-microphone-volume" type="range" min="0" max="100" value="70"> <output id="screencast-microphone-value">70%</output></label>
+                  <button id="screencast-microphone-mute" type="button" class="secondary compact" aria-pressed="false">Mute microphone</button>
+                </div>
+                <div class="audio-gain-controls">
+                  <label>System audio <input id="screencast-system-volume" type="range" min="0" max="100" value="70"> <output id="screencast-system-value">70%</output></label>
+                  <button id="screencast-system-mute" type="button" class="secondary compact" aria-pressed="false">Mute system audio</button>
+                </div>
+                <p id="screencast-status" class="hint" role="status">Off</p>
               </div>
-              <div class="audio-gain-controls">
-                <label>System audio <input id="screencast-system-volume" type="range" min="0" max="100" value="70"> <output id="screencast-system-value">70%</output></label>
-                <button id="screencast-system-mute" type="button" class="secondary compact" aria-pressed="false">Mute system audio</button>
-              </div>
-              <p id="screencast-status" class="hint" role="status">Off</p>
             </div>
             <div id="voice-conversion" class="voice-conversion" hidden>
               <div class="voice-heading"><strong><button id="voice-fold" type="button" aria-expanded="true" aria-controls="voice-settings">Voice conversion</button></strong> <button id="voice-toggle" class="secondary compact" type="button" aria-pressed="false">Off</button></div>

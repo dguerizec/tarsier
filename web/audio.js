@@ -762,6 +762,17 @@ voiceModel.onchange = () => updateVoice(!!voiceState.enabled, Number(voicePitch.
 renderVoice();
 
 
+const screencastFold = document.querySelector('#screencast-fold');
+screencastFold.prepend(createElement(ChevronDown, { width: 18, height: 18, 'aria-hidden': 'true', focusable: 'false' }));
+function foldScreencast(folded) {
+  document.querySelector('#screencast-settings').hidden = folded;
+  screencastFold.setAttribute('aria-expanded', String(!folded));
+  screencastFold.title = folded ? 'Show screencast settings' : 'Hide screencast settings';
+  try { localStorage.setItem('tarsier.screencast.folded', String(folded)); } catch {}
+}
+try { foldScreencast(localStorage.getItem('tarsier.screencast.folded') === 'true'); } catch {}
+screencastFold.onclick = () => foldScreencast(screencastFold.getAttribute('aria-expanded') === 'true');
+
 let screencastState = {};
 let screencastPending = false;
 let screencastError = '';
