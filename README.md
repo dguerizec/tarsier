@@ -1,5 +1,7 @@
 # Tarsier
 
+<img src="web/logo.svg" alt="Tarsier logo" width="128" height="128">
+
 Tarsier turns a Linux webcam into a locally controlled video source with
 background effects, avatars, gesture recognition, and a virtual camera for
 other applications. A local web interface lets you control capture and image
