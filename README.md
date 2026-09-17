@@ -10,8 +10,9 @@ Tarsier is intended to work with any non-motorized camera supported by Linux
 V4L2, including ordinary USB and built-in webcams. A motorized camera is optional:
 supported models additionally offer physical pan/tilt, automatic face or hands
 framing, and vendor-specific controls. The OBSBOT Tiny 2 is the currently
-supported motorized model. Actual webcam compatibility depends on the driver's
-capture formats and controls; not every camera has been tested.
+supported motorized model. The current physical-camera pipeline requires MJPEG
+at the selected resolution and frame rate; V4L2 support alone is not sufficient.
+Available image controls depend on the driver, and not every camera has been tested.
 
 The name comes from the tarsier: a small primate with very large eyes and a
 highly mobile head. The project inherits the creature's attentive and slightly
@@ -85,13 +86,13 @@ weights and private recordings are not included in this source repository.
   at depth breaks. The output branch waits for the mask generated from the
   same camera frame; a missing or stale mask freezes the last processed image
   (black until the first valid image);
-- an optional local avatar worker defaults to a cel-shaded procedural 3D head
-  and bust driven by MediaPipe head pose and facial blendshapes; LivePortrait
-  remains an alternate engine. Both publish complete BGRx scenes to the same
+- optional avatar tasks in the perception worker drive an imported Personal 3D
+  model or a LivePortrait image from local face observations. They publish BGRA
+  (Personal 3D) or BGRx (LivePortrait) frames for composition into the same
   preview and virtual-camera output. The **Video identity** control switches
   between the real camera and avatar; a missing or stale avatar frame freezes
   the last generated image, with black only before the first valid image;
-- an optional local Depth Anything V2 worker estimates relative monocular depth
+- an optional Depth Anything V2 task in the perception worker estimates relative monocular depth
   on demand for either **Depth map** or Camera's active background effect.
   Tarsier retains the original `float32` field for machine use, independently
   colorizes it for the depth identity, and uses only its likelihood as a
@@ -112,39 +113,87 @@ not a primary product target and is not required by Tarsier.
 
 ## Architecture
 
+### Media processing
+
+GStreamer runs inside the Rust daemon. It decodes a physical camera's MJPEG
+stream, a local video file, or a synthetic source, then separates the pre-effect
+perception input from the final-output processing branch.
+
 ```mermaid
-flowchart LR
-    Camera[V4L2 webcam or supported motorized camera] -->|MJPEG| Pipeline[Managed GStreamer pipeline]
-    Camera <-->|serialized UVC/XU| Adapter[Camera adapter]
-
-    Pipeline --> RawPreview[Raw internal MJPEG branch]
-    RawPreview --> Worker[MediaPipe worker]
-    Worker -->|8-bit person mask| Mask[Internal video-mask channel]
-    Worker -->|3D or LivePortrait BGRx frame| Avatar[Avatar channel]
-    Worker -->|float32 relative inverse depth| Depth[Depth channel]
-    Pipeline --> Effects[Final-output effects]
-    Mask --> Effects
-    Avatar --> Effects
-    Depth --> Effects
-    Effects -->|Latest BGRx frame| VirtualOutput[Persistent video output / black while off]
-    VirtualOutput -->|YUY2 720p30| Loopback[V4L2 loopback]
-    Effects --> Preview[Final MJPEG preview]
-    Preview --> UI[Local web UI]
-
-    Adapter <--> Core[Rust runtime and event bus]
-    Worker -->|versioned observations| API[HTTP API]
-    API --> Core
-    Core --> Scenarios[Semantic stabilizers and scenarios]
-    API <--> UI
-    API <--> MCP[MCP stdio gateway]
-    API <--> Clients[Local clients]
+flowchart TB
+    Camera["V4L2 camera: MJPEG at configured size and rate"] --> Capture
+    File["Local video file or synthetic source"] --> Capture
+    subgraph Daemon["Rust daemon: video processing"]
+        Capture["GStreamer decode and normalize"]
+        Input["Resize pre-effect input"]
+        Effects["Select identity and composite effects"]
+        Capture --> Input
+        Capture --> Effects
+        Effects --> Preview["MJPEG browser preview"]
+        Effects --> Photos["JPEG photos on request"]
+        Effects --> Output["Persistent virtual video output"]
+    end
+    Effects --> Recording["FFmpeg recording process"]
+    Input -->|"Shared BGR buffer by default; MJPEG optional"| Perception
+    Perception["Supervised Python perception process: observation, segmentation, depth and avatar tasks"]
+    Perception -->|"Local HTTP: masks, depth and avatar frames"| Effects
+    Shader["Optional supervised shader renderer"] -->|"Shared background frames"| Effects
+    Output -->|"YUY2 at configured size and rate"| Loopback["V4L2 virtual camera"]
+    Preview --> Browser["Browser"]
+    Mic["Selected microphone"] --> Audio["Daemon audio processing and PipeWire/PulseAudio helpers"]
+    Audio <-->|"PCM over pipes, when enabled"| Voice["Optional voice conversion process"]
+    Audio --> VirtualMic["PipeWire virtual microphone"]
+    VirtualMic -->|"When recording audio is enabled"| Recording
 ```
 
-The process-local bus uses Tokio primitives. External modules communicate
-through versioned HTTP schemas; they do not gain direct access to hardware or
-the bus. The Python worker receives only downscaled raw-camera JPEG frames and
-posts compact observations, person masks, and optional relative-depth fields
-back to the API over loopback.
+For the supervised preview-source worker on Linux, the daemon publishes reduced
+BGR frames through an anonymous shared buffer. The worker takes a private copy
+before asynchronous inference; this avoids the JPEG encode/decode round trip but
+is not end-to-end zero-copy. MJPEG remains an explicit transport option and a
+subscriber-driven diagnostic endpoint. See [shared-frame transport](docs/shared-frame-transport.md).
+
+The perception models run as tasks/threads within one Python process, with work
+scheduled according to active effects, tracking, and observation subscriptions.
+They return observations, 8-bit person masks, float32 relative-depth fields, and
+avatar frames over local HTTP. Personal 3D supplies BGRA with alpha; LivePortrait
+supplies BGRx. The compositor uses source-frame provenance to align camera masks;
+when a required mask or avatar is unavailable, it retains safe processed output
+(or black before the first valid output). Skipped masks do not force a full wait
+for a frame the worker has already passed.
+
+Shader backgrounds use a separate supervised renderer and shared-frame output.
+The audio path handles capture selection, noise reduction, gain, optional voice
+conversion, and output muting independently of video inference. Photos are
+encoded on demand; recording and preview consume processed video. Output size
+and frame rate are configurable: 720p30 is a tested configuration, not a fixed
+architectural requirement. See [effect pipelines](docs/effect-pipelines.md),
+[background plugins](docs/background-plugins.md), and
+[audio subscriptions](docs/audio-subscriptions.md) for detailed flows.
+
+### Control and events
+
+```mermaid
+flowchart LR
+    UI["Local web UI"] <-->|"HTTP and WebSocket events"| API["Daemon HTTP API"]
+    Client["Scripts and external clients"] <-->|"HTTP and WebSocket events"| API
+    AI["AI assistant"] <-->|"MCP over stdio"| MCP["MCP gateway process"]
+    MCP <-->|"HTTP"| API
+    Worker["Perception process"] -->|"HTTP observations"| API
+    API <-->|"State and commands"| Core["Rust runtime and Tokio event bus"]
+    Core --> Consumers["Tracking, gesture stabilizers and scenarios"]
+    Consumers -->|"Camera commands"| Adapter["Capability-aware camera adapter"]
+    Core <-->|"Commands and telemetry"| Adapter
+    Adapter <-->|"V4L2 controls; OBSBOT UVC/XU when supported"| Camera["Physical camera"]
+    API --> Media["Capture, effects, audio and recording controls"]
+```
+
+Hardware access stays in the daemon and its managed capture/control paths.
+Standard webcams use the generic V4L2 adapter; motor commands and firmware
+features require the supported OBSBOT adapter. The in-process event bus uses
+Tokio primitives. External clients use the API rather than accessing that bus
+or controlling hardware directly. The supervised worker additionally uses local
+shared memory for video input, while shader rendering and voice conversion have
+their own local IPC paths shown above.
 
 ## Requirements
 
@@ -155,9 +204,10 @@ The current prototype targets Linux and expects:
 - GStreamer runtime, base/good plugins, and development headers;
 - FFmpeg with the `libx264` encoder for video recording;
 - `v4l2loopback`, `v4l-utils`, and a free virtual device;
-- a Linux V4L2 camera with capture formats supported by the pipeline; ordinary
-  non-motorized webcams use the `v4l2` adapter. An OBSBOT Tiny 2 is required only
-  for its motorized and vendor-specific features via the `obsbot-tiny-2` adapter.
+- a Linux V4L2 camera that outputs MJPEG at the configured resolution and frame
+  rate; ordinary non-motorized webcams use the `v4l2` adapter. An OBSBOT Tiny 2
+  is required only for its motorized and vendor-specific features via the
+  `obsbot-tiny-2` adapter.
 
 On Ubuntu, the native packages can be installed with:
 
@@ -1144,7 +1194,9 @@ run before unattended use.
 ## Known limitations
 
 - ordinary webcams use the generic V4L2 adapter, with controls limited to what
-  their drivers expose; compatibility has not been validated on every camera.
+  their drivers expose. Physical capture currently requires MJPEG; cameras that
+  only provide raw formats such as YUYV are not supported by this capture path.
+  Compatibility has not been validated on every camera.
   Motorized and vendor-specific control is currently implemented only for the
   OBSBOT Tiny 2 and its tested Linux UVC/XU path;
 - device discovery is configuration-driven; automatic recovery uses the stable
