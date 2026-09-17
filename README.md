@@ -1616,7 +1616,9 @@ fallback or simultaneous capture of multiple cameras.
 The Audio section includes a dedicated **Satellite microphone** with its own
 input selector, On/Off control and mute. Its routing is independent of Tarsier
 Microphone and is saved across restarts. Enable it and select an input before
-using Allô or another gesture client.
+using Allô or another gesture client. Click the heading or chevron to fold its
+settings; On/Off and mute remain visible and independent. The browser remembers
+the folded state.
 
 Clients request the stable API device `tarsier_satellites`, never a physical
 microphone. Changing input preserves their connection and active utterance;

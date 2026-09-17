@@ -824,6 +824,17 @@ for (const channel of ['microphone', 'system']) {
 renderScreencast();
 
 
+const satelliteFold = document.querySelector('#satellite-fold');
+satelliteFold.prepend(createElement(ChevronDown, { width: 18, height: 18, 'aria-hidden': 'true', focusable: 'false' }));
+function foldSatellite(folded) {
+  document.querySelector('#satellite-settings').hidden = folded;
+  satelliteFold.setAttribute('aria-expanded', String(!folded));
+  satelliteFold.title = folded ? 'Show satellite settings' : 'Hide satellite settings';
+  try { localStorage.setItem('tarsier.satellite.folded', String(folded)); } catch {}
+}
+try { foldSatellite(localStorage.getItem('tarsier.satellite.folded') === 'true'); } catch {}
+satelliteFold.onclick = () => foldSatellite(satelliteFold.getAttribute('aria-expanded') === 'true');
+
 let satelliteState = {};
 let satellitePending = false;
 let satelliteError = '';

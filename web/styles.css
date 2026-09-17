@@ -118,7 +118,7 @@ main { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(17rem, .85
 .image-settings-groups { columns: 2 15rem; column-gap: .65rem; margin-top: .65rem; }
 .image-settings-group { display: inline-block; width: 100%; min-width: 0; margin-bottom: .65rem; break-inside: avoid; padding: .7rem; border: 1px solid var(--panel-edge); border-radius: .7rem; background: #0a0e0c; }
 .image-settings-group > summary { display: flex; align-items: center; gap: .45rem; color: #f2f5ef; cursor: pointer; list-style: none; }
-.image-settings-group > summary, #audio-fold, #voice-fold, #screencast-fold { user-select: none; -webkit-user-select: none; }
+.image-settings-group > summary, #audio-fold, #voice-fold, #screencast-fold, #satellite-fold { user-select: none; -webkit-user-select: none; }
 .image-settings-group > summary::-webkit-details-marker { display: none; }
 .image-settings-group > summary svg { flex: 0 0 auto; }
 .image-settings-group:not([open]) > summary svg { transform: rotate(-90deg); }
@@ -276,9 +276,9 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .audio-visual canvas { height: 48px; }
 
 
-#audio-fold, #voice-fold, #screencast-fold { display: inline-flex; align-items: center; gap: .45rem; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; letter-spacing: inherit; }
-#audio-fold:hover, #voice-fold:hover, #screencast-fold:hover { color: var(--green); }
-#audio-fold[aria-expanded="false"] svg, #voice-fold[aria-expanded="false"] svg, #screencast-fold[aria-expanded="false"] svg { transform: rotate(-90deg); }
+#audio-fold, #voice-fold, #screencast-fold, #satellite-fold { display: inline-flex; align-items: center; gap: .45rem; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; letter-spacing: inherit; }
+#audio-fold:hover, #voice-fold:hover, #screencast-fold:hover, #satellite-fold:hover { color: var(--green); }
+#audio-fold[aria-expanded="false"] svg, #voice-fold[aria-expanded="false"] svg, #screencast-fold[aria-expanded="false"] svg, #satellite-fold[aria-expanded="false"] svg { transform: rotate(-90deg); }
 
 .audio-waveform { position: relative; min-width: 0; }
 .audio-track-overlay { position: absolute; inset: .2rem .3rem auto; display: flex; gap: .45rem; align-items: baseline; pointer-events: none; text-shadow: 0 1px 3px #000; }
