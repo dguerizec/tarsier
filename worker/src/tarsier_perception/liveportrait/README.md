@@ -18,8 +18,12 @@ Tarsier downloads only these core human-animation weights from the official
 Every download is pinned by SHA-256 in `tarsier_perception.models`. Model files
 are cached outside the repository.
 
-No InsightFace code or model is included. Upstream restricts the bundled
-InsightFace detection models to non-commercial research use. Tarsier may keep
-that detector as an explicit experimental fallback for this personal,
-non-commercial research project, but MediaPipe is the default and any future
-commercial use must exclude or separately relicense the InsightFace assets.
+No InsightFace code or model is included or downloaded by Tarsier. The current
+runtime uses MediaPipe and does not implement an InsightFace fallback. The
+upstream notice about non-commercial InsightFace detection models is retained
+verbatim in `THIRD_PARTY_LICENSE`; it concerns those separate upstream assets.
+Adding them would require a separate review of their terms.
+
+The upstream LivePortrait model card declares MIT for its core animation
+weights. See the [license inventory](../../../../licenses/README.md) for sources
+and the distinction between Tarsier code, vendored code, and model downloads.

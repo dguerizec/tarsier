@@ -11,6 +11,11 @@ upstream GUI or device capture. The runtime uses Torch/Torchaudio 2.11 with the
 locked minimal dependencies; this differs from upstream's full GUI environment
 and is verified here as an experimental integration.
 
+The upstream copyright and MIT terms for the adapted RVC code are retained in
+[licenses/RVC-MIT.txt](../licenses/RVC-MIT.txt). See the
+[license inventory](../licenses/README.md) before distributing a voice-enabled
+package: the engine license does not establish permissions for voice weights.
+
 ## Current French trial
 
 The default model is [French Woman by DantSu](https://github.com/DantSu/RVC-french-woman-model),

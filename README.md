@@ -19,6 +19,17 @@ mischievous personality without tying its core to one camera vendor.
 > [Validation](#validation) and
 > [Known limitations](#known-limitations) before relying on it unattended.
 
+## License
+
+Original Tarsier code and documentation are available under either the
+[MIT license](licenses/MIT.txt) or the [Apache License 2.0](licenses/APACHE-2.0.txt),
+at your option, matching `Cargo.toml` (`MIT OR Apache-2.0`). Third-party code,
+dependencies, and downloaded models retain their own terms.
+
+See the [license and model inventory](licenses/README.md) for bundled notices,
+asset permissions, and the unresolved terms of optional voice models. Model
+weights and private recordings are not included in this source repository.
+
 ## What works
 
 - one Rust daemon owns `/dev/video0` and serializes OBSBOT extension-unit I/O;
